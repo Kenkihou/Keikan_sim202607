@@ -633,7 +633,7 @@ function proceedOpenNightIframe(initialSliderPct, fromPortal = false) {
     iframe.style.opacity = '0'; 
     // 起動元に応じて、夜間側の画面にパラメータを付与してロード
     const urlParam = fromPortal ? '?from=portal' : '?from=modeling';
-    iframe.src = `./night-api/yakan03.html${urlParam}`;
+    iframe.src = `./night-api/${urlParam}`;
     iframe.style.display = 'block';
 }
 // ★追加：アプリ2から「描画完了」の合図を受け取って透明化を解除する
@@ -849,7 +849,7 @@ function openMunsellIframe(fromPortal = false) {
     
     // 起動元に応じて、マンセル側の画面にパラメータを付与してロード
     const urlParam = fromPortal ? '?from=portal' : '?from=modeling';
-    iframe.src = `./munsell-api/munsell.html${urlParam}`;
+    iframe.src = `./munsell-api/${urlParam}`;
     iframe.style.display = 'block';
     setTimeout(() => { iframe.style.opacity = '1'; }, 50);
 }

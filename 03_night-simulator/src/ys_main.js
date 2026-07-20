@@ -130,7 +130,7 @@ if (nightCustomGlb && window.parent && typeof window.parent.getHouseGroup === 'f
 
 // 💡 メイン側が完全に空、または単独起動（nightCustomGlbがない）の場合はデフォルトモデルを使用
 const useDefaultModel = !nightCustomGlb || isMainAppEmpty;
-const modelUrl = useDefaultModel ? '/night-api/normal_house.glb' : nightCustomGlb;
+const modelUrl = useDefaultModel ? `${import.meta.env.BASE_URL}normal_house.glb` : nightCustomGlb;
 
 const gltfLoader = new GLTFLoader();
 gltfLoader.load(modelUrl, (gltf) => {

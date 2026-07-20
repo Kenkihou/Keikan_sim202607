@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(powershell -Command \"Stop-Process -Id 924 -Force\")",
+      "Read(//c/Users/45kak/OneDrive/Desktop/コード作成/MY-ARCH-WORKSPACE/02_munsell-simulator/**)",
+      "Read(//c/Users/45kak/OneDrive/Desktop/コード作成/MY-ARCH-WORKSPACE/01_building-builder/**)",
+      "Bash(mkdir -p \"C:\\\\Users\\\\45kak\\\\OneDrive\\\\Desktop\\\\コード作成\\\\MY-ARCH-WORKSPACE\\\\01_building-builder\\\\public\")",
+      "Bash(cp 'C:\\\\Users\\\\45kak\\\\OneDrive\\\\Desktop\\\\コード作成\\\\MY-ARCH-WORKSPACE\\\\02_munsell-simulator\\\\public\\\\sunakabe_r.png' 'C:\\\\Users\\\\45kak\\\\OneDrive\\\\Desktop\\\\コード作成\\\\MY-ARCH-WORKSPACE\\\\01_building-builder\\\\public\" *)",
+      "Bash(cp 'C:\\\\Users\\\\45kak\\\\OneDrive\\\\Desktop\\\\コード作成\\\\MY-ARCH-WORKSPACE\\\\02_munsell-simulator\\\\public\\\\sugi_mask2.png' 'C:\\\\Users\\\\45kak\\\\OneDrive\\\\Desktop\\\\コード作成\\\\MY-ARCH-WORKSPACE\\\\01_building-builder\\\\public\" *)",
+      "Bash(cp 'C:\\\\Users\\\\45kak\\\\OneDrive\\\\Desktop\\\\コード作成\\\\MY-ARCH-WORKSPACE\\\\02_munsell-simulator\\\\public\\\\sugi_mask4.png' 'C:\\\\Users\\\\45kak\\\\OneDrive\\\\Desktop\\\\コード作成\\\\MY-ARCH-WORKSPACE\\\\01_building-builder\\\\public\" *)",
+      "Bash(cp \"C:\\\\Users\\\\45kak\\\\OneDrive\\\\Desktop\\\\コード作成\\\\MY-ARCH-WORKSPACE\\\\02_munsell-simulator\\\\public\\\\sunakabe_r.png\" \"C:\\\\Users\\\\45kak\\\\OneDrive\\\\Desktop\\\\コード作成\\\\MY-ARCH-WORKSPACE\\\\01_building-builder\\\\public\\\\sunakabe_r.png\")",
+      "Bash(powershell -Command \"Stop-Process -Id 1948 -Force\")",
+      "Bash(ffmpeg -version)",
+      "Bash(python -c \"import cv2\")",
+      "Bash(winget install *)",
+      "PowerShell(Get-ChildItem -Path \"$env:LOCALAPPDATA\\\\Microsoft\\\\WinGet\\\\Packages\" -Recurse -Filter \"ffmpeg.exe\" -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName)",
+      "Bash('C:\\\\Users\\\\45kak\\\\AppData\\\\Local\\\\Microsoft\\\\WinGet\\\\Packages\\\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\\\ffmpeg-8.1.2-full_build\\\\bin\\\\ffmpeg.exe' -i 'C:\\\\Users\\\\45kak\\\\AppData\\\\Local\\\\Packages\\\\Microsoft.ScreenSketch_8wekyb3d8bbwe\\\\TempState\\\\Recordings\\\\20260720-0759-19.2978863.mp4')",
+      "Bash('C:\\\\Users\\\\45kak\\\\AppData\\\\Local\\\\Microsoft\\\\WinGet\\\\Packages\\\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\\\ffmpeg-8.1.2-full_build\\\\bin\\\\ffmpeg.exe' -i 'C:\\\\Users\\\\45kak\\\\AppData\\\\Local\\\\Packages\\\\Microsoft.ScreenSketch_8wekyb3d8bbwe\\\\TempState\\\\Recordings\\\\20260720-0759-19.2978863.mp4' -vf fps=1,scale=960:-1 'C:\\\\Users\\\\45kak\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-45kak-OneDrive-Desktop-------MY-ARCH-WORKSPACE-Clude-code\\\\0d1c8c04-ea04-4423-aefc-d36db72126d9\\\\scratchpad\\\\frames/frame_%03d.png' -y)",
+      "Bash(powershell -Command \"Stop-Process -Id 17456 -Force\")",
+      "Bash(powershell -Command \"Stop-Process -Id 25420 -Force\")",
+      "Bash(powershell -Command \"Stop-Process -Id 19052 -Force\")",
+      "Bash(powershell -Command \"Stop-Process -Id 26084 -Force\")"
+    ]
+  }
+}

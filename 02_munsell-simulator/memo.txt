@@ -1,0 +1,19 @@
+Step 1. プログラムを書き換えて、手元で確認する
+コードを修正したら、ターミナルで npm run dev を実行し、ローカル（自分のパソコン上）で思い通りに動くかテストします。確認が終わったら Ctrl + C で終了します。
+
+古い dist フォルダを完全に削除する
+rm -r dist
+
+Step 2. WEB公開用の完成品（dist）を作る
+コードの修正が完了したら、以下のコマンドで最新の完成品を生成します。
+npm run build
+
+Step 3. GitHub Pagesへデプロイ（公開）する
+生成された最新版を、以下のコマンドでWEB上にアップロードします。
+npm run deploy
+
+Step 4. 最後に、ソースコードをGitHubにセーブする
+WEB公開が無事に終わったら、変更したソースコード（テキストファイル群）もGitHubの保管庫に同期しておきます。
+git add .
+git commit -m "〇〇の機能を追加"
+git push origin main

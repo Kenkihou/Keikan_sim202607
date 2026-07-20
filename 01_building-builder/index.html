@@ -1,0 +1,891 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>京都市_モデリングシミュレーター</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #ffffff; }
+        canvas { display: block; }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: #333;
+            font-family: sans-serif;
+            pointer-events: none;
+            background: rgba(255,255,255,0.9);
+            padding: 10px;
+            border-radius: 5px;
+            border: 1px solid #ccc;
+            z-index: 10;
+        }
+        
+        #tooltip {
+            position: absolute;
+            display: none;
+            background: rgba(0, 0, 0, 0.75);
+            color: #fff;
+            padding: 6px 10px;
+            border-radius: 4px;
+            font-family: sans-serif;
+            font-size: 13px;
+            pointer-events: none;
+            white-space: pre-line; 
+            z-index: 100;
+            box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
+        }
+        
+        .lil-gui {
+            --font-size: 14px;
+            --input-font-size: 14px;
+            --widget-height: 28px;
+            --name-width: 40%;
+            --folder-indent: 10px;
+        }
+
+        .tool-row { display: flex; gap: 5px; margin-bottom: 5px; }
+        .tool-btn {
+            flex: 1; text-align: center; background: #3a3a3a; color: #ccc;
+            padding: 8px 0; border-radius: 3px; cursor: pointer; font-size: 13px;
+            font-weight: bold; border: 1px solid #222; user-select: none;
+            transition: all 0.2s;
+        }
+        .tool-btn:hover { background: #4a4a4a; color: #fff; }
+        .tool-btn.active { background: #007acc; color: white; border-color: #005a9e; }
+
+        .action-row { display: flex; gap: 5px; margin-top: 5px; }
+        .action-btn {
+            flex: 1; text-align: center; background: #555; color: white;
+            padding: 6px 0; border-radius: 3px; cursor: pointer; font-size: 13px;
+            user-select: none;
+        }
+        .action-btn:hover { background: #666; }
+        .action-btn:active { background: #444; }
+        .action-btn.disabled { opacity: 0.3; pointer-events: none; }
+
+        #floating-menu {
+            position: absolute;
+            display: none; /* 初期は非表示 */
+            flex-direction: column;
+            gap: 5px;
+            background: rgba(255, 255, 255, 0.95);
+            padding: 10px;
+            border-radius: 6px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+            border: 1px solid #ccc;
+            z-index: 200;
+        }
+
+        .float-btn {
+            background: #007acc; color: white; border: none;
+            padding: 8px 12px; border-radius: 4px; cursor: pointer;
+            font-size: 13px; font-weight: bold; text-align: center;
+            user-select: none;
+        }
+        .float-btn:hover { background: #005a9e; }
+        .float-btn.danger { background: #d9534f; }
+        .float-btn.danger:hover { background: #c9302c; }
+        /* 既存の .float-btn 類に追加・修正 */
+        .float-btn.warning { background: #f0ad4e; color: white; } /* 黄色：変更用 */
+        .float-btn.warning:hover { background: #ec971f; }
+        .float-btn.black { background: #000000; color: #ffffff; } /* 黒色：プッシュプル用 */
+        .float-btn.black:hover { background: #333333; }
+
+        #main-toolbar {
+            position: absolute;
+            bottom: 100px; 
+            left: 50%;
+            transform: translateX(-50%); 
+            background: rgba(255, 255, 255, 0.95);
+            padding: 6px;
+            border-radius: 8px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+            display: flex;
+            gap: 6px;
+            z-index: 100;
+            border: 1px solid #ccc;
+            align-items: center;
+        }
+
+        .toolbar-btn {
+            position: relative;
+            background: #f8f9fa;
+            color: #333;
+            border: 1px solid #ccc;
+            width: 42px;
+            height: 42px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: bold;
+            transition: all 0.2s ease;
+            user-select: none;
+            white-space: nowrap; 
+            flex-shrink: 0;      
+        }
+
+        .toolbar-btn:hover { background: #e2e6ea; }
+        .toolbar-btn.active { background: #007acc; color: white; border-color: #005a9e; }
+        .toolbar-btn.disabled { opacity: 0.4; cursor: not-allowed; pointer-events: none; }
+        .toolbar-btn.danger { background: #fff; color: #d9534f; }
+        .toolbar-btn.danger:hover { background: #d9534f; color: white; border-color: #d9534f; }
+
+        .toolbar-divider { width: 1px; height: 24px; background: #ccc; margin: 0 2px; flex-shrink: 0; }
+
+        /* ==========================================================================
+           ★変更・追加：汎用ラジカセ風物理ボタンシステム（立体感＋LEDランプ）
+           ========================================================================== */
+        .sim-panel-btn {
+            /* ★変更：ベースを少し明るいメタリック調のグレーに変更 */
+            background: #4e4e5e;
+            color: #ffffff;
+            /* ★変更：黒地からボタンを浮き立たせるための少し明るい境界線 */
+            border: 1px solid #666677;
+            /* ★変更：下側のベゼル（厚み）を明るいグレーにして、光が当たっている立体感を強調 */
+            border-bottom: 4px solid #7a7a8a; 
+            width: 44px;
+            height: 44px;
+            display: flex;
+            flex-direction: column;           /* LEDとアイコンを縦に綺麗に並べるため */
+            align-items: center;
+            justify-content: center;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 18px;
+            transition: all 0.1s cubic-bezier(0.25, 0.8, 0.25, 1); /* カチカチ感を出すため少し速く */
+            flex-shrink: 0;
+            position: relative;
+            /* ★変更：黒地のコンテナの上でもボタンの存在がわかるよう、少し濃いめのクッキリした影を配置 */
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.6); 
+            padding-top: 6px;                  /* 上部のLEDスペースを考慮した内側余白 */
+            box-sizing: border-box;
+        }
+        
+        .sim-panel-btn:hover { 
+            /* ★変更：ホバー時はボタンのトップ面だけが明るくなるように */
+            background: #5d5d6d; 
+            border-color: #777788; 
+        }
+
+        /* 物理ボタン上部の汎用ミニLEDランプ */
+        .led-lamp {
+            position: absolute;
+            top: 4px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 5px;
+            height: 5px;
+            /* ★変更：グレーのボタンの上でランプの「穴」がはっきり認識できるよう漆黒に */
+            background: #111115; 
+            border-radius: 50%;
+            transition: all 0.1s ease;
+            box-shadow: inset 0 1px 1px rgba(0,0,0,0.9);
+        }
+
+        /* ボタンがON（ラジカセのボタンがカチッとへこんでいる）状態 */
+        .sim-panel-btn.active {
+            /* ★変更：押し込まれてパネルの奥（影）に入り込んだ質感を出すため、背景色とベゼルをグッと暗く */
+            background: #4e4e5e;               
+            border-color: #22222d;
+            border-bottom: 1px solid #22222d;  /* 厚みが潰れる */
+            /* ★変更：ボタンが穴に深く嵌まり込んだような強いインセット陰影 */
+            box-shadow: inset 0 4px 8px rgba(0, 0, 0, 0.7); 
+            transform: translateY(3px);        /* 厚みが減った分、物理的に下へ3pxカチッと沈み込む */
+            padding-top: 9px;                  /* 沈み込んだ際のアイコン位置の微調整 */
+            color: #ffffff;
+        }
+
+        /* ボタンがONの時のLED点灯エフェクト（クラスを重ねれば他色への応用も可能） */
+        .sim-panel-btn.active .led-lamp {
+            background: #39ff14; /* 鮮やかな通電ネオングリーンに点灯 */
+            box-shadow: 0 0 8px #39ff14, 0 0 3px #39ff14; /* 周辺への発光エフェクト */
+        }
+
+        /* ========================================== */
+        /* ★追加：スライダーが操作不能（グレーアウト）状態のスタイル */
+        /* ========================================== */
+        .slider-disabled {
+            pointer-events: none !important;
+            opacity: 0.3 !important;
+        }
+
+        /* ツールチップのデザイン（白ボタン・黒ボタンで共有） */
+        .toolbar-btn::after, .sim-panel-btn::after {
+            content: attr(data-tooltip);
+            position: absolute;
+            bottom: 54px; 
+            left: 50%;
+            transform: translateX(-50%) translateY(6px);
+            background: rgba(0, 0, 0, 0.85);
+            color: #fff;
+            padding: 6px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: sans-serif;
+            font-weight: normal;
+            white-space: nowrap;
+            pointer-events: none;
+            opacity: 0;
+            transition: all 0.15s ease;
+            z-index: 110;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+        }
+
+        .toolbar-btn::before, .sim-panel-btn::before {
+            content: "";
+            position: absolute;
+            bottom: 48px;
+            left: 50%;
+            transform: translateX(-50%) translateY(6px);
+            border-width: 6px 6px 0 6px;
+            border-style: solid;
+            border-color: rgba(0, 0, 0, 0.85) transparent transparent transparent;
+            pointer-events: none;
+            opacity: 0;
+            transition: all 0.15s ease;
+            z-index: 110;
+        }
+
+        .toolbar-btn:hover::after,
+        .toolbar-btn:hover::before,
+        .sim-panel-btn:hover::after,
+        .sim-panel-btn:hover::before {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+        }
+
+        /* ========================================== */
+        /* ★変更：画面中央下のタイムスライダーUI (統合パネル化) */
+        /* ========================================== */
+        #app1-time-slider-container {
+            position: absolute;
+            bottom: 20px; 
+            left: 50%;
+            transform: translateX(-50%);
+            /* ★変更：上のボタン群の幅に合わせず、文字被りや見切れが起きない幅を自律的に確保 */
+            width: auto;   
+            min-width: 520px; 
+            background: rgba(15, 15, 25, 0.85);
+            /* ★変更：左右の余白を広げ、左端の「陰影なし」の見切れを防ぐ */
+            padding: 14px 28px; 
+            border-radius: 10px;
+            box-shadow: 0 6px 24px rgba(0,0,0,0.5);
+            border: 1px solid rgba(255,255,255,0.1);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            color: #fff;
+            user-select: none;
+            z-index: 100000; 
+            box-sizing: border-box;
+            display: flex;
+            align-items: center;
+            /* ★変更：スライダー（右端の夜間照明ラベル）とパレットボタンの間隔をしっかり離す */
+            gap: 35px;
+        }
+
+        .slider-ui-inner {
+            position: relative;
+            flex-grow: 1; 
+            /* ★追加：ラベル文字（陰影なし / 夜間照明）が左右に広がった際、コンテナやボタンと被らないよう安全地帯を作る */
+            margin: 0 25px 0 25px; 
+        }
+
+        .slider-labels-wrapper {
+            position: relative;
+            width: 100%;
+            height: 18px; 
+            margin-bottom: 8px; 
+        }
+        .slider-labels-wrapper span {
+            position: absolute;
+            top: 0;
+            transform: translateX(-50%); 
+            font-size: 13px; 
+            font-weight: 500;
+            color: #ccc;
+            white-space: nowrap;
+        }
+
+        .slider-wrapper {
+            position: relative;
+            width: 100%;
+            height: 16px; 
+            display: flex;
+            align-items: center;
+        }
+
+        .slider-rail-bg {
+            position: absolute;
+            left: -8px;
+            right: -8px;
+            height: 4px; 
+            background: #2a2a3a;
+            border-radius: 2px;
+            pointer-events: none;
+            z-index: 1;
+        }
+
+        #app1-time-slider {
+            width: calc(100% + 16px);
+            margin-left: -8px;
+            margin-right: -8px;
+            -webkit-appearance: none;
+            appearance: none;
+            background: transparent; 
+            height: 16px;
+            outline: none;
+            position: relative;
+            z-index: 2; 
+            margin-top: 0;
+            margin-bottom: 0;
+        }
+        
+        /* つまみ（Thumb）のカスタマイズ */
+        #app1-time-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;  
+            height: 16px; 
+            border-radius: 50%;
+            background: #77aaff;
+            cursor: pointer;
+            box-shadow: 0 0 6px rgba(119,170,255,0.5);
+            transition: background 0.2s, transform 0.1s;
+            position: relative;
+            z-index: 4; 
+        }
+        #app1-time-slider::-webkit-slider-thumb:hover {
+            background: #aaccff;
+            transform: scale(1.1);
+        }
+
+        .slider-ticks {
+            position: absolute;
+            top: 50%;
+            left: 0;
+            width: 100%;
+            height: 0;
+            pointer-events: none;
+            z-index: 3; 
+            box-sizing: border-box;
+        }
+        
+        /* 縦線（目盛り）のスタイル */
+        #app1-slider-ticks .tick {
+            position: absolute;
+            width: 1.5px;           
+            height: 8px;            
+            background: rgba(255, 255, 255, 0.7); 
+            transform: translate(-50%, -50%); 
+        }
+
+    /* ==========================================
+       ★追加：スタートポータル画面＆ホームボタンのスタイル
+       ======================================= */
+    #portal-screen {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        background-color: #f3f4f6;
+        z-index: 10000; /* Three.jsやiframeの最前面に被せる */
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        font-family: 'Helvetica Neue', Arial, 'Hiragino Kaku Gothic ProN', Meiryo, sans-serif;
+    }
+
+    #portal-title {
+        font-size: 32px;
+        font-weight: bold;
+        color: #1f2937;
+        margin-bottom: 48px;
+        letter-spacing: 2px;
+        text-shadow: 1px 1px 2px rgba(0,0,0,0.05);
+    }
+
+    #portal-grid {
+        display: grid;
+        /* 横5列 × 縦2行（各タイル140px正方形） */
+        grid-template-columns: repeat(5, 140px);
+        grid-template-rows: repeat(2, 140px);
+        gap: 20px;
+    }
+
+    /* 共通タイルスタイル */
+    .portal-tile {
+        background-color: #ffffff;
+        border-radius: 20px;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        cursor: pointer;
+        transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+        position: relative;
+        user-select: none;
+        text-decoration: none;
+        border: none;
+        padding: 12px;
+        box-sizing: border-box;
+    }
+
+    .portal-tile:hover {
+        transform: translateY(-6px);
+        box-shadow: 0 16px 32px rgba(0, 0, 0, 0.12);
+    }
+
+    /* 3Dモデリング（2x2サイズ・左側ぶち抜き） */
+    .tile-modeling {
+        grid-column: 1 / 3;
+        grid-row: 1 / 3;
+        background: linear-gradient(135deg, #0052cc, #002d93); /* 深みのあるプレミアムブルー */
+        color: #ffffff;
+    }
+
+    /* 鮮やかなゴールドオレンジのSVGペンアイコン */
+    .tile-modeling .tile-icon-svg {
+        width: 56px;
+        height: 56px;
+        margin-bottom: 8px;
+        stroke: #ffa500;
+        fill: none;
+        filter: drop-shadow(0 0 10px rgba(255, 165, 0, 0.65)) drop-shadow(0 2px 4px rgba(0,0,0,0.2));
+    }
+
+    .tile-modeling .tile-title {
+        font-size: 22px;
+        font-weight: bold;
+        letter-spacing: 1px;
+        margin-bottom: 22px; 
+        text-shadow: 0 2px 4px rgba(0,0,0,0.15);
+    }
+
+    /* 連携ミニアイコン配置エリア */
+    .mini-icons-container {
+        position: absolute;
+        bottom: 22px;
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        justify-content: center;
+        width: 85%;
+    }
+
+    .mini-icon-node {
+        position: relative;
+        z-index: 2;
+        width: 32px;
+        height: 32px;
+        background: rgba(255, 255, 255, 0.15);
+        border: 1.5px solid rgba(255, 255, 255, 0.55);
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 18px; 
+        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+        transition: all 0.2s ease;
+    }
+
+    .mini-icon-node:hover {
+        background: rgba(255, 255, 255, 0.35);
+        border-color: #ffd700;
+        transform: scale(1.15);
+    }
+
+    /* マンセル値（1x1） */
+    .tile-munsell {
+        background: linear-gradient(135deg, #ff0055, #9900ff, #00ffcc);
+        color: #ffffff;
+    }
+
+    .tile-munsell .tile-icon {
+        font-size: 38px;
+        margin-bottom: 6px;
+    }
+
+    .tile-munsell .tile-title {
+        font-size: 14px;
+        font-weight: bold;
+    }
+
+    /* 夜間景観（1x1）ディープネイビー×ゴールド */
+    .tile-night {
+        background: linear-gradient(135deg, #0a192f, #172a45);
+        color: #ffd700;
+    }
+
+    .tile-night .tile-icon {
+        font-size: 38px;
+        margin-bottom: 6px;
+    }
+
+    .tile-night .tile-title {
+        font-size: 14px;
+        font-weight: bold;
+        color: #ffffff;
+    }
+
+    /* Coming Soon タイル */
+    .coming-soon {
+        background-color: #e5e7eb;
+        color: #9ca3af;
+        opacity: 0.5;
+        filter: grayscale(100%);
+        cursor: default; /* 禁止マークを解除し、普通の矢印カーソルにします */
+    }
+
+    .coming-soon .tile-icon {
+        font-size: 34px;
+        margin-bottom: 6px;
+    }
+
+    .coming-soon .tile-title {
+        font-size: 13px;
+        font-weight: 500;
+    }
+
+    .coming-soon::after {
+        content: "Coming Soon";
+        position: absolute;
+        bottom: 10px;
+        font-size: 9px;
+        background-color: rgba(0, 0, 0, 0.05);
+        padding: 2px 8px;
+        border-radius: 10px;
+        color: #6b7280;
+        font-weight: bold;
+    }
+
+    /* タイル内の微調整 */
+    .tile-icon {
+        line-height: 1;
+    }
+    .tile-title {
+        text-align: center;
+    }
+
+    /* --- 親画面管理：フローティング「戻る」ボタン --- */
+    #btn-back-to-portal {
+        position: fixed;
+        top: 20px;
+        left: 20px;
+        z-index: 10001; /* 全てのUI要素やiframe（z-index 5000）のさらに前面に配置 */
+        background-color: #ffffff;
+        color: #1f2937;
+        border: 2px solid #1f2937;
+        padding: 10px 18px;
+        border-radius: 30px;
+        font-size: 14px;
+        font-weight: bold;
+        cursor: pointer;
+        display: none; /* 初期は非表示 */
+        align-items: center;
+        gap: 8px;
+        box-shadow: 0 6px 20px rgba(0,0,0,0.12);
+        transition: all 0.2s cubic-bezier(0.25, 0.8, 0.25, 1);
+    }
+
+    #btn-back-to-portal:hover {
+        background-color: #1f2937;
+        color: #ffffff;
+        transform: scale(1.04);
+    }
+
+/* ==========================================================================
+       ★追加：ポータルタイル専用 カスタムツールチップ（ホバーテキスト位置微調整用）
+       ========================================================================== */
+    .portal-tile[data-portal-tooltip] {
+        position: relative;
+    }
+
+    /* ツールチップの本体：指先と重ならないよう、やや右寄り(left: 60%)に配置 */
+    .portal-tile[data-portal-tooltip]::after {
+        content: attr(data-portal-tooltip);
+        position: absolute;
+        bottom: calc(100% + 14px); /* タイルの上側に配置 */
+        left: 60%;                 /* 💡カーソルと重ならないよう、中央より右側に配置 */
+        transform: translateX(-20%) translateY(8px); /* 出現時に下からフワッと浮き上がらせる */
+        background-color: rgba(20, 20, 25, 0.95);
+        color: #ffffff;
+        padding: 8px 14px;
+        border-radius: 6px;
+        font-size: 12.5px;
+        font-weight: 500;
+        line-height: 1.4;
+        white-space: nowrap;
+        pointer-events: none;
+        opacity: 0;
+        visibility: hidden;
+        transition: all 0.15s cubic-bezier(0.25, 0.8, 0.25, 1);
+        z-index: 10005;
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    /* ツールチップの小さな三角矢印 */
+    .portal-tile[data-portal-tooltip]::before {
+        content: "";
+        position: absolute;
+        bottom: calc(100% + 8px);
+        left: 60%;
+        transform: translateX(-50%) translateY(8px);
+        border-width: 6px 6px 0 6px;
+        border-style: solid;
+        border-color: rgba(20, 20, 25, 0.95) transparent transparent transparent;
+        pointer-events: none;
+        opacity: 0;
+        visibility: hidden;
+        transition: all 0.15s cubic-bezier(0.25, 0.8, 0.25, 1);
+        z-index: 10005;
+    }
+
+    /* ホバーした瞬間に位置をジャストに補正して綺麗に表示 */
+    .portal-tile[data-portal-tooltip]:hover::after {
+        opacity: 1;
+        visibility: visible;
+        transform: translateX(-20%) translateY(0);
+    }
+
+    .portal-tile[data-portal-tooltip]:hover::before {
+        opacity: 1;
+        visibility: visible;
+        transform: translateX(-50%) translateY(0);
+    }
+
+    </style>
+    
+    <script src="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Cesium.js"></script>
+    <link href="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+    <script async src="https://unpkg.com/es-module-shims@1.6.3/dist/es-module-shims.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://cdn.jsdelivr.net/npm/driver.js@1.3.1/dist/driver.js.iife.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/driver.js@1.3.1/dist/driver.css"/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+          "lil-gui": "https://unpkg.com/lil-gui@0.19.1/dist/lil-gui.esm.min.js"
+        }
+      }
+    </script>
+</head>
+<body>
+
+    <button id="btn-back-to-portal">
+        <span>🏠</span> ポータルに戻る
+    </button>
+
+    <div id="portal-screen">
+        <div id="portal-title">景観検討シミュレーター</div>
+        <div id="portal-grid">
+            
+            <button class="portal-tile tile-modeling" id="portal-btn-modeling" data-portal-tooltip="各種機能と連携した３Dモデリング機能をスタート">
+                <svg class="tile-icon-svg" viewBox="0 0 24 24" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 20h9"></path>
+                    <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
+                </svg>
+                <span class="tile-title">3Dモデリング</span>
+                
+                <div class="mini-icons-container">
+                    <div class="mini-icon-node">🎨</div>
+                    <div class="mini-icon-node">🌃</div>
+                    <div class="mini-icon-node">☀️</div>
+                    <div class="mini-icon-node">📐</div>
+                    <div class="mini-icon-node">🌐</div>
+                </div>
+            </button>
+
+            <button class="portal-tile tile-munsell" id="portal-btn-munsell" data-portal-tooltip="マンセル値シミュレーションを単独でスタート">
+                <span class="tile-icon">🎨</span>
+                <span class="tile-title">マンセル値</span>
+            </button>
+
+            <button class="portal-tile tile-night" id="portal-btn-night" data-portal-tooltip="夜間景観シミュレーションを単独でスタート">
+                <span class="tile-icon">🌃</span>
+                <span class="tile-title">夜間景観</span>
+            </button>
+
+            <div class="portal-tile coming-soon" data-portal-tooltip="開発中…">
+                <span class="tile-icon">🔒</span>
+                <span class="tile-title"></span>
+            </div>
+
+            <div class="portal-tile coming-soon" data-portal-tooltip="開発中…">
+                <span class="tile-icon">☀️</span>
+                <span class="tile-title">日影規制</span>
+            </div>
+
+            <div class="portal-tile coming-soon" data-portal-tooltip="開発中…">
+                <span class="tile-icon">📐</span>
+                <span class="tile-title">天空率</span>
+            </div>
+
+            <div class="portal-tile coming-soon" data-portal-tooltip="開発中…">
+                <span class="tile-icon">🌐</span>
+                <span class="tile-title">地球モード</span>
+            </div>
+
+        </div>
+    </div>
+
+
+    <div id="main-toolbar">
+        <button id="btn-draw" class="toolbar-btn" onclick="window.setTool('DRAW'); if(window.TutorialManager){ window.TutorialManager.notifyTrigger('click_btn_draw'); }" data-tooltip="＋ 平面作図">
+            <svg viewBox="0 0 24 24" style="width: 28px; height: 28px; color: #333; overflow: visible;">
+                <rect x="3" y="3" width="18" height="18" fill="rgba(0,122,204,0.15)" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+                <line x1="7.5" y1="16.5" x2="16.5" y2="7.5" stroke="#d9534f" stroke-width="1.5" stroke-linecap="round" />
+                <polyline points="12.5,7.5 16.5,7.5 16.5,11.5" fill="none" stroke="#d9534f" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                <circle cx="21" cy="3" r="2.5" fill="#005a9e" />
+                <line x1="3" y1="16" x2="3" y2="26" stroke="#005a9e" stroke-width="2.5" stroke-linecap="round" />
+                <line x1="-2" y1="21" x2="8" y2="21" stroke="#005a9e" stroke-width="2.5" stroke-linecap="round" />
+            </svg>
+        </button>
+        <button id="btn-snap-toggle" class="toolbar-btn" onclick="window.toggleSnap()" data-tooltip="📏 スナップ: 500mm">
+    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; width: 100%;">
+        <span id="snap-val" style="font-size: 11px; font-weight: 900; line-height: 1;">500</span>
+        <div style="display: flex; align-items: center; justify-content: space-between; width: 28px; margin-top: 2px; color: #555;">
+            <div style="width: 1.5px; height: 6px; background: currentColor;"></div>
+            <div style="flex-grow: 1; height: 1.5px; background: currentColor; position: relative;">
+                <div style="position: absolute; left: 0; top: -2px; border-top: 2.5px solid transparent; border-bottom: 2.5px solid transparent; border-right: 3px solid currentColor;"></div>
+                <div style="position: absolute; right: 0; top: -2px; border-top: 2.5px solid transparent; border-bottom: 2.5px solid transparent; border-left: 3px solid currentColor;"></div>
+            </div>
+            <div style="width: 1.5px; height: 6px; background: currentColor;"></div>
+        </div>
+    </div>
+</button>
+        <div class="toolbar-divider"></div>
+        
+        <button id="btn-undo" class="toolbar-btn disabled" onclick="undo()" data-tooltip="↺ 元に戻す">↺</button>
+        <button id="btn-redo" class="toolbar-btn disabled" onclick="redo()" data-tooltip="↻ 進む">↻</button>
+        <button id="btn-clear" class="toolbar-btn danger" onclick="clearAll()" data-tooltip="✖ すべて消去">✖</button>
+        
+        <div class="toolbar-divider"></div>
+        <button id="btn-save-json" class="toolbar-btn" style="background:#f8f9fa; color:#333;" data-tooltip="💾 作業状態をセーブ">💾</button>
+        <button id="btn-load-json" class="toolbar-btn" style="background:#f8f9fa; color:#333;" data-tooltip="📂 JSONからロード">📂</button>
+        <input type="file" id="input-load-json" accept=".json" style="display: none;">
+
+        <div class="toolbar-divider"></div>
+        <button id="btn-export-cesium" class="toolbar-btn warning" style="background:#f0ad4e; color:white; border-color:#eea236;" data-tooltip="🌍 現実の地球上に配置">🌍</button>
+        
+        <div class="toolbar-divider"></div>
+        <button id="btn-start-tutorial" class="toolbar-btn" style="background:#f8f9fa; color:#333;" data-tooltip="🎓 チュートリアル">🎓</button>
+    </div>
+
+    <div id="floating-menu"></div>
+    <div id="map-modal-overlay" style="display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 3000; justify-content: center; align-items: center;">
+        <div style="background: #fff; width: 80%; height: 80%; border-radius: 10px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 10px 25px rgba(0,0,0,0.5);">
+            <div style="padding: 15px; background: #f8f9fa; border-bottom: 1px solid #ddd; display: flex; justify-content: space-between; align-items: center;">
+                <h3 style="margin: 0; font-family: sans-serif; color: #333;">🌍 配置する場所（敷地）を地図でクリックしてください</h3>
+                <div style="display: flex; gap: 10px;">
+                    <button id="btn-map-cancel" class="toolbar-btn" style="width: auto; padding: 0 15px;">キャンセル</button>
+                    <button id="btn-map-confirm" class="toolbar-btn" style="background: #007acc; color: white; width: auto; padding: 0 15px;">🚀 この位置で3D空間に配置</button>
+                </div>
+            </div>
+            <div id="map-container" style="flex: 1; width: 100%;"></div>
+        </div>
+    </div>
+    
+    <div id="tooltip"></div>
+
+    <div id="cesium-overlay" style="display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1000; background: #000;">
+    <div id="cesiumContainer" style="width: 100%; height: 100%;"></div>
+    
+    <div id="cesium-ui" style="position: absolute; top: 50px; right: 20px; z-index: 1010; background: rgba(255,255,255,0.95); padding: 15px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); font-family: sans-serif; display: flex; flex-direction: column; gap: 10px; width: 220px;">
+        
+        <button id="btn-back-to-model" style="padding: 10px; font-weight: bold; cursor: pointer; background: #fff; border: 2px solid #333; border-radius: 5px; transition: 0.2s;">
+            ✖ モデリング画面に戻る
+        </button>
+        
+        <button id="btn-focus-model" style="padding: 10px; font-weight: bold; cursor: pointer; background: #007acc; color: white; border: 2px solid #005a9e; border-radius: 5px; transition: 0.2s;">
+            🔍 建物にフォーカス
+        </button>
+
+        <button id="snapRetryBtn" style="padding: 10px; font-weight: bold; cursor: pointer; background: #f0ad4e; color: white; border: 2px solid #eea236; border-radius: 5px; transition: 0.2s;">
+            👇 地面に再スナップ
+        </button>
+        <button id="btn-toggle-tiles" style="padding: 10px; font-weight: bold; cursor: pointer; background: #fff; border: 2px solid #4285F4; color: #4285F4; border-radius: 5px; transition: 0.2s; margin-top: 5px;">
+            🗺️ 背景切替: PLATEAU (現在)
+        </button>
+
+        <div style="text-align: center; border-top: 1px solid #ddd; padding-top: 10px; margin-top: 5px;">
+            <span style="font-size: 12px; color: #555; font-weight: bold;">歩行者視点 (Street View)</span><br>
+            <div id="pegman" draggable="true" style="display: inline-block; width: 44px; height: 44px; line-height: 44px; background: #fff; border: 2px solid #007acc; border-radius: 50%; font-size: 22px; cursor: grab; margin-top: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.2); transition: 0.2s;" title="地図上にドラッグ＆ドロップ！">
+                🚶‍♂️
+            </div>
+            <div style="font-size: 11px; color: #777; margin-top: 5px;">地図にドラッグ＆ドロップ</div>
+        </div>
+
+        <div style="border-top: 1px solid #ddd; padding-top: 10px; margin-top: 5px;">
+            <div style="font-size: 12px; color: #555; font-weight: bold; margin-bottom: 5px; text-align: center;">周辺建物の透過</div>
+            <button id="toggleTransparencyBtn" style="width: 100%; padding: 8px; background: #eee; border: 2px solid #ccc; border-radius: 4px; cursor: pointer; font-weight: bold; transition: 0.2s;">
+                🌫️ 透過モード ON
+            </button>
+            <button id="resetTransparencyBtn" style="width: 100%; margin-top: 5px; padding: 5px; background: #fff; border: 1px solid #aaa; border-radius: 4px; cursor: pointer; font-size: 12px; display: none;">
+                ↺ 透過をすべてリセット
+            </button>
+            <button id="btn-visibility-sim" style="width: 100%; margin-top: 15px; padding: 8px; background: #0077ff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: bold; transition: 0.2s;">
+                👁️ 視認シミュレーション
+            </button>
+        </div>
+        
+        <div style="text-align: center; background: #f4f4f4; border: 1px solid #ddd; padding: 8px; border-radius: 4px; margin-top: 5px;">
+            <span id="elevationText" style="color: #d2691e; font-weight: bold; font-size: 12px;">座標状態: 待機中...</span>
+        </div>
+
+    </div> <div id="opacitySliderPanel" style="display: none; position: absolute; z-index: 2000; background: rgba(255, 255, 255, 0.95); padding: 15px; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.3); width: 220px; backdrop-filter: blur(4px);">
+        <div style="font-size: 13px; font-weight: bold; margin-bottom: 10px; color: #333;">透明度の調整</div>
+        <input type="range" id="opacitySlider" min="0" max="1" step="0.05" value="1" style="width: 100%; cursor: pointer;">
+        <div style="text-align: right; margin-top: 10px;">
+            <button id="closeOpacitySliderBtn" style="padding: 6px 12px; background: #007acc; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">確定</button>
+        </div>
+    </div>
+    
+    <div id="visibility-sim-panel" style="display: none; position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); width: 90%; max-width: 800px; background: rgba(255,255,255,0.95); padding: 15px; border-radius: 8px; z-index: 3000; box-shadow: 0 4px 20px rgba(0,0,0,0.4); border: 2px solid #0077ff; backdrop-filter: blur(4px);">
+        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #ccc; padding-bottom: 8px; margin-bottom: 10px;">
+            <span style="font-weight: bold; font-size: 15px; color: #0077ff;">👁️ 視認シミュレーションモード</span>
+            <button id="btn-exit-sim" style="padding: 5px 15px; background: #ff4444; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">終了</button>
+        </div>
+        <div style="font-size: 13px; color: #333; margin-bottom: 10px;">
+            【操作方法】Cesium画面上の任意の場所（地盤やPLATEAU建物の屋上など）をクリックしてください。<br>そこを視点場（目の高さ1.2m）として、モデル建物へカメラが自動的に向きます。
+        </div>
+        <div id="cross-section-container" style="width: 100%; height: 200px; background: #e9ecef; border: 1px dashed #aaa; border-radius: 4px; display: flex; align-items: center; justify-content: center; color: #6c757d; font-size: 14px; font-weight: bold;">
+            （Step 3: ここに鉛直切断の断面図が描画されます）
+        </div>
+    </div>
+</div>
+
+    <div id="app1-time-slider-container">
+        <div class="slider-ui-inner">
+            <div class="slider-labels-wrapper">
+                <span style="left: 0%;">陰影なし</span>
+                <span style="left: 13.64%;">09:00</span>
+                <span style="left: 40.91%;">12:00</span>
+                <span style="left: 68.18%;">15:00</span>
+                <span style="left: 86.36%;">17:00</span>
+                <span style="left: 100%;">夜間照明</span>
+            </div>
+            <div class="slider-wrapper">
+                <div class="slider-rail-bg"></div>
+                <input type="range" id="app1-time-slider" min="0" max="100" step="0.1" value="0">
+                <div class="slider-ticks" id="app1-slider-ticks"></div>
+            </div>
+        </div>
+        <button id="app1-munsell-btn" class="sim-panel-btn" data-tooltip="🎨 着色モードへ">
+            <span class="led-lamp"></span>🎨
+        </button>
+    </div>
+
+<script type="module" src="/src/main.js"></script>
+
+</body>
+</html>

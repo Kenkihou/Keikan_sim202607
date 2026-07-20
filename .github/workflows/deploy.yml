@@ -1,0 +1,69 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: ["main"] # mainブランチにプッシュされたら実行
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build-and-deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      # 1. メインアプリのビルド
+      - name: Build 01_building-builder
+        run: |
+          cd 01_building-builder
+          npm install
+          npm run build
+
+      # 2. マンセルアプリのビルド
+      - name: Build 02_munsell-simulator
+        run: |
+          cd 02_munsell-simulator
+          npm install
+          npm run build
+
+      # 3. 夜間アプリのビルド
+      - name: Build 03_night-simulator
+        run: |
+          cd 03_night-simulator
+          npm install
+          npm run build
+
+      # 4. 3つのビルド結果(dist)を1つの公開用フォルダ(combined_dist)に合体させる
+      - name: Assemble deployment folder
+        run: |
+          mkdir -p combined_dist
+          cp -r 01_building-builder/dist/* combined_dist/
+          
+          mkdir -p combined_dist/munsell-api
+          cp -r 02_munsell-simulator/dist/* combined_dist/munsell-api/
+          
+          mkdir -p combined_dist/night-api
+          cp -r 03_night-simulator/dist/* combined_dist/night-api/
+
+      # 5. GitHub Pagesへアップロード
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './combined_dist'
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

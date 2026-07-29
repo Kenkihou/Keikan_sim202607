@@ -11,7 +11,10 @@ export function buildNightEnvironment(scene) {
     const riverZ = 13.0;
     const wallAngleDeg = 30.0;
 
-    const roadMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 });
+    // 地盤。純白(反射率1.0)だと画面内で最も明るい大面積が地面になり、白い外壁と同じ明るさで並んでしまう。
+    // 実際の舗装・土は白漆喰の 1/4 程度。ただし「陰影なし」モードでは図面的な読みやすさを優先したいので、
+    // 実際の色はモードごとに ys_main 側から差し替える（そのため roadMat を返す）
+    const roadMat = new THREE.MeshStandardMaterial({ color: 0x8a8a86, roughness: 0.95 });
     
     // --- 2. カスタム護岸マテリアル ---
     const wallMaterial = new THREE.MeshStandardMaterial({ 
@@ -267,35 +270,89 @@ export function buildNightEnvironment(scene) {
         geometry.computeVertexNormals();
     };
 
-    const createSimpleWaterNormal = () => {
-        const canvas = document.createElement('canvas'); canvas.width = 256; canvas.height = 256;
-        const ctx = canvas.getContext('2d'); const imgData = ctx.createImageData(256, 256);
-        for (let y = 0; y < 256; y++) {
-            for (let x = 0; x < 256; x++) {
-                const i = (y * 256 + x) * 4;
-                const nx = (Math.sin(x * 0.4) + Math.cos(y * 0.4)) * 15 + 128;
-                const ny = (Math.cos(x * 0.4) + Math.sin(y * 0.4)) * 15 + 128;
-                imgData.data[i] = Math.max(0, Math.min(255, nx)); imgData.data[i + 1] = Math.max(0, Math.min(255, ny));
-                imgData.data[i + 2] = 255; imgData.data[i + 3] = 255;
+    // 水面法線マップ。
+    // 以前は sin/cos をそのまま並べていたため、波紋を細かくすると格子模様の繰り返しが露見した。
+    // 周期付き格子ノイズを数オクターブ重ね、継ぎ目なく繰り返しつつ規則性の見えない高さ場を作る。
+    const createWaterNormalTexture = () => {
+        const SIZE = 256;
+        const canvas = document.createElement('canvas');
+        canvas.width = SIZE; canvas.height = SIZE;
+        const ctx = canvas.getContext('2d');
+        const imgData = ctx.createImageData(SIZE, SIZE);
+
+        const hash = (x, y, seed) => {
+            const n = Math.sin(x * 127.1 + y * 311.7 + seed * 74.7) * 43758.5453123;
+            return n - Math.floor(n);
+        };
+        const fade = (t) => t * t * (3.0 - 2.0 * t);
+
+        // period で格子点を折り返すので、テクスチャの端が必ず繋がる
+        const noise = (x, y, period, seed) => {
+            const xi = Math.floor(x), yi = Math.floor(y);
+            const u = fade(x - xi), v = fade(y - yi);
+            const x0 = ((xi % period) + period) % period, x1 = (x0 + 1) % period;
+            const y0 = ((yi % period) + period) % period, y1 = (y0 + 1) % period;
+            const top = hash(x0, y0, seed) + (hash(x1, y0, seed) - hash(x0, y0, seed)) * u;
+            const bot = hash(x0, y1, seed) + (hash(x1, y1, seed) - hash(x0, y1, seed)) * u;
+            return top + (bot - top) * v;
+        };
+
+        const octaves = [{ p: 4, a: 1.0 }, { p: 8, a: 0.5 }, { p: 16, a: 0.25 }, { p: 32, a: 0.125 }];
+        const height = new Float32Array(SIZE * SIZE);
+        for (let y = 0; y < SIZE; y++) {
+            for (let x = 0; x < SIZE; x++) {
+                let h = 0;
+                for (const o of octaves) {
+                    h += noise((x / SIZE) * o.p, (y / SIZE) * o.p, o.p, o.p) * o.a;
+                }
+                height[y * SIZE + x] = h;
             }
         }
+
+        // 高さ場の傾きから接空間法線を作る（Water シェーダーは R を x、G を z、B を上として読む）
+        const at = (x, y) => height[(((y % SIZE) + SIZE) % SIZE) * SIZE + (((x % SIZE) + SIZE) % SIZE)];
+        const strength = 2.5;
+        for (let y = 0; y < SIZE; y++) {
+            for (let x = 0; x < SIZE; x++) {
+                const dx = (at(x + 1, y) - at(x - 1, y)) * strength;
+                const dy = (at(x, y + 1) - at(x, y - 1)) * strength;
+                const len = Math.sqrt(dx * dx + dy * dy + 1.0);
+                const i = (y * SIZE + x) * 4;
+                imgData.data[i] = Math.round((-dx / len * 0.5 + 0.5) * 255);
+                imgData.data[i + 1] = Math.round((-dy / len * 0.5 + 0.5) * 255);
+                imgData.data[i + 2] = Math.round((1.0 / len * 0.5 + 0.5) * 255);
+                imgData.data[i + 3] = 255;
+            }
+        }
+
         ctx.putImageData(imgData, 0, 0);
-        const tex = new THREE.CanvasTexture(canvas); tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.RepeatWrapping;
+        const tex = new THREE.CanvasTexture(canvas);
+        tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.RepeatWrapping;
         return tex;
     };
 
     const water = new Water(waterGeometry, {
-        textureWidth: 512, textureHeight: 512,
-        waterNormals: createSimpleWaterNormal(),
+        // 反射は専用のレンダーターゲットに描いたものを貼り付けている。
+        // 512では建物の輪郭が潰れるため、解像度を上げて像を読めるようにする
+        textureWidth: 1024, textureHeight: 1024,
+        waterNormals: createWaterNormalTexture(),
         sunDirection: new THREE.Vector3(15, 25, 12).normalize(), // ※夜間側はライトが動的に回るので初期値のみ
-        sunColor: 0xffffff, waterColor: 0x0a1c15, distortionScale: 1.5,
+        sunColor: 0xffffff, waterColor: 0x0a1c15,
+        // シェーダー内の歪み量は distortionScale * (0.001 + 1/視点距離) で、
+        // 1.5 だと10m先でも画面の7%以上ずれて像が原形を留めない。
+        // 流れの緩い掘割として、映り込みが判別できる範囲まで落とす
+        distortionScale: 0.4,
         fog: scene.fog !== undefined
     });
+
+    // 法線ノイズのスケール。既定の 1.0 では波紋の周期が約100mになり、
+    // 細かいさざ波ではなく大きなうねりとして反射を歪めてしまう
+    water.material.uniforms['size'].value = 20.0;
     water.rotation.x = -Math.PI / 2;
     water.position.set(0, -riverDepth + 0.15, riverZ); 
     scene.add(water);
 
     animateWaterMeshVertices(waterGeometry, 42.0);
 
-    return { water };
+    return { water, roadMat };
 }

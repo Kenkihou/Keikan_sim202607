@@ -1,22 +1,24 @@
-import * as THREE from 'three';
+﻿import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
 
-import { 
-    baseWallMat, baseRoofMat, floorMat, floorMatDay, floorMatFlat, 
-    windowMatDay, windowMatFlat, edgeMaterial, windowMat, updateShojiTexture 
+import {
+    baseWallMat, baseRoofMat, floorMat, floorMatDay, floorMatFlat,
+    windowMatDay, windowMatFlat, edgeMaterial, createWindowMaterial, updateShojiTexture
 } from './ys_material.js';
-import { 
-    initLights, sunLight, moonLight, moonFillLight, ambientLight, 
-    updateNightTint, updateLightColorByTemperature 
+import {
+    initLights, sunLight, moonLight, skyFillLight, ambientLight,
+    updateNightTint, kelvinToColor
 } from './ys_lighting.js';
 import { buildNightEnvironment } from './ys_env_builder.js';
 import { createThreeModeMaterials } from './ys_material_factory.js';
+import { FilmGrainShader } from './ys_post.js';
 
 let currentMode = 1; 
 let needsRender = true;
@@ -26,14 +28,19 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x050510);
 scene.fog = new THREE.FogExp2(0x050510, 0.005);
 
-const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
+// ファークリップは SkyBox の球半径(180)より外側に取る必要がある。
+// 100 のままだと、毎フレーム カメラ位置に置き直される天球が丸ごとクリップされてしまい、
+// 空が一度も描画されない（見えていたのは scene.background の単色）状態だった
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 400);
 camera.position.set(22, 14, 28); 
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFShadowMap; 
+// three r184 の PCFShadowMap は Vogel ディスク5サンプル + ノイズ回転のソフトシャドウで、
+// ぼけ幅は各ライトの shadow.radius で指定する（PCFSoftShadowMap は非推奨になった）
+renderer.shadowMap.type = THREE.PCFShadowMap;
 document.body.appendChild(renderer.domElement);
 
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -58,22 +65,43 @@ if (sharedCameraState) {
 
 // 地盤・ライトの初期化
 initLights(scene);
-const { water } =buildNightEnvironment(scene); 
+const { water, roadMat } = buildNightEnvironment(scene);
+
+// 地盤の色。陰影なし（図面表現）では敷地と道路が判別できる明るさを優先し、
+// 昼夜は実際の舗装・土に近い反射率にする
+const GROUND_COLOR_DIAGRAM = 0xffffff;
+const GROUND_COLOR_LIT = 0x8a8a86;
 
 // 💡 ★追加：マンセル値シミュレーターから空と雲（SkyBox）を完全移植
-function createDynamicSkyBox() {
+// 天球テクスチャは上端が天頂、縦の中央(0.5)が地平線に対応する
+
+// 雲の配置は全時刻で共通にする。時刻ごとに位置が変わると、
+// テクスチャをクロスフェードしたときに雲が二重像になってしまう
+const cloudLayout = [];
+for (let i = 0; i < 26; i++) {
+    cloudLayout.push({
+        x: Math.random() * 2048,
+        // 地平線はテクスチャ中央(512)なので、雲はそれより上に置く
+        y: 120 + Math.random() * 330,
+        // 2048px幅が全周360°に対応するため、半径100pxの雲は視野角で約35°を占めてしまう。
+        // 雲として妥当な大きさまで縮める
+        s: 0.16 + Math.random() * 0.34
+    });
+}
+
+// 時刻ごとの空。グラデーションの色と雲の色だけを差し替えて生成する
+function createSkyTexture(stops, cloudColor) {
     const canvas = document.createElement('canvas');
     canvas.width = 2048; canvas.height = 1024;
     const ctx = canvas.getContext('2d');
+
     const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
-    gradient.addColorStop(0.0, "#2b6fb8"); 
-    gradient.addColorStop(0.4, "#63a4ff"); 
-    gradient.addColorStop(0.6, "#bce6ff"); 
-    gradient.addColorStop(1.0, "#f0f9ff"); 
+    stops.forEach(([pos, color]) => gradient.addColorStop(pos, color));
     ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+
     const drawCloud = (x, y, s) => {
-        ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
+        ctx.fillStyle = cloudColor;
         ctx.beginPath();
         ctx.arc(x, y, 40*s, 0, Math.PI*2);
         ctx.arc(x+50*s, y-20*s, 50*s, 0, Math.PI*2);
@@ -81,26 +109,253 @@ function createDynamicSkyBox() {
         ctx.arc(x+50*s, y+10*s, 30*s, 0, Math.PI*2);
         ctx.fill();
     };
-    for(let i=0; i<15; i++) {
-        const cx = Math.random() * canvas.width;
-        const cy = 250 + Math.random() * 300; 
-        const scale = 0.5 + Math.random() * 1.5;
-        drawCloud(cx, cy, scale);
-    }
+    // 輪郭をぼかす。arc をそのまま塗ると縁が硬く、綿ではなく円の集合に見える
+    ctx.filter = 'blur(7px)';
+    cloudLayout.forEach(c => drawCloud(c.x, c.y, c.s));
+    ctx.filter = 'none';
+
     const texture = new THREE.CanvasTexture(canvas);
-    const skyGeo = new THREE.SphereGeometry(180, 32, 32);
-    // fog: false にすることで、霧でくすまず常に綺麗に反射します
-    const skyMat = new THREE.MeshBasicMaterial({ map: texture, side: THREE.BackSide, fog: false });
-    return new THREE.Mesh(skyGeo, skyMat);
+    // 色情報のテクスチャなので sRGB として読ませる。
+    // 既定の NoColorSpace では sRGB値がリニア値として扱われ、空全体が白っぽく退色する
+    texture.colorSpace = THREE.SRGBColorSpace;
+    return texture;
 }
-const skyBox = createDynamicSkyBox();
+
+// 夜空。真っ黒な単色だと背景が抜けて見えるので、
+// 天頂を暗く落としつつ地平付近を街明かり（スカイグロー）で持ち上げる
+function createNightSkyTexture() {
+    const canvas = document.createElement('canvas');
+    // 昼空より高解像度にする。2048幅だと1テクセルが画面上で約3画素に拡大され、
+    // 星が点ではなく滲んだ塊に見えてしまうため
+    canvas.width = 4096; canvas.height = 2048;
+    const ctx = canvas.getContext('2d');
+
+    const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+    gradient.addColorStop(0.00, "#02040a"); // 天頂
+    gradient.addColorStop(0.30, "#04070f");
+    gradient.addColorStop(0.44, "#0b1120");
+    gradient.addColorStop(0.50, "#1b2036"); // 地平線：市街の照り返しで最も明るい
+    gradient.addColorStop(0.54, "#282234"); // やや紫〜暖色に振れる
+    gradient.addColorStop(0.62, "#11131c");
+    gradient.addColorStop(1.00, "#05060a");
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // 星。地平に近いほど大気で減光するので、天頂側ほど密度と明るさを上げる
+    for (let i = 0; i < 2600; i++) {
+        const x = Math.random() * canvas.width;
+        const y = Math.random() * canvas.height * 0.5;
+        const altitude = 1.0 - (y / (canvas.height * 0.5)); // 0=地平 1=天頂
+        if (Math.random() > altitude * 0.9 + 0.1) continue;
+        const a = (0.08 + Math.random() * 0.34) * altitude;
+        const r = Math.random() < 0.94 ? 0.6 : 1.0;
+        ctx.fillStyle = `rgba(255, 252, 245, ${a.toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    return texture;
+}
+
+// 快晴の南中
+const daySkyTexture = createSkyTexture([
+    [0.0, "#2b6fb8"], [0.4, "#63a4ff"], [0.6, "#bce6ff"], [1.0, "#f0f9ff"]
+], "rgba(255, 255, 255, 0.55)");
+
+// 朝方。太陽高度が低く、大気を通る距離が長いぶん青が浅く白っぽく霞む
+const morningSkyTexture = createSkyTexture([
+    [0.0, "#33619b"], [0.4, "#7fa8cf"], [0.55, "#c9d8e2"], [1.0, "#e4ecf1"]
+], "rgba(246, 248, 252, 0.5)");
+
+// 夕焼け。上空には青を残し、焼ける橙は地平付近に集中させる。
+// 空全体を橙にすると画面が単色になり、かえって夕景に見えない
+const sunsetSkyTexture = createSkyTexture([
+    [0.00, "#12294f"], [0.30, "#2f5a92"], [0.40, "#6b6f9c"],
+    [0.46, "#c07f78"], [0.50, "#f0a468"], [0.54, "#e08a4e"],
+    [0.60, "#9a6244"], [1.00, "#5a4032"]
+], "rgba(255, 178, 132, 0.6)");
+
+const nightSkyTexture = createNightSkyTexture();
+
+// 時刻でテクスチャを切り替えると、スライダーを動かしたときに空が不連続に飛ぶ。
+// 2枚を保持して混ぜられるようにし、朝夕は南中の空との中間として連続的に変化させる
+const skyUniforms = {
+    mapA: { value: daySkyTexture },
+    mapB: { value: daySkyTexture },
+    mixFactor: { value: 0.0 }
+};
+
+// fog: false 相当（霧の計算を持たないので、霧でくすまず常に綺麗に反射します）
+const skyBox = new THREE.Mesh(
+    new THREE.SphereGeometry(180, 48, 32),
+    new THREE.ShaderMaterial({
+        uniforms: skyUniforms,
+        side: THREE.BackSide,
+        vertexShader: /* glsl */`
+            varying vec2 vSkyUv;
+            void main() {
+                vSkyUv = uv;
+                gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+            }
+        `,
+        fragmentShader: /* glsl */`
+            uniform sampler2D mapA;
+            uniform sampler2D mapB;
+            uniform float mixFactor;
+            varying vec2 vSkyUv;
+            void main() {
+                // sRGB指定のテクスチャはGPU側でリニアに復号されて返る。
+                // コンポーザ経由なので、ここではリニアのまま出力してよい
+                gl_FragColor = vec4( mix( texture2D( mapA, vSkyUv ).rgb,
+                                          texture2D( mapB, vSkyUv ).rgb, mixFactor ), 1.0 );
+            }
+        `
+    })
+);
 scene.add(skyBox);
+
+function setSky(texA, texB, mix) {
+    skyUniforms.mapA.value = texA;
+    skyUniforms.mapB.value = texB || texA;
+    skyUniforms.mixFactor.value = mix || 0.0;
+}
+
+// ==========================================
+// IBL（環境マップ）
+// MeshStandardMaterial は環境マップが無いと鏡面反射項がほぼゼロになり、
+// roughness をどう振ってもマットな塗料にしか見えない。
+// 夜空テクスチャをそのまま PMREM に通して環境光源にすることで、
+// 外部HDRIファイルを持たずに、空の明るさの分布を材質へ反映させる。
+// ==========================================
+function buildEnvironmentMap(sourceTexture) {
+    const pmremGenerator = new THREE.PMREMGenerator(renderer);
+    pmremGenerator.compileEquirectangularShader();
+
+    // SphereGeometry のUVは正距円筒なので、複製に equirect のマッピングを指定して渡す
+    // （複製元は SkyBox の map として使い続けるため、mapping を書き換えない）
+    const equirect = sourceTexture.clone();
+    equirect.mapping = THREE.EquirectangularReflectionMapping;
+    equirect.needsUpdate = true;
+
+    const renderTarget = pmremGenerator.fromEquirectangular(equirect);
+
+    equirect.dispose();
+    pmremGenerator.dispose();
+    return renderTarget.texture;
+}
+
+const nightEnvMap = buildEnvironmentMap(nightSkyTexture);
 
 const houseGroup = new THREE.Group();
 scene.add(houseGroup); // スケールはロードするモデル側にかけるため、ここでは設定しません
 
 const windowLights = [];
-const managedMeshes = []; 
+const managedMeshes = [];
+
+// ==========================================
+// 窓ごとの個体差（部屋ごとの明るさ・色温度・点灯/消灯）
+// 全窓が同一マテリアルを共有していると、明るさも色も完全に揃ってしまい
+// 実在の建物に見えなくなるため、窓を「部屋」単位でまとめて振れ幅を与える。
+// ==========================================
+const windowUnits = [];
+
+const ROOM_CELL_H = 2.5;  // 水平方向にこの距離内の窓は同じ部屋の窓とみなす(m)
+const ROOM_CELL_V = 3.0;  // 階高(m)
+
+function hashString(str) {
+    let h = 2166136261;
+    for (let i = 0; i < str.length; i++) {
+        h ^= str.charCodeAt(i);
+        h = Math.imul(h, 16777619);
+    }
+    return h >>> 0;
+}
+
+// 位置から決まる種を使うので、リロードしても毎回同じ部屋が同じ明るさで点灯する
+function createWindowVariation(worldPos, isExterior) {
+    const key = `${Math.round(worldPos.x / ROOM_CELL_H)}_${Math.floor(worldPos.y / ROOM_CELL_V)}_${Math.round(worldPos.z / ROOM_CELL_H)}`;
+    let s = hashString(key);
+    const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
+
+    if (isExterior) {
+        // 外灯は常時点灯。個体差もごく控えめにする
+        return { isOn: true, tempOffset: (rnd() * 2 - 1) * 120, intensityFactor: 0.9 + rnd() * 0.2 };
+    }
+    return {
+        isOn: rnd() > 0.25,                  // 約1/4の部屋は消灯（全窓点灯は非現実的）
+        tempOffset: (rnd() * 2 - 1) * 350,   // 部屋ごとに ±350K
+        intensityFactor: 0.65 + rnd() * 0.7  // 部屋ごとに 0.65〜1.35倍
+    };
+}
+
+// 開口の面積。大きい窓ほど光溜まりが目立つので、影を落とすライトの選定に使う
+function approxWindowArea(mesh) {
+    const size = new THREE.Box3().setFromObject(mesh).getSize(new THREE.Vector3());
+    const dims = [size.x, size.y, size.z].sort((a, b) => b - a);
+    return dims[0] * dims[1];
+}
+
+// シャドウマップはテクスチャユニットを消費するため、影を落とす窓の本数には上限を設ける。
+// 面積の大きい（＝光の切り出しが目立つ）点灯中の窓から順に割り当てる。
+function assignWindowShadows(count) {
+    const casters = windowUnits
+        .filter(u => u.light && u.isOn)
+        .sort((a, b) => b.area - a.area);
+
+    casters.forEach((unit, i) => {
+        const shouldCast = i < count;
+        if (unit.light.castShadow === shouldCast) return;
+
+        unit.light.castShadow = shouldCast;
+        if (shouldCast) {
+            unit.light.shadow.mapSize.set(1024, 1024);
+            unit.light.shadow.camera.near = 0.1;
+            unit.light.shadow.camera.far = unit.light.distance;
+            unit.light.shadow.bias = -0.002;
+            unit.light.shadow.normalBias = 0.03;
+            unit.light.shadow.focus = 1.0;
+            // 窓は面光源に近く、遠ざかるほど影が滲むので、月光より大きくぼかす
+            unit.light.shadow.radius = 4.0;
+        } else if (unit.light.shadow.map) {
+            unit.light.shadow.map.dispose();
+            unit.light.shadow.map = null;
+        }
+    });
+    window.requestRender();
+}
+
+// 月明かりの強度・色を水面にも反映する（Water は光源を参照しないので手で渡す必要がある）
+function refreshWaterMoonlight() {
+    if (currentMode !== 3 || !water) return;
+    water.material.uniforms.sunDirection.value.copy(moonLight.position).normalize();
+    water.material.uniforms.sunColor.value
+        .copy(moonLight.color)
+        .multiplyScalar(params.moonLightIntensity);
+}
+
+// 色温度・発光強度・漏れ光を、部屋ごとの個体差を掛けたうえで全窓に反映する
+const _windowColor = new THREE.Color();
+function refreshNightWindows() {
+    if (currentMode !== 3) return;
+    windowUnits.forEach(unit => {
+        kelvinToColor(params.colorTemperature + unit.tempOffset, _windowColor);
+        unit.material.emissive.copy(_windowColor);
+        unit.material.emissiveIntensity = unit.isOn
+            ? params.windowEmissiveIntensity * unit.intensityFactor
+            : 0.0;
+
+        if (unit.light) {
+            unit.light.color.copy(_windowColor);
+            unit.light.intensity = unit.isOn
+                ? params.spillLightIntensity * unit.intensityFactor * unit.lightScale
+                : 0.0;
+            unit.light.visible = unit.isOn;
+        }
+    });
+}
 
 // 💡 ★追加1：水面判定用のRaycasterと監視リスト
 const waterMeshes = [];
@@ -148,6 +403,9 @@ gltfLoader.load(modelUrl, (gltf) => {
     
     houseGroup.add(importedScene);
 
+    // 門柱灯などの外構照明を「建物から見て外向き」に向けるための基準点
+    const modelCenter = new THREE.Box3().setFromObject(importedScene).getCenter(new THREE.Vector3());
+
     importedScene.traverse((child) => {
         if (child.isLineSegments) {
             child.castShadow = false; child.receiveShadow = false;
@@ -175,24 +433,79 @@ gltfLoader.load(modelUrl, (gltf) => {
                 matName === 'windowglass' ||
                 matName === 'exteria_poal_light') {
                 
-                child.userData.type = 'window'; 
-                nMat = windowMat; dMat = windowMatDay; fMat = windowMatFlat;
-                
-                // ▼▼▼ 修正: ポールライトの場合は「漏れ出す光(スポットライト)」を生成しない ▼▼▼
-                if (matName !== 'exteria_poal_light') {
-                    child.updateMatrixWorld();
-                    const worldPos = new THREE.Vector3(); child.getWorldPosition(worldPos);
-                    const normal = new THREE.Vector3(0, 0, 1).transformDirection(child.matrixWorld).normalize();
+                child.userData.type = 'window';
 
+                // 障子・ガラスに不透明な影を落とさせない。
+                // 発光面そのものが、直前に置く漏れ光スポットライトを遮ってしまうのを防ぐ意味もある
+                child.castShadow = false;
+
+                // 窓ごとに専用マテリアルを持たせ、部屋単位で明るさと色温度を変えられるようにする
+                const nightWindowMat = createWindowMaterial();
+                nMat = nightWindowMat; dMat = windowMatDay; fMat = windowMatFlat;
+
+                child.updateMatrixWorld();
+                const worldPos = new THREE.Vector3(); child.getWorldPosition(worldPos);
+
+                const isExterior = (matName === 'exteria_poal_light');
+                const unit = Object.assign(
+                    { mesh: child, material: nightWindowMat, light: null, area: 0, lightScale: 1.0, isExterior },
+                    createWindowVariation(worldPos, isExterior)
+                );
+
+                // 消灯している部屋の窓は、真っ黒な穴に見えないよう僅かに素地の色を残す
+                if (!unit.isOn) nightWindowMat.color.setHex(0x0b0d14);
+
+                // 発光面が向いている方向。窓も門柱灯も、この向きに光を放つ
+                const normal = new THREE.Vector3(0, 0, 1).transformDirection(child.matrixWorld).normalize();
+
+                if (isExterior) {
+                    // 外灯は発光するだけで周囲を一切照らしていなかった。
+                    // 門柱灯は柱の前面に取り付いた照明なので、真下ではなく面の向く方向へ光を出す
+                    // （真下に向けると柱を中心に均等に広がり、裏側まで照らしてしまう）。
+                    // ただし法線の符号はモデル依存なので、建物中心から見て外向き＝道路側に揃える
+                    const outward = new THREE.Vector3(worldPos.x - modelCenter.x, 0, worldPos.z - modelCenter.z);
+                    if (outward.lengthSq() < 1e-6) outward.set(0, 0, 1);
+                    outward.normalize();
+
+                    const poleDir = new THREE.Vector3(normal.x, 0, normal.z);
+                    if (poleDir.lengthSq() < 1e-6) poleDir.copy(outward);
+                    else poleDir.normalize();
+                    if (poleDir.dot(outward) < 0) poleDir.negate();
+
+                    const poleLight = new THREE.SpotLight(0xffffff, 3.0, 8, Math.PI / 2.8, 0.7, 2);
+                    poleLight.position.copy(worldPos).add(poleDir.clone().multiplyScalar(0.02));
+
+                    // 門灯は足元のアプローチを照らすものなので、窓より強く下向きに振る
+                    const poleAim = poleDir.clone().multiplyScalar(2.0).add(new THREE.Vector3(0, -2.0, 0));
+                    const poleTarget = new THREE.Object3D();
+                    poleTarget.position.copy(worldPos).add(poleAim);
+
+                    scene.add(poleTarget); poleLight.target = poleTarget; scene.add(poleLight);
+                    windowLights.push(poleLight);
+
+                    unit.light = poleLight;
+                    unit.area = approxWindowArea(child);
+                    // 漏れ光のスライダーを共用するが、外灯は窓ほど強くないので控えめに掛ける
+                    unit.lightScale = 0.5;
+                } else {
                     const spLight = new THREE.SpotLight(0xffffff, 40.0, 15, Math.PI / 3, 0.8, 2);
-                    spLight.position.copy(worldPos).add(normal.clone().multiplyScalar(0.01));
-                    const targetObj = new THREE.Object3D(); targetObj.position.copy(worldPos).add(normal.clone().multiplyScalar(5));
-                    
-                    scene.add(targetObj); spLight.target = targetObj; scene.add(spLight); 
+                    // 光源を室内側に少し引き込む。こうすると開口まわりの壁が絞りとして働き、
+                    // 円錐がそのまま漏れるのではなく、窓の形に切り出された光が外に落ちる
+                    spLight.position.copy(worldPos).add(normal.clone().multiplyScalar(-0.25));
+                    // 実際の窓は半球状に光を放つ。真正面に向けたままだと足元に光が届かないので、
+                    // 円錐をやや下向きに傾け、窓下の地面まで照らすようにする
+                    const aim = normal.clone().multiplyScalar(5).add(new THREE.Vector3(0, -2.5, 0));
+                    const targetObj = new THREE.Object3D(); targetObj.position.copy(worldPos).add(aim);
+
+                    scene.add(targetObj); spLight.target = targetObj; scene.add(spLight);
                     windowLights.push(spLight);
+
+                    unit.light = spLight;
+                    unit.area = approxWindowArea(child);
                 }
-                // ▲▲▲ 修正ここまで ▲▲▲
-                
+
+                windowUnits.push(unit);
+
             } else {
                 // 通常パーツ（外壁・屋根・サッシなど）：ベース色を引き継いで3モード用を生成
                 const currentMat = Array.isArray(child.material) ? child.material[0] : child.material;
@@ -216,6 +529,9 @@ gltfLoader.load(modelUrl, (gltf) => {
             managedMeshes.push({ mesh: child, nightMat: nMat, dayMat: dMat, flatMat: fMat });
         }
     });
+
+    // 窓の光が窓枠の形に切り出されて地面や前庭に落ちるよう、影を落とすライトを割り当てる
+    assignWindowShadows(params.windowShadowCount);
 
     // 💡 デフォルトモデル読み込み時はカメラの注視点をハウスの高さ(2.7m)に自動フィット
     if (useDefaultModel) {
@@ -243,19 +559,22 @@ function setMaterialMode(mode) {
         if (item.mesh.userData.edges) item.mesh.userData.edges.visible = showEdges;
     });
     
-    // 💡 ★変更：トーンマッピングを常時 ACESFilmic に統一
-    if (renderer.toneMapping !== THREE.ACESFilmicToneMapping) {
-        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    // 💡 ★変更：トーンマッピングを常時 AgX に統一。
+    // ACESFilmic は強い光源をすぐ純白に張り付かせてしまうが、AgX は白飛びさせずに
+    // 自然に脱彩度させるため、夜間の窓明かりや外灯との相性が良い
+    if (renderer.toneMapping !== THREE.AgXToneMapping) {
+        renderer.toneMapping = THREE.AgXToneMapping;
         scene.traverse(c => { if (c.isMesh && c.material) c.material.needsUpdate = true; });
     }
 
     // 💡 ★追加：露出（画面の明るさ）をモードごとに微調整
+    // AgX は ACESFilmic より中間調を暗く落とすので、昼側は露出を上げて従来の明るさに戻す
     if (mode === 2) {
-        renderer.toneMappingExposure = 1.25; // 昼間は露出を上げてパキッと明るく晴れ渡らせる
+        renderer.toneMappingExposure = 1.85; // 昼間は露出を上げてパキッと明るく晴れ渡らせる
     } else if (mode === 3) {
         renderer.toneMappingExposure = 1.0;  // 夜間は電飾やブルームが引き立つ適正露出にする
     } else {
-        renderer.toneMappingExposure = 1.0;
+        renderer.toneMappingExposure = 1.55; // 陰影なしは図面表現なので、沈ませず明るく保つ
     }
 
     window.requestRender();
@@ -273,14 +592,23 @@ const renderTarget = new THREE.WebGLRenderTarget(window.innerWidth, window.inner
 // ポストプロセス
 const renderPass = new RenderPass(scene, camera);
 const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.3, 0.0, 1.0);
+
+// グレインとディザは表示色空間で掛けるものなので、OutputPass（トーンマッピング＋sRGB変換）の後段に置く
+const grainPass = new ShaderPass(FilmGrainShader);
+
 const composer = new EffectComposer(renderer, renderTarget);
 composer.addPass(renderPass); composer.addPass(bloomPass); composer.addPass(new OutputPass());
+composer.addPass(grainPass);
 
 // GUI設定
 const gui = new GUI({ title: '照明とブルームの調整' });
 const dayFolder = gui.addFolder('昼間明かりの設定');
-const dayParams = { noonAmbient: 0.3, noonSun: 0.2, falloffCurve: 1.0 }; 
-dayFolder.add(dayParams, 'noonAmbient', 0.1, 2.0, 0.05).name('南中時の環境光').onChange(() => triggerDayUpdate());
+// 従来は 環境光0.3 / 太陽光0.2 で、一様な回り込み光の方が太陽より強く、
+// 陰影のコントラストが 1.7:1 程度しか付かないため日中がぼんやりしていた。
+// 実際の快晴時は直射光が天空光の数倍あるので、その比率に寄せる
+// 快晴時の水平面照度は 直射:天空 ≒ 4:1。この比率に寄せる
+const dayParams = { noonAmbient: 0.12, noonSun: 1.0, falloffCurve: 1.0 };
+dayFolder.add(dayParams, 'noonAmbient', 0.0, 0.6, 0.01).name('南中時の環境光').onChange(() => triggerDayUpdate());
 dayFolder.add(dayParams, 'noonSun', 0.1, 3.0, 0.05).name('南中時の太陽光').onChange(() => triggerDayUpdate());
 dayFolder.add(dayParams, 'falloffCurve', 1.0, 5.0, 0.1).name('朝夕の減衰カーブ').onChange(() => triggerDayUpdate());
 
@@ -293,16 +621,27 @@ const presets = {
     '朧げ': { colorTemperature: 3000, windowEmissiveIntensity: 0.6, spillLightIntensity: 3.0, moonLightIntensity: 0.5, moonLightBlueness: 0.4, bloomStrength: 1.0, bloomRadius: 0.0, gradientStrength: 1.0 },
     '煌々': { colorTemperature: 2500, windowEmissiveIntensity: 1.5, spillLightIntensity: 3.0, moonLightIntensity: 0.5, moonLightBlueness: 0.4, bloomStrength: 0.15, bloomRadius: 0.942, gradientStrength: 0.0 }
 };
-const params = Object.assign({}, presets['朧げ']);
+// 以下はプリセットで上書きしない、画づくり全体に効く設定
+const params = Object.assign({}, presets['朧げ'], {
+    bloomThreshold: 1.0,     // この輝度(リニアHDR)を超えた部分だけが滲む
+    filmGrain: 0.035,        // フィルムグレインの量
+    windowShadowCount: 6,    // 影を落とす窓の本数
+    envIntensity: 2.0        // 夜空を光源とした環境反射の強さ
+});
 
-const ctController = nightFolder.add(params, 'colorTemperature', 2500, 6500, 50).name('色温度 (K)').onChange(v => { updateLightColorByTemperature(v, currentMode, windowLights); window.requestRender(); });
-const weController = nightFolder.add(params, 'windowEmissiveIntensity', 0, 3).name('窓ガラスの発光強度').onChange(v => { if (currentMode === 3) windowMat.emissiveIntensity = v; window.requestRender(); });
-const slController = nightFolder.add(params, 'spillLightIntensity', 0, 10).name('漏れ出す光の強度').onChange(v => { if (currentMode === 3) windowLights.forEach(l => l.intensity = v); window.requestRender(); });
-const mlController = nightFolder.add(params, 'moonLightIntensity', 0, 1).name('月明かりの強度').onChange(v => { if (currentMode === 3) moonLight.intensity = v; window.requestRender(); });
-const mbController = nightFolder.add(params, 'moonLightBlueness', 0, 1).name('月明かりの青味').onChange(v => { updateNightTint(v, currentMode); window.requestRender(); });
+const ctController = nightFolder.add(params, 'colorTemperature', 2500, 6500, 50).name('色温度 (K)').onChange(() => { refreshNightWindows(); window.requestRender(); });
+const weController = nightFolder.add(params, 'windowEmissiveIntensity', 0, 5).name('窓ガラスの発光強度').onChange(() => { refreshNightWindows(); window.requestRender(); });
+const slController = nightFolder.add(params, 'spillLightIntensity', 0, 10).name('漏れ出す光の強度').onChange(() => { refreshNightWindows(); window.requestRender(); });
+const mlController = nightFolder.add(params, 'moonLightIntensity', 0, 1).name('月明かりの強度').onChange(v => { if (currentMode === 3) moonLight.intensity = v; refreshWaterMoonlight(); window.requestRender(); });
+const mbController = nightFolder.add(params, 'moonLightBlueness', 0, 1).name('月明かりの青味').onChange(v => { updateNightTint(v, currentMode); refreshWaterMoonlight(); window.requestRender(); });
 const bsController = nightFolder.add(params, 'bloomStrength', 0, 1).name('ブルームの強さ').onChange(v => { if (currentMode === 3) bloomPass.strength = v * 0.3; window.requestRender(); });
 const brController = nightFolder.add(params, 'bloomRadius', 0, 1).name('ブルームの半径').onChange(v => { bloomPass.radius = v; window.requestRender(); });
 const gsController = nightFolder.add(params, 'gradientStrength', 0.0, 1.0).name('光の不均一さ').onChange(v => { if (currentMode === 3) updateShojiTexture(v); window.requestRender(); });
+
+nightFolder.add(params, 'bloomThreshold', 0.0, 3.0, 0.05).name('ブルームのしきい値').onChange(v => { bloomPass.threshold = v; window.requestRender(); });
+nightFolder.add(params, 'filmGrain', 0.0, 0.15, 0.005).name('フィルムグレイン').onChange(v => { if (currentMode === 3) grainPass.uniforms.uGrain.value = v; window.requestRender(); });
+nightFolder.add(params, 'windowShadowCount', 0, 12, 1).name('窓の影の本数（重い）').onChange(v => assignWindowShadows(v));
+nightFolder.add(params, 'envIntensity', 0.0, 3.0, 0.05).name('環境反射の強さ').onChange(v => { if (currentMode === 3) scene.environmentIntensity = v; window.requestRender(); });
 
 const presetState = { '朧げの照明': true, '煌々の照明': false };
 function applyPreset(presetName) {
@@ -327,7 +666,9 @@ export function updateSceneByTime(val) {
     sunLight.castShadow = false;
     if (val < 8.5) {
         currentMode = 1; gui.hide(); setMaterialMode(1); bloomPass.strength = 0;
-        moonLight.intensity = 0; moonFillLight.intensity = 0; sunLight.intensity = 0; windowMat.emissiveIntensity = 0;
+        grainPass.uniforms.uGrain.value = 0; // 陰影なしは図面的な表現なので粒状感は載せない
+        moonLight.intensity = 0; skyFillLight.intensity = 0; sunLight.intensity = 0;
+        moonLight.visible = false; // 影を落とさない＝シャドウマップの描画自体を省く
         // ▼▼▼ 修正: intensity=0 に加え、ライト自体を非表示(false)にする ▼▼▼
         windowLights.forEach(l => {
             l.intensity = 0;
@@ -336,7 +677,9 @@ export function updateSceneByTime(val) {
         ambientLight.color.setHex(0xffffff); ambientLight.intensity = 1.0;
         scene.background.setHex(0x87ceeb); scene.fog.color.setHex(0x87ceeb);
         scene.fog.density = 0.0; // 💡 追加：陰影なしモードでは霧を完全にオフにする
-        skyBox.visible = true; skyBox.material.color.setHex(0xffffff);
+        skyBox.visible = true; setSky(daySkyTexture);
+        roadMat.color.setHex(GROUND_COLOR_DIAGRAM);
+        scene.environment = null; // 図面表現なので環境反射は載せない
         // 💡 修正：マンセル値シミュレーターと同じデフォルト値
         if (water) {
             water.material.uniforms.sunDirection.value.set(15, 25, 12).normalize();
@@ -346,29 +689,49 @@ export function updateSceneByTime(val) {
         }
     } else if (val > 17.5) {
         currentMode = 3; gui.show(); dayFolder.hide(); nightFolder.show(); setMaterialMode(3);
-        bloomPass.strength = params.bloomStrength; sunLight.intensity = 0; moonLight.intensity = params.moonLightIntensity; moonFillLight.intensity = 0.2; 
-        // ▼▼▼ 修正: ライトを再表示(true)にする ▼▼▼
-        windowLights.forEach(l => {
-            l.intensity = params.spillLightIntensity;
-            l.visible = true;
-        });        
-        windowLights.forEach(l => l.intensity = params.spillLightIntensity); windowMat.emissiveIntensity = params.windowEmissiveIntensity;
+        bloomPass.strength = params.bloomStrength; bloomPass.threshold = params.bloomThreshold;
+        grainPass.uniforms.uGrain.value = params.filmGrain;
+        sunLight.intensity = 0; moonLight.intensity = params.moonLightIntensity;
+        // 空からの回り込みは IBL が受け持つようになったので、半球光は補助程度まで落とす
+        // （両方を効かせると空の光を二重に数えることになる）
+        skyFillLight.intensity = 0.03;
+        // 夜間分岐では環境光の強さが一度も指定されておらず、直前に通った昼／陰影なしモードの値
+        // （9時経由なら約0.47）を引き継いでいた。経路で夜の明るさが変わるうえ、
+        // 全方向から一様に当たるこの光が月光の影を塗り潰していたので、明示的に固定する。
+        // IBL では真下を向いた面（軒裏など）が完全に黒く潰れるため、その底上げとして僅かに残す
+        ambientLight.intensity = 0.06;
+        moonLight.visible = true; // 月光の影を有効にする
         updateNightTint(params.moonLightBlueness, currentMode);
-        scene.background.setHex(0x050510); scene.fog.color.setHex(0x050510);
+        scene.background.setHex(0x02040a);
+        // 遠景が真っ黒に沈むと空と地面の境が消えるので、霧の色は夜空の地平付近に合わせる
+        scene.fog.color.setHex(0x131725);
         scene.fog.density = 0.005; // 💡 追加：夜間は元の濃さの霧に戻して雰囲気を出す
-        skyBox.visible = false;
-        updateShojiTexture(params.gradientStrength); updateLightColorByTemperature(params.colorTemperature, currentMode, windowLights);
+        skyBox.visible = true; setSky(nightSkyTexture);
+        roadMat.color.setHex(GROUND_COLOR_LIT);
+        // 夜空を環境光源にする。空の明るさの分布が材質の鏡面反射に乗る
+        scene.environment = nightEnvMap;
+        scene.environmentIntensity = params.envIntensity;
+        updateShojiTexture(params.gradientStrength);
+        // 部屋ごとの色温度・明るさ・点灯状態をここで一括反映する（消灯窓のライトはここで非表示になる）
+        refreshNightWindows();
 
         // 💡 修正：月光のブーストや透過を廃止
         if (water) {
             water.material.uniforms.sunDirection.value.copy(moonLight.position).normalize();
-            water.material.uniforms.sunColor.value.copy(moonLight.color);
+            // Water シェーダーは光源の強度を持たず色だけを受け取るため、色をそのまま渡すと
+            // 月光でも真昼と同じ強さの拡散光が乗り、水面が明るい青一色になって映り込みが埋もれる。
+            // 月明かりの強度を色に畳み込んで、反射が読める暗さまで落とす
+            water.material.uniforms.sunColor.value
+                .copy(moonLight.color)
+                .multiplyScalar(params.moonLightIntensity);
             water.material.uniforms.waterColor.value.setHex(0x0a1c15); 
             if (water.material.uniforms.alpha) water.material.uniforms.alpha.value = 1.0;
         }
     } else {
         currentMode = 2; gui.show(); nightFolder.hide(); dayFolder.show(); setMaterialMode(2); bloomPass.strength = 0;
-        moonLight.intensity = 0; moonFillLight.intensity = 0; windowMat.emissiveIntensity = 0; windowLights.forEach(l => l.intensity = 0);
+        grainPass.uniforms.uGrain.value = 0; // 粒状感は夜景のみに掛ける
+        moonLight.intensity = 0; // 半球光(skyFillLight)は昼の空の回り込みとして下で設定する
+        moonLight.visible = false;
         // ▼▼▼ 修正: intensity=0 に加え、ライト自体を非表示(false)にする ▼▼▼
         windowLights.forEach(l => {
             l.intensity = 0;
@@ -387,21 +750,51 @@ export function updateSceneByTime(val) {
         sunLight.color.setHex(0xffffff).lerp(new THREE.Color(0xff986a), sunsetFactor);
         windowMatDay.color.setHex(0xffffff).lerp(new THREE.Color(0xffdcb8), sunsetFactor);
 
-        let currentSkyColor = new THREE.Color(0x87ceeb);
-        if (morningFactor > 0) currentSkyColor.lerp(new THREE.Color(0x4a7294), morningFactor);
-        else if (sunsetFactor > 0) currentSkyColor.lerp(new THREE.Color(0xb7b1ae), sunsetFactor);
+        // 空そのものを時刻に追従させる。
+        // SkyBox を描画するようにしたことで、scene.background の色は天球に隠れて見えなくなり、
+        // 朝夕の空色の変化がどこにも出ていなかった
+        skyBox.visible = true;
+        if (sunsetFactor > 0) setSky(daySkyTexture, sunsetSkyTexture, sunsetFactor);
+        else setSky(daySkyTexture, morningSkyTexture, morningFactor);
 
-        scene.background.copy(currentSkyColor); scene.fog.color.copy(currentSkyColor);
-        scene.fog.density = 0.0;
-        ambientLight.color.setHex(0xffffff).lerp(new THREE.Color(0xffe3dc), sunsetFactor);
+        // 空を代表する色。背景と霧をこれに合わせる。
+        // 彩度を上げすぎると遠景まで単色のオレンジで覆われてしまうので、霞んだ色味に留める
+        const currentSkyColor = new THREE.Color(0x87ceeb);
+        if (morningFactor > 0) currentSkyColor.lerp(new THREE.Color(0xb9cbd8), morningFactor);
+        else if (sunsetFactor > 0) currentSkyColor.lerp(new THREE.Color(0xd9a583), sunsetFactor);
+        scene.background.copy(currentSkyColor);
 
-        const maxSunYInWinter = Math.sin((90 - LATITUDE - 23.44) * Math.PI / 180); 
+        // 夕方は大気の光路が長くなり、遠景が薄く霞む。快晴の南中では霧を掛けない
+        scene.fog.color.copy(currentSkyColor);
+        scene.fog.density = 0.0016 * sunsetFactor;
+
+        const maxSunYInWinter = Math.sin((90 - LATITUDE - 23.44) * Math.PI / 180);
         const contrastCurve = Math.pow(Math.max(0, Math.min(1.0, Math.sin(sunPos.altitude) / maxSunYInWinter)), dayParams.falloffCurve);
 
-        ambientLight.intensity = Math.PI * (0.15 + (dayParams.noonAmbient - 0.15) * contrastCurve); 
+        // 回り込み光を「全方向から一様」な環境光から半球光へ移す。
+        // 一様光は陰影を平坦に均してしまい、これが日中のぼんやりした印象の一因になっていた
+        const fillLevel = Math.PI * dayParams.noonAmbient * THREE.MathUtils.lerp(0.5, 1.0, contrastCurve);
+
+        // フィル光は「太陽と反対側の空」の色。夕方でも天頂側には青が残るので、
+        // ここまで暖色に振ると直射光との色対比が消え、画面全体が単色のオレンジになる。
+        // 夕景は「暖色のハイライト／寒色の影」の対比で成立する
+        const fillColor = new THREE.Color(0x87ceeb);
+        if (morningFactor > 0) fillColor.lerp(new THREE.Color(0xb9cbd8), morningFactor);
+        else if (sunsetFactor > 0) fillColor.lerp(new THREE.Color(0x6f83b2), sunsetFactor);
+
+        skyFillLight.color.copy(fillColor);
+        // 地面からの照り返しは、夕方は暖色寄りになる
+        skyFillLight.groundColor.setHex(0x6b665e).lerp(new THREE.Color(0x8a6a4e), sunsetFactor);
+        skyFillLight.intensity = fillLevel;
+
+        // 環境光は、下を向いた面（軒裏など）が黒く潰れないための底上げに留める
+        ambientLight.color.setHex(0xffffff).lerp(new THREE.Color(0xc9d2e4), sunsetFactor);
+        ambientLight.intensity = fillLevel * 0.25;
+
         sunLight.intensity = Math.PI * (dayParams.noonSun * THREE.MathUtils.lerp(contrastCurve, 0.35, sunsetFactor));
         sunLight.castShadow = true;
-        skyBox.visible = true;
+        roadMat.color.setHex(GROUND_COLOR_LIT);
+        scene.environment = null; // 昼間は今回の対象外（従来の見た目を維持する）
 
         // 💡 修正：太陽のブーストや透過を廃止し、自然な鏡面反射を取り戻す
         if (water) {
@@ -487,6 +880,9 @@ function animate() {
     }
 
     if (needsRender || initialRenderFrames > 0) {
+        // 描画するフレームだけ粒を打ち直す。静止中は粒が固定されるので、
+        // 画面の汚れのようには見えず、カメラ操作中だけ自然にざらつく
+        grainPass.uniforms.uTime.value = performance.now() * 0.001;
         composer.render(); needsRender = false;
         if (initialRenderFrames > 0) initialRenderFrames--;
     }

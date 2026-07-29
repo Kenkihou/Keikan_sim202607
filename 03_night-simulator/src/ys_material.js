@@ -39,10 +39,20 @@ export function updateShojiTexture(strength) {
     shojiTexture.needsUpdate = true;
 }
 
+// 夜間の窓マテリアルの雛形。
+// 実際の描画には窓ごとにこれを複製したものを使い、部屋ごとに明るさと色温度を変える。
+// roughness 0.9 は塗装面の値で、ガラスとしては粗すぎた。
+// 環境マップ(IBL)を入れたことで、粗さを落とすと夜空の映り込みが乗るようになる。
+// 消灯している窓が「真っ黒な穴」に見えなくなるのもこの効果による
 export const windowMat = new THREE.MeshStandardMaterial({
     color: 0x000000, emissiveIntensity: 0.6, emissiveMap: shojiTexture,
-    roughness: 0.9, metalness: 0.1
+    roughness: 0.25, metalness: 0.1
 });
+
+// 窓1枚ぶんの夜間マテリアルを生成する（emissiveMap は複製元と同じ障子テクスチャを共有）
+export function createWindowMaterial() {
+    return windowMat.clone();
+}
 
 // ベース用マテリアルの作成
 export const baseWallMat = new THREE.MeshBasicMaterial({ color: 0xe8e8e8, side: THREE.DoubleSide });

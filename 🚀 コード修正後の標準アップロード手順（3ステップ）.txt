@@ -1,0 +1,56 @@
+🚀 コード修正後の標準アップロード手順（3ステップ）
+VS Code の下部ターミナル（カレントディレクトリが MY-ARCH-WORKSPACE になっている状態）で、順番に実行します。
+
+1. 変更したファイルを記録対象に追加
+Bash
+git add .
+ポイント: 末尾の .（ドット）は「作業スペース内のすべての変更を含める」という意味です。
+
+2. 変更内容にメッセージを添えて記録（コミット）
+Bash
+git commit -m "ここに修正内容のメモを書く"
+メッセージの例:
+
+git commit -m "Fix: 03のGLB読み込みパス修正"
+
+git commit -m "Update: 建物のカラーパレットを追加"
+
+git commit -m "Refactor: UIデザインの微調整"
+
+3. GitHubへアップロード（プッシュ）
+Bash
+git push
+実行後: プッシュされると、GitHub Actions が裏で自動起動し、約1〜2分で3つのアプリがビルド・合体されて新しいサイトに更新されます。
+
+💡 もしエラーが出たときの対処コマンド
+A. 変更内容をプッシュしようとして「rejected (拒否)」と出た場合
+GitHub上の自動コミットなどと手元の履歴に差分があるときに出ます。
+
+Bash
+git pull origin main --rebase
+git push
+※それでもダメで、完全に手元のコードを正として上書きしたい場合は：
+
+Bash
+git push origin main --force
+B. 変更を取り消して、最後のコミット状態に戻したい場合
+作業を途中でやり直したいときは以下で手元の変更をリセットできます。
+
+Bash
+git reset --hard HEAD
+🛠️ 今回構築した自動連携のポイント（おさらい）
+ローカル開発中 (npm run dev):
+
+各プロジェクトの vite.config.js の条件分岐により、base が /munsell-api/ や /night-api/ に設定され、01からのプロキシ経由で快適に動きます。
+
+GitHubデプロイ時 (npm run build):
+
+.github/workflows/deploy.yml（Node 22環境）が自動で走り、base: './' でビルドされた各 dist 成果物が combined_dist 直下に合体されて公開されます。
+
+パスの統一ルール:
+
+サブアプリのHTMLエントリーポイントは index.html に統一し、01の main.js からは ./munsell-api/${urlParam} や ./night-api/${urlParam} で呼び出すことで、開発・本番ともにパスを一切書き換えずに永続的に同期できます。
+
+資産（GLBファイル等）の指定には ${import.meta.env.BASE_URL}filename.ext を使うことで、どの環境でも相対パスが自動解決されます。
+
+これでもう手動でのファイル書き換えやパス変更に悩まされることなく、開発に集中していただけます。また何か機能拡張や調整で不明な点が出てきたら、いつでも気軽に声をかけてください！

@@ -1,17 +1,15 @@
 // main.js
 import * as THREE from 'three';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
-import { initCesium, placeModelOnEarth, manualSnapToGround, focusOnModel } from './cesiumApp.js';
-import { openMapModal } from './mapApp.js'; 
 import { ModelingEngine } from './modelingEngine.js';
 import { AppState } from './appState.js';
 import { UIController } from './uiController.js';
 import { InteractionHandler } from './interactionHandler.js';
 import { ViewManager } from './viewManager.js';
 import { AppInit } from './init.js';
-import { VisibilitySimulator } from './visibilitySimulator.js';
 import { TutorialManager } from './tutorialManager.js';
 import { setOnTextureAssetsReady, SUGI_BOARD_WIDTH_M, SUGI_BOARD_HEIGHT_M } from './materialTextureFactory.js';
+import { setupEarthPrefetchTriggers } from './earthPrefetch.js';
 
 // --- UI・操作状態（画面固有のもの） ---
 let interactiveMeshes = [];
@@ -311,14 +309,27 @@ window.TutorialManager = TutorialManager;
 
 // (※不要になった裏側でのクリック連動処理はすべて綺麗に削除しました)
 
-// コントロール・リサイズイベントのバインド
-controls.addEventListener('change', () => {
-    // 全画面描画に伴い、アスペクト比の計算を画面全体の幅ベースに変更します
+// ==========================================
+// ★修正：画面サイズの追従
+//   以前はカメラ操作（controls の change）でしか setSize していなかったため、
+//   ウィンドウの大きさを変えてもキャンバスが古い寸法のままで、
+//   画面の右端と下端が描画されない（切れて見える）状態になっていた。
+//   → resize イベントで確実に合わせる。カメラ操作では再描画だけ行う。
+//   ※ setMainAppVisibility はポータルから戻るときに resize を投げているので、
+//     モードを行き来したあとのズレもこれで解消される。
+// ==========================================
+function handleResize() {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
     if (window.renderAllViews) window.renderAllViews();
-});        
+}
+window.addEventListener('resize', handleResize);
+handleResize();   // 起動直後の食い違いもここで解消しておく
+
+controls.addEventListener('change', () => {
+    if (window.renderAllViews) window.renderAllViews();
+});
 
 // ツールバーボタン（HTML）用グローバルバインド
 window.undo = undo;
@@ -339,97 +350,18 @@ window.clearAll = function() {
 };
 
 // ==========================================
-// 4. エクスポート ＆ Cesium連携フロー
+// 4. 地球モード（04_earth-simulator）への受け渡し
 // ==========================================
-window.lastPlacedLocation = { lat: 34.9858, lng: 135.7588 };
+// 既定の配置地点。京都駅前は高層の駅ビルに埋もれて自作モデルが見えないので、
+// 開けていて分かりやすい市役所前広場を初期値にしている。
+// （市役所の建物と重ならないよう、広場の中心から約30m南＝緯度 -0.00027°）
+const DEFAULT_PLACE_LOCATION = { lat: 35.01129, lng: 135.76812 }; // 京都市役所前広場
+window.lastPlacedLocation = { ...DEFAULT_PLACE_LOCATION };
 window.lastPlacedHeading = 0; // ★追加：回転角度（ラジアン）の記憶用初期値
 
-document.getElementById('btn-export-cesium').addEventListener('click', () => {
-    if (houseGroup.children.length === 0) {
-        return alert('配置する建物がありません。');
-    }
-    UIController.clearGUI();
-    UIController.hideFloatingMenu();
-    controls.enabled = false;
+// ※ 地球モードの入口はツールバーのボタンから、下部パネルの「切り抜き」スライダーへ移した
+//   （0 から動かすと起動する）。起動処理は openEarthSimulator。
 
-    // ★追加：2D地図モーダルが開くこの瞬間に「チュートリアルを開始」ボタンを非表示にする
-    const tutorialBtn = document.getElementById('btn-start-tutorial');
-    if (tutorialBtn) {
-        tutorialBtn.style.display = 'none';
-    }
-
-    // ★必須：線のデータをGLB出力前に直接抽出してCesiumへ渡す（これが消えてエラーになっていました）
-    const linesData = [];
-    houseGroup.traverse(child => {
-        // LineSegments(表示されている線)を見つけたら頂点を抽出
-        if (child.isLineSegments && child.geometry) {
-            child.updateMatrixWorld(true);
-            const posAttr = child.geometry.attributes.position;
-            if (!posAttr) return;
-            for (let i = 0; i < posAttr.count; i += 2) {
-                const v1 = new THREE.Vector3().fromBufferAttribute(posAttr, i);
-                const v2 = new THREE.Vector3().fromBufferAttribute(posAttr, i+1);
-                v1.applyMatrix4(child.matrixWorld);
-                v2.applyMatrix4(child.matrixWorld);
-                
-                // Three.js(x,y,z) -> CesiumのEntityローカル軸(z,x,y)へ変換
-                linesData.push({
-                    p1: { x: v1.z/1000, y: v1.x/1000, z: v1.y/1000 },
-                    p2: { x: v2.z/1000, y: v2.x/1000, z: v2.y/1000 }
-                });
-            }
-        }
-    });
-
-    openMapModal(window.lastPlacedLocation, 
-        (selectedLocation) => {
-            window.lastPlacedLocation = selectedLocation;
-            const exporter = new GLTFExporter();
-            exporter.parse(houseGroup, (gltf) => {
-                const blob = new Blob([JSON.stringify(gltf)], { type: 'application/json' });
-                const glbUrl = URL.createObjectURL(blob);
-
-                document.getElementById('cesium-overlay').style.display = 'block';
-                const myCesiumToken = import.meta.env.VITE_CESIUM_TOKEN;
-                initCesium('cesiumContainer', myCesiumToken, selectedLocation).then(() => {
-                    // ここで抽出した linesData を渡して地球上に配置
-                    placeModelOnEarth(glbUrl, linesData, selectedLocation); 
-                });
-            }, (err) => console.error(err), { binary: false });
-        },
-        () => { 
-            // 2D地図でキャンセルを押して戻った時の処理
-            controls.enabled = true; 
-
-            // ★追加：キャンセル時にも「チュートリアルを開始」ボタンを再表示する
-            const tutorialBtn = document.getElementById('btn-start-tutorial');
-            if (tutorialBtn) {
-                tutorialBtn.style.display = 'block';
-            }
-        }
-    );
-});
-
-document.getElementById('btn-back-to-model').addEventListener('click', () => {
-    document.getElementById('cesium-overlay').style.display = 'none';
-    controls.enabled = true; 
-
-    // ★追加：「チュートリアルを開始」ボタンを再表示する
-    const tutorialBtn = document.getElementById('btn-start-tutorial');
-    if (tutorialBtn) {
-        tutorialBtn.style.display = 'block'; // 元のCSSに合わせて 'flex' などでも可
-    }
-});
-
-const snapBtn = document.getElementById('snapRetryBtn');
-if (snapBtn) {
-    snapBtn.addEventListener('click', () => manualSnapToGround());
-}
-
-const focusBtn = document.getElementById('btn-focus-model');
-if (focusBtn) {
-    focusBtn.addEventListener('click', () => focusOnModel());
-}
 
 // UIController初期化 ＆ 初回描画
 UIController.init(rebuildMeshes, window.setTool);
@@ -452,6 +384,8 @@ document.getElementById('btn-save-json').addEventListener('click', () => {
         appState: {
             buildingData: AppState.buildingData
         },
+        // ※ キー名 cesiumState は旧・地球モード（Cesium）時代のもの。中身は今の地球モードでも
+        //   そのまま使う（配置地点と向き）ので、既存のセーブデータを読めるよう名前は変えない。
         cesiumState: {
             lastPlacedLocation: window.lastPlacedLocation,
             lastPlacedHeading: window.lastPlacedHeading // 地球上でのモデルの回転角度
@@ -477,12 +411,12 @@ const btnLoadJson = document.getElementById('btn-load-json');
 const inputLoadJson = document.getElementById('input-load-json');
 
 btnLoadJson.addEventListener('click', () => {
-    // 地球モード（Cesium画面）が表示されている時は誤動作を防ぐため実行させない
-    if (document.getElementById('cesium-overlay').style.display === 'block') {
+    // 地球モードの表示中は誤動作を防ぐため実行させない
+    if (isEarthModeActive) {
         alert('ロード処理はモデリング画面でのみ実行可能です。一度戻ってからロードしてください。');
         return;
     }
-    
+
     if (confirm('現在の作業内容は上書き消去されます。JSONファイルをロードしますか？')) {
         inputLoadJson.click(); // 隠されている <input type="file"> を発火
     }
@@ -515,7 +449,7 @@ inputLoadJson.addEventListener('change', (e) => {
                 }
             } else {
                 // 地球モードの設定が含まれない古いデータの場合は安全に初期化
-                window.lastPlacedLocation = { lat: 34.9858, lng: 135.7588 };
+                window.lastPlacedLocation = { ...DEFAULT_PLACE_LOCATION };
                 window.lastPlacedHeading = 0;
             }
 
@@ -542,9 +476,17 @@ inputLoadJson.addEventListener('change', (e) => {
 // ==========================================
 // ★変更：夜間シミュレーター起動処理（main.js側は起動制限を解除するだけ）
 // ==========================================
-let isNightModeActive = false; 
+let isNightModeActive = false;
 
-function openNightSimulation(initialSliderPct = 13.636, fromPortal = false) {
+// 時刻スライダーで 09:00 に当たる位置[%]（この位置から夜間シミュレーターが動き出す）
+const NIGHT_START_PCT = 13.636;
+
+// スライダーを 0（＝そのモードの終了）まで下げてよいか。単独起動中だけ false になる。
+//   ⚠️ 下のスライダー初期化（updateSliderUI）が読むので、必ずそれより前で宣言すること。
+let clipSliderZeroAllowed = true;
+let timeSliderZeroAllowed = true;
+
+function openNightSimulation(initialSliderPct = NIGHT_START_PCT, fromPortal = false) {
     if (isNightModeActive) return; 
     
     // アプリ2起動時に「チュートリアルを開始」ボタンを隠す
@@ -558,7 +500,9 @@ function openNightSimulation(initialSliderPct = 13.636, fromPortal = false) {
         munsellBtn.style.opacity = '0.4';
     }
 
-    isNightModeActive = true; 
+    isNightModeActive = true;
+    document.body.classList.add('night-mode');
+    updateBottomBar();   // 地球モードの切り抜きスライダーを止める
 
     // スライダー位置を保存
     sessionStorage.setItem('sharedSliderValue', initialSliderPct.toString());
@@ -646,7 +590,9 @@ window.showNightSimulation = function() {
 
 // 夜間シミュレーター側から安全に閉じるためのグローバル関数
 window.closeNightSimulation = function() {
-    isNightModeActive = false; 
+    isNightModeActive = false;
+    document.body.classList.remove('night-mode');
+    updateBottomBar();
 
     // アプリ2起動時に「チュートリアルを開始」ボタンを隠す
     const tutorialBtn = document.getElementById('btn-start-tutorial');
@@ -696,6 +642,7 @@ window.closeNightSimulation = function() {
     const timeDisplay = document.getElementById('app1-time-display');
     if (timeSlider) timeSlider.value = 0;
     if (timeDisplay) timeDisplay.textContent = "陰影なし";
+    setNightLamp(false);   // 🌃ランプも消す（ここは input を発火させないので手で戻す）
 };
 
 // ==========================================
@@ -747,15 +694,24 @@ window.closeNightSimulation = function() {
     function updateSliderUI() {
         let pct = parseFloat(timeSlider.value);
         
+        // ★夜間シミュレーターの単独起動中は「陰影なし(0)」に戻せない（終了させないため）。
+        //   0 の側へ寄せても 09:00 の位置に吸い付かせる。
+        if (!timeSliderZeroAllowed && pct < NIGHT_START_PCT) {
+            pct = NIGHT_START_PCT;
+            timeSlider.value = pct;
+        }
         // ★アプリ2と同様のスナップ処理（カクっと動かす）
-        if (pct > 0 && pct < 13.636) {
+        else if (pct > 0 && pct < 13.636) {
             pct = pct < 6.818 ? 0 : 13.636;
             timeSlider.value = pct;
-        } 
+        }
         else if (pct > 86.364 && pct < 100) {
             pct = pct < 93.182 ? 86.364 : 100;
             timeSlider.value = pct;
         }
+
+        // 左端の🌃ランプ：スライダーが 0 から動いている＝夜間シミュレーターが動いている
+        setNightLamp(pct > 0);
 
         // 09:00 (13.636%) 以上になったら自動的にアプリ2を起動、または時間を送る
         if (pct >= 13.636) {
@@ -797,6 +753,69 @@ window.closeNightSimulation = function() {
     // 初期化 (アプリ2に合わせて 0% 陰影なしスタート)
     timeSlider.value = 0;
     updateSliderUI();
+})();
+
+// ==========================================
+// ★追加：地球モードの「切り抜き」スライダー（時刻スライダーの右隣）
+//   0＝地球モードなし。50m以上に動かすと地球モードが起動し、その大きさで中心を切り抜く。
+//   起動中に動かせば、そのまま地球側へ大きさを送る（時刻スライダーと同じ作法）。
+// ==========================================
+(function setupApp1ClipSlider() {
+    const slider = document.getElementById('app1-clip-slider');
+    const display = document.getElementById('app1-clip-display');
+    const ticks = document.getElementById('app1-clip-ticks');
+    if (!slider) return;
+
+    // 04 側の切り抜き（50〜500m・10m刻み）に合わせる。0 だけが「地球モードなし」。
+    const MIN_SIZE = 50, MAX_SIZE = 500, TICK_STEP = 50;
+
+    // 目盛り（0・50・…・500）
+    if (ticks) {
+        for (let v = 0; v <= MAX_SIZE; v += TICK_STEP) {
+            const tick = document.createElement('div');
+            tick.className = 'tick';
+            tick.style.left = `${(v / MAX_SIZE) * 100}%`;
+            ticks.appendChild(tick);
+        }
+    }
+
+    function sendSizeToEarth(size) {
+        const iframe = document.getElementById('earth-sim-iframe');
+        const win = iframe && iframe.contentWindow;
+        if (win && typeof win.setEarthClipSize === 'function') win.setEarthClipSize(size);
+    }
+
+    function onSliderInput() {
+        let size = Number(slider.value);
+        // 0 の次は 50m（04 の切り抜きの下限）。間の値はつまみごと 50 に吸い付かせて、
+        // 目盛りの位置と実際の大きさが食い違わないようにする。
+        // ★地球モードの単独起動中は 0（終了）も許さないので、0 まで下げても 50 に戻す。
+        const floor = clipSliderZeroAllowed ? 0 : MIN_SIZE;
+        if (size < MIN_SIZE && (size > 0 || floor === MIN_SIZE)) {
+            size = MIN_SIZE;
+            slider.value = String(size);
+        }
+        updateClipPanelDisplay(size);
+
+        if (size === 0) {
+            // 0 に戻したら地球モードを終了（時刻スライダーを「陰影なし」に戻すのと同じ）
+            if (isEarthModeActive && typeof window.closeEarthSimulator === 'function') {
+                window.closeEarthSimulator();
+            }
+            return;
+        }
+
+        if (!isEarthModeActive) {
+            pendingEarthClipSize = size;   // 準備ができ次第送る
+            openEarthSimulator(false);
+        } else {
+            sendSizeToEarth(size);
+        }
+    }
+
+    slider.addEventListener('input', onSliderInput);
+    slider.value = '0';
+    updateClipPanelDisplay(0);
 })();
 
 // ==========================================
@@ -896,11 +915,11 @@ function collectMaterialTextureHints() {
 }
 
 function toggleMunsellSimulator(fromPortal = false) {
-    const cesiumOverlay = document.getElementById('cesium-overlay');
-    if (cesiumOverlay && cesiumOverlay.style.display === 'block') return;
+    if (isEarthModeActive) return;   // 地球モード表示中は着色モードへ入らせない
 
     if (!isMunsellModeActive) {
         isMunsellModeActive = true;
+        updateBottomBar();
 
         if (fromPortal) {
             // ★ ポータルからの起動時：現在のモデルのパッキングをスキップ
@@ -939,6 +958,7 @@ function toggleMunsellSimulator(fromPortal = false) {
 
 window.closeMunsellSimulator = function() {
     isMunsellModeActive = false;
+    updateBottomBar();
     const iframe = document.getElementById('munsell-sim-iframe');
     
     // チュートリアルボタンを再表示
@@ -990,6 +1010,228 @@ window.closeMunsellSimulator = function() {
     }
 };
 
+// ==========================================
+// ★追加：地球シミュレーター（04_earth-simulator）連携
+//   PLATEAUの街並み・地形の上に、このアプリで作った建物を置いて確認する。
+//   マンセル・夜間と同じく全画面 iframe で重ねる方式。GLBの受け渡しも同じ流儀
+//   （sessionStorage に blob URL を入れる）。
+//   ※ 置く場所は地球側の地図で選ぶ。選んだ地点と向きは戻ってきたときに引き継ぐ。
+// ==========================================
+let isEarthModeActive = false;
+// 切り抜きスライダーから起動したときに、地球側の準備ができ次第この大きさを送る
+let pendingEarthClipSize = null;
+
+function openEarthSimulator(fromPortal = false) {
+    if (isEarthModeActive) return;
+    isEarthModeActive = true;
+    updateBottomBar();
+
+    // 起動中はモデリング画面側のUIを隠す。時刻スライダーは iframe より前面に出るので、
+    // 中身を無効化するだけでは足りず、コンテナごと隠す（CSSの body.earth-mode）。
+    const tutorialBtn = document.getElementById('btn-start-tutorial');
+    if (tutorialBtn) tutorialBtn.style.display = 'none';
+    document.body.classList.add('earth-mode');
+
+    // 前回の向き・配置地点を地球側へ引き継ぐ
+    sessionStorage.setItem('earth_model_heading', String(window.lastPlacedHeading || 0));
+    if (window.lastPlacedLocation) {
+        sessionStorage.setItem('earth_focus_latlon', JSON.stringify(window.lastPlacedLocation));
+    }
+
+    // 前回渡したGLBを解放する（地球画面を閉じずに残す作りなので、切り替えのたびに溜まる）
+    const prevGlb = sessionStorage.getItem('earth_custom_glb');
+    if (prevGlb && prevGlb.startsWith('blob:')) URL.revokeObjectURL(prevGlb);
+
+    if (fromPortal || AppState.buildingData.length === 0) {
+        // ポータルからの単独起動（またはモデルが無いとき）は街並みだけを表示する
+        sessionStorage.removeItem('earth_custom_glb');
+        sessionStorage.removeItem('earth_camera_state');
+        proceedOpenEarthIframe(fromPortal);
+    } else {
+        // ★モデリング画面の見え方をそのまま引き継ぐためのカメラ状態（mm・モデル原点基準）。
+        //   地球側でモデルを置いた位置・向きに合わせて変換される（02/03 と同じ考え方）。
+        sessionStorage.setItem('earth_camera_state', JSON.stringify({
+            position: camera.position.toArray(),
+            target: controls.target.toArray(),
+            fov: camera.fov,
+        }));
+        houseGroup.traverse(child => {
+            if (child.isMesh && child.material) {
+                const mat = Array.isArray(child.material) ? child.material[0] : child.material;
+                if (!mat.name) mat.name = 'mat_' + mat.uuid.substring(0, 8);
+            }
+        });
+        const exporter = new GLTFExporter();
+        exporter.parse(houseGroup, (glb) => {
+            const blob = new Blob([glb], { type: 'application/octet-stream' });
+            sessionStorage.setItem('earth_custom_glb', URL.createObjectURL(blob));
+            proceedOpenEarthIframe(fromPortal);
+        }, (err) => {
+            console.error(err);
+            sessionStorage.removeItem('earth_custom_glb');
+            proceedOpenEarthIframe(fromPortal);
+        }, { binary: true });
+    }
+}
+
+let earthRevealTimer = null;
+
+function proceedOpenEarthIframe(fromPortal) {
+    let iframe = document.getElementById('earth-sim-iframe');
+    if (!iframe) {
+        iframe = document.createElement('iframe');
+        iframe.id = 'earth-sim-iframe';
+        iframe.style.position = 'absolute';
+        iframe.style.top = '0';
+        iframe.style.left = '0';
+        iframe.style.width = '100%';
+        iframe.style.height = '100%';
+        iframe.style.border = 'none';
+        iframe.style.zIndex = '5000';
+        iframe.style.opacity = '0';
+        iframe.style.transition = 'opacity 0.3s ease-out';
+        document.body.appendChild(iframe);
+    }
+
+    iframe.style.visibility = 'visible';
+    iframe.style.pointerEvents = '';
+    iframe.style.display = 'block';
+    iframe.style.opacity = '0';
+
+    // ★ 2回目以降：前回の地球画面をそのまま生かしてある（タイルも地形も読み込み済み）。
+    //   ページを読み直さず、待機を解除してモデルだけ入れ替える＝街並みの再読み込みが起きない。
+    const win = iframe.contentWindow;
+    if (win && typeof win.resumeEarthSimulator === 'function') {
+        win.resumeEarthSimulator({ from: fromPortal ? 'portal' : 'modeling' });
+        clearTimeout(earthRevealTimer);
+        earthRevealTimer = setTimeout(() => window.showEarthSimulator(), 5000);
+        return;
+    }
+
+    const urlParam = fromPortal ? '?from=portal' : '?from=modeling';
+    iframe.src = `./earth-api/${urlParam}`;
+
+    // ★すぐには出さない。地球側が「モデルを置いてカメラを合わせた」と知らせてきてから
+    //   フェードインする（夜間シミュレーターの showNightSimulation と同じ作法）。
+    //   こうするとモデリング画面の絵から地続きで切り替わり、暗いだけの画面が挟まらない。
+    //   万一あちらが知らせてこなくても取り残されないよう、保険のタイマーも仕掛ける。
+    clearTimeout(earthRevealTimer);
+    earthRevealTimer = setTimeout(() => window.showEarthSimulator(), 5000);
+}
+
+// 地球側から「描画準備ができた」合図を受け取って表示する
+window.showEarthSimulator = function() {
+    clearTimeout(earthRevealTimer);
+    const iframe = document.getElementById('earth-sim-iframe');
+    if (!iframe || !isEarthModeActive) return;
+    iframe.style.opacity = '1';
+
+    // 切り抜きの大きさを合わせる。スライダーから起動したならその値を送り、
+    // それ以外（🌍ボタンやポータル）なら地球側の現在値をこちらのスライダーに映す。
+    const win = iframe.contentWindow;
+    if (pendingEarthClipSize && win && typeof win.setEarthClipSize === 'function') {
+        win.setEarthClipSize(pendingEarthClipSize);
+        window.syncEarthClipSize(pendingEarthClipSize);
+    } else if (win && typeof win.getEarthClipSize === 'function') {
+        window.syncEarthClipSize(win.getEarthClipSize());
+    }
+    pendingEarthClipSize = null;
+};
+
+// パネル左端の表示灯を点けたり消したりする。
+// ランプの点灯＝そのモードが動いている状態。ホバー時の説明も状態に合わせて入れ替える
+// （🎨ボタンが「着色モードへ」⇄「モデリングモードへ」と変わるのと同じ考え方）。
+function setPanelLamp(id, on, offText, onText) {
+    const lamp = document.getElementById(id);
+    if (!lamp) return;
+    lamp.classList.toggle('active', on);
+    lamp.setAttribute('data-tooltip', on ? onText : offText);
+}
+
+function setNightLamp(on) {
+    setPanelLamp('app1-night-lamp', on,
+        '🌃 スライダーを動かすと夜間景観モードへ',
+        '🌃 夜間景観モード：スライダーを「陰影なし」に戻すと終了');
+}
+
+// 切り抜きパネルの表示（大きさのラベルと、左端の🌐ランプ）をまとめて更新する。
+function updateClipPanelDisplay(size) {
+    const display = document.getElementById('app1-clip-display');
+    const v = Number(size) || 0;
+    // ★中央の表示は短くする（「250 m 四方」だと左の「地球なし」と重なるため）。
+    //   0 のときは何も出さない（左端の「地球なし」が状態を示している）。
+    if (display) display.textContent = v === 0 ? '' : `${v}m`;
+    setPanelLamp('app1-earth-lamp', v > 0,
+        '🌐 スライダーを動かすと地球モードへ',
+        '🌐 地球モード：スライダーを「地球なし」に戻すと終了');
+}
+
+// 地球側のHUDで切り抜きが変わったときに、こちらのスライダーの位置だけ合わせる
+// （input を発火させない＝ここから起動・終了の判定は走らせない）
+window.syncEarthClipSize = function(size) {
+    const slider = document.getElementById('app1-clip-slider');
+    if (!slider) return;
+    const v = Number(size) || 0;
+    slider.value = String(v);
+    updateClipPanelDisplay(v);
+};
+
+// 地球側の「モデリング画面に戻る」ボタンから呼ばれる（同一オリジンなので直接呼べる）
+window.closeEarthSimulator = function() {
+    isEarthModeActive = false;
+    updateBottomBar();
+
+    // 地球側で決めた向き・配置地点を受け取り、セーブデータに残るようにする
+    const heading = parseFloat(sessionStorage.getItem('earth_model_heading'));
+    if (Number.isFinite(heading)) window.lastPlacedHeading = heading;
+    try {
+        const loc = JSON.parse(sessionStorage.getItem('earth_focus_latlon') || 'null');
+        if (loc && Number.isFinite(loc.lat) && Number.isFinite(loc.lng)) {
+            window.lastPlacedLocation = loc;
+        }
+    } catch (e) {
+        console.warn('地球側から配置地点を受け取れませんでした', e);
+    }
+
+    // ★地球側で見ていたアングルを引き継ぐ（あちらが mm・モデル原点基準に戻して預けている）
+    try {
+        const camState = JSON.parse(sessionStorage.getItem('earth_camera_state') || 'null');
+        if (camState && Array.isArray(camState.position) && Array.isArray(camState.target)) {
+            camera.position.fromArray(camState.position);
+            controls.target.fromArray(camState.target);
+            controls.update();
+            if (window.renderAllViews) window.renderAllViews();
+        }
+    } catch (e) {
+        console.warn('地球側からカメラ状態を受け取れませんでした', e);
+    }
+
+    const tutorialBtn = document.getElementById('btn-start-tutorial');
+    if (tutorialBtn) tutorialBtn.style.display = '';
+    document.body.classList.remove('earth-mode');
+
+    // 切り抜きスライダーを 0（地球なし）に戻す。時刻スライダーの戻し方と同じ考え方。
+    pendingEarthClipSize = null;
+    window.syncEarthClipSize(0);
+
+    // ★ 破棄せずに隠すだけにする。読み込み済みのPLATEAUタイル・地形を抱えたまま
+    //   待機させておけば、次に開いたときは一瞬で戻る（src を捨てると全部やり直しになる）。
+    //   ・visibility:hidden … 見えず触れず、それでいて iframe の大きさは保たれる
+    //     （display:none にすると中の画面サイズが 0 になり、再開時にカメラの比率が崩れる）
+    //   ・描画ループは地球側の pauseEarthSimulator() で止めてもらう（CPUを食わせない）
+    const iframe = document.getElementById('earth-sim-iframe');
+    if (iframe) {
+        iframe.style.opacity = '0';
+        iframe.style.pointerEvents = 'none';
+        setTimeout(() => {
+            if (isEarthModeActive) return;   // 待っている間に開き直されたら何もしない
+            iframe.style.visibility = 'hidden';
+            const win = iframe.contentWindow;
+            if (win && typeof win.pauseEarthSimulator === 'function') win.pauseEarthSimulator();
+        }, 300);
+    }
+};
+
 // サブアプリ(iframe)からのメッセージ送信を安全に受信するリスナー
 window.addEventListener('message', (event) => {
     if (!event.data) return;
@@ -1011,6 +1253,57 @@ window.addEventListener('message', (event) => {
 });
 
 /* ==========================================================================
+   ★追加：下部の操作バー（時刻スライダー／🎨／地球の切り抜きスライダー）の共通制御
+
+   このバーは【01〜04 のどれを開いていても同じ位置に居る】。サブアプリ（02〜04）は
+   全画面 iframe で上に重なるだけなので、バーを親が出しっぱなしにしておけば
+   位置は自動的に完全一致する（各アプリに複製を置くと必ずズレるので置かない）。
+
+   そのうえで「今のモードでは使えない操作」を半透明の膜で塞ぐ（.locked）。
+
+     モデリング   … 全部使える
+     マンセル     … 時刻・切り抜きを塞ぐ（🎨はモデリングへ戻る操作なので生かす。
+                    ただしポータルから単独で開いたときは戻り先が無いので塞ぐ）
+     夜間         … 🎨・切り抜きを塞ぐ（時刻スライダーが操作子）
+     地球         … 時刻・🎨を塞ぐ（切り抜きスライダーが操作子）
+   ========================================================================== */
+function setBottomBarVisible(visible) {
+    ['app1-time-slider-container', 'app1-clip-slider-container'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = visible ? 'flex' : 'none';
+    });
+}
+
+function updateBottomBar() {
+    // variant は膜の大きさの指定（'locked-slider' / 'locked-btn' / 省略＝要素そのまま）
+    const lock = (id, on, variant) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.classList.toggle('locked', on);
+        if (variant) el.classList.toggle(variant, on);
+    };
+    const timeLocked = isEarthModeActive || isMunsellModeActive;
+    const clipLocked = isNightModeActive || isMunsellModeActive;
+    // 🎨はマンセルの入り口／出口。モデリングから開いたときだけ「戻る」操作として生かす。
+    const munsellLocked = isEarthModeActive || isNightModeActive ||
+                          (isMunsellModeActive && isPortalLaunch);
+
+    lock('app1-time-slider-group', timeLocked, 'locked-slider');
+    lock('app1-munsell-btn', munsellLocked, 'locked-btn');
+    lock('app1-clip-slider-container', clipLocked);   // こちらはパネルごと塞ぐ
+
+    // ★単独起動（ポータルのタイルから直接開いた）中は、スライダーを 0 まで下げて
+    //   そのシミュレーターを終了できないようにする。モデリング画面から開いたときは
+    //   0 に戻せばモデリングへ帰れるが、単独起動では帰り先が無く、
+    //   何も無い画面が残ってしまうため（終了は「ポータルに戻る」ボタン）。
+    clipSliderZeroAllowed = !(isEarthModeActive && isPortalLaunch);
+    timeSliderZeroAllowed = !(isNightModeActive && isPortalLaunch);
+}
+
+// ポータルのタイルから直接サブアプリを起動したか（＝モデリング画面を経由していないか）
+let isPortalLaunch = false;
+
+/* ==========================================================================
    ★追加：ポータル画面・アプリ切り替え＆親「戻る」ボタン制御ロジック
    ========================================================================== */
 
@@ -1027,10 +1320,12 @@ function setMainAppVisibility(visible) {
     }
     
     // 2. モデリング画面の各種UIパネルを切り替え（要素が統合されたためスッキリします）
+    //    ※ 下部の操作バー（時刻・🎨・切り抜き）はここでは扱わない。
+    //      あれはサブアプリを開いている間も出しっぱなしにするので、
+    //      setBottomBarVisible / updateBottomBar が別に面倒を見る。
     const mainUiIds = [
         'status-panel',
-        'main-toolbar',
-        'app1-time-slider-container'
+        'main-toolbar'
     ];
     mainUiIds.forEach(id => {
         const el = document.getElementById(id);
@@ -1082,7 +1377,10 @@ document.addEventListener('DOMContentLoaded', () => {
         portalBtnModeling.addEventListener('click', () => {
             portalScreen.style.display = 'none';
             btnBackToPortal.style.display = 'flex';
+            isPortalLaunch = false;
             setMainAppVisibility(true);
+            setBottomBarVisible(true);
+            updateBottomBar();
         });
     }
 
@@ -1093,6 +1391,8 @@ document.addEventListener('DOMContentLoaded', () => {
             portalScreen.style.display = 'none';
             btnBackToPortal.style.display = 'flex';
             
+            isPortalLaunch = true;
+            setBottomBarVisible(true);
             sessionStorage.removeItem('munsell_custom_glb');
             toggleMunsellSimulator(true);
         });
@@ -1105,15 +1405,37 @@ document.addEventListener('DOMContentLoaded', () => {
             portalScreen.style.display = 'none';
             btnBackToPortal.style.display = 'flex';
             
+            isPortalLaunch = true;
+            setBottomBarVisible(true);
+
+            // ★単独起動は毎回まっさらな状態から始める。
+            //   前回の続き（持ち込んだモデル、前回いじった時刻）が残っていると
+            //   「単独で開いたのに前回の続きが出る」ことになるので、必ずリセットする。
+            //   ※ カメラ状態(sharedCameraState)は openNightSimulation の中で
+            //     今の視点から書き直されるので、ここで消す必要はない。
             sessionStorage.removeItem('night_custom_glb');
-            openNightSimulation(13.636, true);
-            
-            // 親アプリ側のスライダーを「夜間（一番右）」の位置にダミー移動
+            openNightSimulation(NIGHT_START_PCT, true);   // 時刻は常に 09:00 から
+
+            // 親アプリ側のスライダーも 09:00 の位置に合わせる
             const timeSlider = document.getElementById('app1-time-slider');
             if (timeSlider) {
-                timeSlider.value = 100;
+                timeSlider.value = NIGHT_START_PCT;
                 timeSlider.dispatchEvent(new Event('input'));
             }
+        });
+    }
+
+    // ■ [地球モード] タイル単独起動
+    const portalBtnEarth = document.getElementById('portal-btn-earth');
+    if (portalBtnEarth) {
+        portalBtnEarth.addEventListener('click', () => {
+            portalScreen.style.display = 'none';
+            btnBackToPortal.style.display = 'flex';
+
+            isPortalLaunch = true;
+            setBottomBarVisible(true);
+            sessionStorage.removeItem('earth_custom_glb');
+            openEarthSimulator(true);
         });
     }
 
@@ -1126,20 +1448,31 @@ document.addEventListener('DOMContentLoaded', () => {
             if (isNightModeActive) {
                 if (typeof window.closeNightSimulation === 'function') window.closeNightSimulation();
             }
+            if (isEarthModeActive) {
+                if (typeof window.closeEarthSimulator === 'function') window.closeEarthSimulator();
+            }
             
             setMainAppVisibility(false);
+            setBottomBarVisible(false);   // ポータル画面では下部バーも引っ込める
+            isPortalLaunch = false;
             UIController.clearGUI();
             UIController.hideFloatingMenu();
-            
+
             AppState.selectedId = null;
             AppState.selectedFaceDir = null;
             rebuildMeshes();
-            
+
             portalScreen.style.display = 'flex';
             btnBackToPortal.style.display = 'none';
         });
     }
 
+    // ★地球モードのデータを先にキャッシュへ入れておく。
+    //   入口（ポータルのタイル／ツールバーの🌍）にホバーした時点＝開くつもりが見えた時点と、
+    //   手が空いたとき（アイドル）に温める。切り替えた瞬間の待ち時間がここで消える。
+    setupEarthPrefetchTriggers(['portal-btn-earth', 'app1-clip-slider-container']);
+
     // 初期起動時：メイン3D画面を非表示にしてポータル画面のみを表示した状態にする
     setMainAppVisibility(false);
+    setBottomBarVisible(false);
 });

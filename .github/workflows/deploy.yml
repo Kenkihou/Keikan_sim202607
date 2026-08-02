@@ -45,17 +45,26 @@ jobs:
           npm install
           npm run build
 
-      # 4. 3つのビルド結果(dist)を1つの公開用フォルダ(combined_dist)に合体させる
+      # 4. ビルド結果(dist)と地球シミュレーターを1つの公開用フォルダ(combined_dist)に合体させる
+      #    04 はビルド不要（importmap で CDN 直読み）なので、必要なファイルだけコピーする。
       - name: Assemble deployment folder
         run: |
           mkdir -p combined_dist
           cp -r 01_building-builder/dist/* combined_dist/
-          
+
           mkdir -p combined_dist/munsell-api
           cp -r 02_munsell-simulator/dist/* combined_dist/munsell-api/
-          
+
           mkdir -p combined_dist/night-api
           cp -r 03_night-simulator/dist/* combined_dist/night-api/
+
+          # 🌐 地球シミュレーター（ビルド不要）。実行に要るのは index.html・js・変換済みJSON だけ。
+          #    元データの 眺望shapeデータ(19MB) と Python スクリプトは配信しない。
+          mkdir -p combined_dist/earth-api
+          cp 04_earth-simulator/index.html combined_dist/earth-api/
+          cp -r 04_earth-simulator/js combined_dist/earth-api/
+          cp 04_earth-simulator/*.json combined_dist/earth-api/
+          rm -f combined_dist/earth-api/settings.json
 
       # 5. GitHub Pagesへアップロード
       - name: Setup Pages

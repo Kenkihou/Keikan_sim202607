@@ -11,30 +11,63 @@
         /* 画面中央下のタイムスライダーUI */
         #time-slider-container {
             position: absolute;
-            bottom: 20px; 
+            bottom: 20px;
             left: 50%;
             transform: translateX(-50%);
-            width: auto;   
-            min-width: 520px; 
+        }
+
+        /* ★追加：01のモデリング画面から呼ばれたときは、あちらの時刻パネルがこの真上に
+           ぴったり重なる（寸法・位置が同一）。あちらは右隣に「切り抜き」パネル（240px＋
+           隙間12px）を置くぶん 126px だけ左へずれているので、こちらも同じだけずらして
+           重なりを保つ。ずらさないと、あちらのパネルの右側からこちらがはみ出して見える。
+           ※ 単独起動（?from=portal / 直接開く）のときは中央のまま。 */
+        body.embedded-modeling #time-slider-container {
+            transform: translateX(calc(-50% - 126px));
+        }
+        @media (max-width: 800px) {
+            body.embedded-modeling #time-slider-container {
+                transform: translateX(-50%);
+            }
+        }
+
+        /* ⚠️ このパネルの寸法は 01_building-builder の #app1-time-slider-container と
+           【完全に一致させる】こと。モデリングから呼ばれたときはあちらのパネルが
+           この真上に重なるため、片方だけ変えると背後からはみ出して見える。
+           （幅は 01 側に地球モードのパネルを並べた際に 520→468px へ詰めてある） */
+        #time-slider-container {
+            width: auto;
+            min-width: 468px;
             background: rgba(15, 15, 25, 0.85);
-            padding: 14px 28px; 
+            padding: 14px 25px;
             border-radius: 10px;
             box-shadow: 0 6px 24px rgba(0,0,0,0.5);
             border: 1px solid rgba(255,255,255,0.1);
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             color: #fff;
             user-select: none;
-            z-index: 100000; 
+            z-index: 100000;
             box-sizing: border-box;
             display: flex;
             align-items: center;
-            gap: 35px;
+            gap: 12px;
+        }
+
+        /* 右端のダミーボタン。01 側の🎨ボタンと同じ間隔にする */
+        #time-slider-container .sim-panel-btn {
+            margin-left: 12px;
         }
 
         .slider-ui-inner {
             position: relative;
-            flex-grow: 1; 
-            margin: 0 25px 0 25px; 
+            flex-grow: 1;
+            margin: 0 25px 0 25px;
+        }
+
+        /* パネル左端の表示灯。01 側と同じ見た目・同じ位置に置いて、重ねたときにずれないようにする
+           （操作子は隣のスライダーなので、押せないようにしてある） */
+        .sim-panel-btn.indicator {
+            cursor: default;
+            pointer-events: none;
         }
 
         .slider-labels-wrapper {
@@ -46,8 +79,8 @@
         .slider-labels-wrapper span {
             position: absolute;
             top: 0;
-            transform: translateX(-50%); 
-            font-size: 13px; 
+            transform: translateX(-50%);
+            font-size: 12px;
             font-weight: 500;
             color: #ccc;
             white-space: nowrap;
@@ -166,13 +199,18 @@
 <body>
 
 <div id="time-slider-container">
+    <!-- 01 のパネルと同じ位置に同じ表示灯を置く（重ねたときに中身までずれないように）。
+         スライダーが 0 から動いている間はランプが点灯する。 -->
+    <div class="sim-panel-btn indicator" id="night-lamp" aria-hidden="true">
+        <span class="led-lamp"></span>🌃
+    </div>
     <div class="slider-ui-inner">
+        <!-- ⚠️ 01_building-builder の時刻パネルとラベル構成を揃えること（重ねて表示されるため）。
+             幅を詰めた関係で 09:00 と 17:00 のラベルは省いてある（目盛りは全部ある）。 -->
         <div class="slider-labels-wrapper">
             <span style="left: 0%;">陰影なし</span>
-            <span style="left: 13.64%;">09:00</span>
             <span style="left: 40.91%;">12:00</span>
             <span style="left: 68.18%;">15:00</span>
-            <span style="left: 86.36%;">17:00</span>
             <span style="left: 100%;">夜間照明</span>
         </div>
         <div class="slider-wrapper">
@@ -211,6 +249,30 @@
         const exitBtn = document.getElementById('btn-exit');
         if (exitBtn) {
             exitBtn.style.display = isFromModeling ? 'block' : 'none';
+        }
+
+        // ★追加：左端の🌃ランプ。スライダーが 0 から動いている間だけ点灯させる
+        //   （単独起動のときはこちらのパネルが操作子になるため。01 側も同じ挙動）。
+        const slider = document.getElementById('time-slider');
+        const lamp = document.getElementById('night-lamp');
+        if (slider && lamp) {
+            const syncLamp = () => lamp.classList.toggle('active', parseFloat(slider.value) > 0);
+            slider.addEventListener('input', syncLamp);
+            syncLamp();
+        }
+
+        // ★変更：親アプリ（01）の中で開かれているときは、下部の操作バーは【親のものだけ】を出す。
+        //   親のバーは 01〜04 のどれを開いていても同じ位置に出っぱなしになっていて、
+        //   このアプリの時刻スライダーもそこから操作される（setSimulationTime）。
+        //   こちらの複製を残すと二重になり、わずかなズレも目立つので隠す。
+        //   単独で直接開いたとき（親が居ないとき）だけ、こちらのパネルを使う。
+        const embedded = window.parent && window.parent !== window;
+        const panel = document.getElementById('time-slider-container');
+        if (panel && embedded) {
+            panel.style.display = 'none';
+        }
+        if (isFromModeling) {
+            document.body.classList.add('embedded-modeling');
         }
     })();
 </script>

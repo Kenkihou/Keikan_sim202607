@@ -297,8 +297,6 @@ init(params) {
     setupEventListeners() {
         window.addEventListener('pointerdown', (e) => {
             if (e.target.closest('#floating-menu')) return;
-            if (document.getElementById('cesium-overlay').style.display === 'block') return;
-
             UIController.hideFloatingMenu();
             if (e.button !== 0) return; 
             if (e.target.tagName !== 'CANVAS') return; 
@@ -502,8 +500,6 @@ init(params) {
         });
 
         window.addEventListener('pointermove', (e) => {
-            if (document.getElementById('cesium-overlay').style.display === 'block') return;
-
             const p = getMainPointer(e);
             if (!p) {
                 document.body.style.cursor = 'default';
@@ -848,8 +844,6 @@ init(params) {
         });
 
         window.addEventListener('pointerup', (e) => {
-            if (document.getElementById('cesium-overlay').style.display === 'block') return;
-
             const upPointer = new THREE.Vector2(e.clientX, e.clientY);
             const isClick = downPointer.distanceTo(upPointer) < 5;
             
@@ -1041,7 +1035,6 @@ init(params) {
         // ★前回のダブルクリック処理を更新（フラグ追加）
         // =========================================
         window.addEventListener('dblclick', (e) => {
-            if (document.getElementById('cesium-overlay').style.display === 'block') return;
             if (e.target.tagName !== 'CANVAS') return;
 
             const p = getMainPointer(e);
@@ -1092,7 +1085,6 @@ init(params) {
         window.addEventListener('click', (e) => {
             // e.detail に連続クリック回数が入っています
             if (e.detail === 3) {
-                if (document.getElementById('cesium-overlay').style.display === 'block') return;
                 if (e.target.tagName !== 'CANVAS') return;
 
                 const p = getMainPointer(e);

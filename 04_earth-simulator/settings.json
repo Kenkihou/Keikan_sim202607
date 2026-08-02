@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Edit(./**)",
+      "Write(./**)",
+      "Read(./**)"
+    ],
+    "deny": [
+      "Edit(/*)",
+      "Write(/*)",
+      "Bash(rm -rf /*)"
+    ]
+  }
+}

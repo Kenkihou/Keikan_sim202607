@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PLATEAU 背景レイヤー（Three.js）</title>
+  <link rel="icon" href="data:," />
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #0b1220; font-family: system-ui, "Segoe UI", "Hiragino Sans", "Yu Gothic UI", sans-serif; }
+    #app { position: fixed; inset: 0; }
+    #hud {
+      position: fixed; top: 12px; left: 12px; z-index: 10;
+      color: #e8eef7; background: rgba(15, 23, 42, 0.72);
+      backdrop-filter: blur(6px);
+      padding: 12px 14px; border-radius: 10px; max-width: 340px;
+      font-size: 13px; line-height: 1.5; box-shadow: 0 4px 20px rgba(0,0,0,0.35);
+      border: 1px solid rgba(148, 163, 184, 0.25);
+    }
+    #hud h1 { font-size: 14px; margin: 0 0 6px; font-weight: 700; }
+    #hud .muted { color: #9fb0c7; font-size: 12px; }
+    #hud .stat { color: #7ee0c0; font-variant-numeric: tabular-nums; }
+    #hud .stats-line { margin-top: 6px; font-size: 12px; color: #c7d2e0; font-variant-numeric: tabular-nums; }
+    #hud a { color: #9fd0ff; }
+    .clip-ui {
+      margin-top: 8px; padding-top: 8px; font-size: 12px; color: #c7d2e0;
+      border-top: 1px solid rgba(148,163,184,0.25);
+      display: flex; flex-direction: column; gap: 5px;
+    }
+    .clip-ui label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+    .clip-ui .clip-row { display: flex; align-items: center; gap: 8px; }
+    .clip-ui input[type=range] { width: 130px; accent-color: #cc2222; }
+    /* 自作モデルの操作（向き・微調整）。数値入力と選択肢を HUD の色に合わせる */
+    #userModelUi input[type=number], #userModelUi select {
+      font: inherit; font-size: 12px; color: #e8eef7;
+      background: rgba(148,163,184,0.14); border: 1px solid rgba(148,163,184,0.3);
+      border-radius: 4px; padding: 1px 4px;
+    }
+    #userModelUi input[type=range] { width: 96px; accent-color: #63b3ed; }
+    /* iframe に埋め込まれたときは、親アプリの「ポータルに戻る」ボタン（左上・固定）と
+       重なるので HUD と復帰ボタンを下げる。 */
+    body.embedded #hud { top: 74px; }
+    /* 親アプリの下部操作バー（時刻・🎨・切り抜き。画面下から 20〜93px を占める）と
+       重ならないよう、右下の地図と左下の読み込み表示を持ち上げる。
+       ※ 拡大表示中（.expanded）の地図は画面中央に来るので対象外。 */
+    body.embedded #pickerWrap:not(.expanded) { bottom: 104px; }
+    body.embedded #tileLoading { bottom: 104px; }
+    /* ※ 「モデリング画面に戻る」ボタンは廃止した。
+         親アプリ下部の切り抜きスライダーを 0（地球なし）に戻せば帰れるので不要。 */
+    /* 読み込み中の小さな表示（左下）。全画面の #loading と違い、操作の邪魔をしない。 */
+    #tileLoading {
+      position: fixed; left: 12px; bottom: 12px; z-index: 45; display: none;
+      align-items: center; gap: 9px; pointer-events: none;
+      color: #e8eef7; font-size: 12px; background: rgba(15, 23, 42, 0.78);
+      border: 1px solid rgba(148,163,184,0.28); border-radius: 999px; padding: 7px 14px 7px 11px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+    }
+    #tileLoading.on { display: flex; }
+    #tileLoading .spinner { display: inline-block; width: 15px; height: 15px; border-width: 2px; }
+    /* 折りたたみ（クリックで開く見出し）。開いているかは .open で表す */
+    .disclosure {
+      font: inherit; font-size: 12px; color: #c7d2e0; text-align: left; cursor: pointer;
+      background: rgba(148,163,184,0.12); border: 1px solid rgba(148,163,184,0.28);
+      border-radius: 6px; padding: 4px 8px; display: flex; align-items: center; gap: 6px;
+      transition: background .15s;
+    }
+    .disclosure:hover { background: rgba(148,163,184,0.24); }
+    .disclosure::before { content: '▸'; font-size: 10px; transition: transform .15s; }
+    .disclosure.open::before { transform: rotate(90deg); }
+    .disclosure-body { display: none; flex-direction: column; gap: 4px; margin: 2px 0 2px 10px; }
+    .disclosure-body.open { display: flex; }
+    /* ★ 項目の間隔を等間隔にする。情報行と凡例は既定の margin を持っていて、
+       しかも情報行は中身が空のことがあるので、そのままだと項目ごとに間隔がばらつく。
+       → margin を消して flex の gap だけに任せ、空の情報行は場所を取らないようにする。 */
+    .disclosure-body .stats-line { margin-top: 0; }
+    .disclosure-body .stats-line:empty { display: none; }
+    .disclosure-body .legend { margin-top: 0; }
+    /* 高さ色分けの凡例（トグルON のときだけ出す） */
+    .legend { display: none; margin: 2px 0 0 22px; font-size: 11px; color: #c7d2e0; }
+    .legend.on { display: block; }
+    .legend div { display: flex; align-items: center; gap: 6px; line-height: 1.6; }
+    .legend label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+    .legend i { width: 14px; height: 10px; border-radius: 2px; border: 1px solid rgba(0,0,0,.35); }
+    .map-switch { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px; }
+    .map-switch button {
+      font: inherit; font-size: 11px; color: #cdd8e6; cursor: pointer;
+      background: rgba(148,163,184,0.14); border: 1px solid rgba(148,163,184,0.3);
+      border-radius: 6px; padding: 3px 9px; transition: background .15s, border-color .15s;
+    }
+    .map-switch button:hover { background: rgba(148,163,184,0.28); }
+    .map-switch button.active { background: #2b6cb0; border-color: #63b3ed; color: #fff; }
+    #loading {
+      position: fixed; inset: 0; z-index: 20; display: flex;
+      align-items: center; justify-content: center; flex-direction: column;
+      color: #e8eef7; gap: 14px; pointer-events: none;
+      transition: opacity .6s ease; background: radial-gradient(1200px 600px at 50% 30%, #16233d 0%, #0b1220 70%);
+    }
+    #loading.hidden { opacity: 0; }
+    .spinner {
+      width: 34px; height: 34px; border: 3px solid rgba(148,163,184,.3);
+      border-top-color: #7ee0c0; border-radius: 50%; animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #err {
+      position: fixed; left: 12px; bottom: 12px; z-index: 30; display: none;
+      color: #fecaca; background: rgba(80, 20, 20, .85); border: 1px solid #b91c1c;
+      padding: 10px 12px; border-radius: 8px; font-size: 12px; max-width: 60ch;
+    }
+    /* 位置ピッカー（国土地理院地図の小窓／拡大） */
+    #pickerWrap {
+      position: fixed; right: 12px; bottom: 12px; z-index: 40;
+      overflow: hidden; border-radius: 10px; cursor: pointer;
+      border: 2px solid rgba(148,163,184,0.5); box-shadow: 0 6px 24px rgba(0,0,0,0.5);
+      background: #223; touch-action: none; user-select: none;
+    }
+    #pickerWrap.expanded {
+      right: 50%; bottom: 50%; transform: translate(50%, 50%);
+      cursor: crosshair; border-color: #63b3ed;
+    }
+    #pickerTiles { position: absolute; inset: 0; }
+    #pickerTiles img { position: absolute; width: 256px; height: 256px; pointer-events: none; }
+    #pickerHint {
+      position: absolute; left: 0; top: 0; right: 0; z-index: 2;
+      font-size: 11px; color: #fff; background: rgba(15,23,42,0.72);
+      padding: 3px 6px; pointer-events: none; line-height: 1.3;
+    }
+    #pickerCross {
+      position: absolute; z-index: 3; width: 18px; height: 18px; margin: -9px 0 0 -9px;
+      pointer-events: none;
+      background:
+        linear-gradient(#63b3ed,#63b3ed) center/2px 18px no-repeat,
+        linear-gradient(#63b3ed,#63b3ed) center/18px 2px no-repeat;
+    }
+    #pickerOrigin {
+      position: absolute; z-index: 3; width: 10px; height: 10px; margin: -5px 0 0 -5px;
+      border-radius: 50%; background: #ff5d5d; border: 2px solid #fff; pointer-events: none;
+    }
+    #pickerBtns { position: absolute; right: 6px; bottom: 6px; z-index: 4; display: none; gap: 6px; }
+    #pickerBtns button {
+      font: inherit; font-size: 12px; color: #fff; cursor: pointer;
+      background: #2b6cb0; border: 1px solid #63b3ed; border-radius: 6px; padding: 4px 10px;
+    }
+    #pickerBtns button:hover { background: #3b7cc0; }
+  </style>
+
+  <!-- three と 3d-tiles-renderer を CDN(esm.sh) から。"*" で依存を外部化し three を単一化 -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://esm.sh/three@0.185.0",
+      "three/": "https://esm.sh/three@0.185.0/",
+      "3d-tiles-renderer": "https://esm.sh/*3d-tiles-renderer@0.4.28",
+      "3d-tiles-renderer/": "https://esm.sh/*3d-tiles-renderer@0.4.28/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="app"></div>
+
+  <div id="hud">
+    <h1>PLATEAU 背景レイヤー</h1>
+    <div class="muted">国土交通省 PLATEAU 建築物モデル / 京都市 全11区（LOD2・一部LOD1）</div>
+    <div class="muted">ドラッグ=回転 / ホイール=ズーム / 右ドラッグ・Shift+ドラッグ=平行移動</div>
+    <div class="muted" style="margin-top:6px">自作モデルは原点(0,0,0)基準・メートル単位で追加できます</div>
+    <div class="stats-line">表示: <span class="stat" id="statVisible">0</span> 枚 ／ 読込済: <span id="statLoaded">0</span></div>
+    <div class="stats-line">DL: <span id="statDl">0</span>　解析: <span id="statParse">0</span></div>
+    <div class="stats-line">地形: <span class="stat" id="statTerrain">0</span> 枚</div>
+    <div class="clip-ui">
+      <label><input type="checkbox" id="clipOn" checked /> 中心を切り抜く（断面=灰＋黒ハッチ）</label>
+      <div class="clip-row">
+        <input type="range" id="clipSize" min="50" max="500" step="10" value="300" />
+        <span><span class="stat" id="clipSizeLabel">300</span> m 四方</span>
+      </div>
+      <label><input type="checkbox" id="clipTerrainOn" checked /> 地形も切り抜く（地盤ライン=青）</label>
+      <!-- 景観・眺望規制のレイヤー群。項目が多いので折りたたみにしてある。
+           中身（チェック・色見本・情報行）はすべて config.js の ZONE_LAYERS から組み立てる。
+           眺望空間保全区域だけは別系統なので viewareas.js が末尾に足す。 -->
+      <button type="button" class="disclosure" id="zoneSectionHead"
+              aria-expanded="false" aria-controls="zoneLayers">景観・眺望規制</button>
+      <div id="zoneLayers" class="disclosure-body"></div>
+      <label><input type="checkbox" id="heightColorOn" /> 建物を高さで色分け（テクスチャ→色）</label>
+      <div class="legend" id="heightLegend"></div>
+    </div>
+    <!-- 自作モデル（親アプリから受け取った建物）の操作。中身は usermodel.js が組み立てる。
+         モデルを受け取っていないとき（単独起動）は表示しない。 -->
+    <div class="clip-ui" id="userModelUi" style="display:none"></div>
+    <div class="map-switch"><button id="recenterBtn">注目地点へ戻す</button></div>
+    <div class="map-switch" id="mapSwitch"></div>
+    <div class="muted" style="margin-top:6px; font-size:11px">地図：<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院</a></div>
+  </div>
+
+  <!-- 地盤・建物がまだ届いていないことを示す小さな表示（全画面の覆いとは別物）。
+       表示の切り替えは ui.js の updateHud が毎フレーム行う。 -->
+  <div id="tileLoading"><span class="spinner"></span><span>読み込み中…</span></div>
+
+  <div id="loading">
+    <div class="spinner"></div>
+    <div>PLATEAU データを読み込み中…</div>
+  </div>
+
+  <div id="err"></div>
+
+  <!-- 実装は js/ 以下の機能別モジュールに分割してある。読み込みは main.js だけでよい -->
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

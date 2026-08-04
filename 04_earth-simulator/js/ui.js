@@ -5,7 +5,7 @@
 // =============================================================================
 import { el, markSectionDirty, recenterOnFocus } from './core.js';
 import { DEG2RAD, ORIGIN_LAT, ORIGIN_LON, HEIGHT_BANDS } from './config.js';
-import { CLIP_SIZE_MIN, CLIP_SIZE_MAX, CLIP_SIZE_STEP, clipState } from './section.js';
+import { CLIP_SIZE_MIN, CLIP_SIZE_MAX, clipState } from './section.js';
 import {
   wardTiles, getLoadPhase, getTerrainTiles, setFocusLatLon,
   setBuildingColorByHeight, buildingColorState, isTerrainReady,
@@ -19,17 +19,29 @@ import {
 let setClipSizeFromParent = () => {};
 let getClipSize = () => 0;
 
+// 折りたたみ（地形／建物／景観・眺望規制）の開閉。
+//   見出しに class="disclosure" と aria-controls="中身のid" を付けるだけで増やせる。
+(function setupDisclosures() {
+  for (const head of document.querySelectorAll('.disclosure[aria-controls]')) {
+    const body = el(head.getAttribute('aria-controls'));
+    if (!body) continue;
+    head.addEventListener('click', () => {
+      const open = !head.classList.contains('open');
+      head.classList.toggle('open', open);
+      body.classList.toggle('open', open);
+      head.setAttribute('aria-expanded', String(open));
+    });
+  }
+})();
+
+// 「地形」の見せ方：箱庭表示（中心を四角く切り抜くカットモデル）／全体表示 の2択。
+//   ★ 切り抜きの【大きさ】はここでは持たない。親アプリ（01）の下部バーのスライダーが
+//     決めて setEarthClipSize で送ってくる（単独で開いたときは既定の 300m のまま）。
+//     地形を切るかどうかも箱庭表示に含める（建物だけ切って地形が残ると宙に浮いて見えるため）。
 (function setupClipUI() {
-  const onEl = el('clipOn'), sizeEl = el('clipSize'), labelEl = el('clipSizeLabel');
-  const terrEl = el('clipTerrainOn');
-  if (!onEl || !sizeEl) return;
-  sizeEl.min = String(CLIP_SIZE_MIN);
-  sizeEl.max = String(CLIP_SIZE_MAX);
-  sizeEl.step = String(CLIP_SIZE_STEP);
-  sizeEl.value = String(clipState.size);
-  labelEl.textContent = String(clipState.size);
-  onEl.checked = clipState.enabled;
-  terrEl.checked = clipState.terrain;
+  const boxBtn = el('clipModeBox'), allBtn = el('clipModeAll');
+  if (!boxBtn || !allBtn) return;
+  clipState.terrain = true;   // 箱庭表示では地形も一緒に切る（地盤ラインを出す）
 
   const reportToParent = () => {
     if (window.parent === window) return;
@@ -37,22 +49,27 @@ let getClipSize = () => 0;
     if (typeof fn === 'function') fn(clipState.enabled ? clipState.size : 0);
   };
 
-  onEl.addEventListener('change', () => { clipState.enabled = onEl.checked; reportToParent(); });
-  terrEl.addEventListener('change', () => { clipState.terrain = terrEl.checked; markSectionDirty(); });
-  sizeEl.addEventListener('input', () => {
-    clipState.size = Number(sizeEl.value);
-    labelEl.textContent = sizeEl.value;
+  const syncClipMode = () => {
+    boxBtn.classList.toggle('active', clipState.enabled);
+    allBtn.classList.toggle('active', !clipState.enabled);
+  };
+  const setClipMode = (on) => {
+    if (clipState.enabled === on) return;
+    clipState.enabled = on;
+    syncClipMode();
+    markSectionDirty();
     reportToParent();
-  });
+  };
+  boxBtn.addEventListener('click', () => setClipMode(true));
+  allBtn.addEventListener('click', () => setClipMode(false));
+  syncClipMode();
 
   setClipSizeFromParent = (m) => {
     const size = Math.min(CLIP_SIZE_MAX, Math.max(CLIP_SIZE_MIN, Number(m)));
     if (!Number.isFinite(size)) return;
-    clipState.enabled = true;      // 親のスライダーを動かした＝切り抜きたい、とみなす
+    clipState.enabled = true;      // 親のスライダーを動かした＝箱庭表示にしたい、とみなす
     clipState.size = size;
-    onEl.checked = true;
-    sizeEl.value = String(size);
-    labelEl.textContent = String(size);
+    syncClipMode();
     markSectionDirty();
   };
   getClipSize = () => (clipState.enabled ? clipState.size : 0);
@@ -239,10 +256,11 @@ let setPickerCenter = () => {};
   render();
 })();
 
-// ---- 建物の高さ色分けのトグルと凡例 ----------------------------------------
-(function setupHeightColorUI() {
-  const onEl = el('heightColorOn'), legendEl = el('heightLegend');
-  if (!onEl || !legendEl) return;
+// ---- 「建物」の見せ方：PLATEAUデフォルト／高さで色分け の2択と、その凡例 ----------
+(function setupBuildingStyleUI() {
+  const defBtn = el('bldgStyleDefault'), hBtn = el('bldgStyleHeight');
+  const legendEl = el('heightLegend');
+  if (!defBtn || !hBtn || !legendEl) return;
   // 凡例は HEIGHT_BANDS からそのまま組み立てる（色や区分を変えても勝手に追従する）
   for (const b of HEIGHT_BANDS) {
     const row = document.createElement('div');
@@ -252,9 +270,19 @@ let setPickerCenter = () => {};
     row.appendChild(document.createTextNode(b.label));
     legendEl.appendChild(row);
   }
-  onEl.checked = buildingColorState.byHeight;
-  const sync = () => legendEl.classList.toggle('on', onEl.checked);
-  onEl.addEventListener('change', () => { setBuildingColorByHeight(onEl.checked); sync(); });
+  const sync = () => {
+    const on = buildingColorState.byHeight;
+    hBtn.classList.toggle('active', on);
+    defBtn.classList.toggle('active', !on);
+    legendEl.classList.toggle('on', on);   // 凡例は色分けのときだけ出す
+  };
+  const setStyle = (byHeight) => {
+    if (buildingColorState.byHeight === byHeight) return;
+    setBuildingColorByHeight(byHeight);
+    sync();
+  };
+  defBtn.addEventListener('click', () => setStyle(false));
+  hBtn.addEventListener('click', () => setStyle(true));
   sync();
 })();
 

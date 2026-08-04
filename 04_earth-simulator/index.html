@@ -74,6 +74,8 @@
     .disclosure-body .stats-line { margin-top: 0; }
     .disclosure-body .stats-line:empty { display: none; }
     .disclosure-body .legend { margin-top: 0; }
+    /* 折りたたみの中では、ボタンの並びの上余白は gap に任せる */
+    .disclosure-body .map-switch { margin-top: 0; }
     /* 高さ色分けの凡例（トグルON のときだけ出す） */
     .legend { display: none; margin: 2px 0 0 22px; font-size: 11px; color: #c7d2e0; }
     .legend.on { display: block; }
@@ -162,31 +164,59 @@
     <div class="muted">国土交通省 PLATEAU 建築物モデル / 京都市 全11区（LOD2・一部LOD1）</div>
     <div class="muted">ドラッグ=回転 / ホイール=ズーム / 右ドラッグ・Shift+ドラッグ=平行移動</div>
     <div class="muted" style="margin-top:6px">自作モデルは原点(0,0,0)基準・メートル単位で追加できます</div>
-    <div class="stats-line">表示: <span class="stat" id="statVisible">0</span> 枚 ／ 読込済: <span id="statLoaded">0</span></div>
-    <div class="stats-line">DL: <span id="statDl">0</span>　解析: <span id="statParse">0</span></div>
-    <div class="stats-line">地形: <span class="stat" id="statTerrain">0</span> 枚</div>
+    <!-- ==========================================================================
+         操作は「地形／建物／景観・眺望規制」の3つに畳んである。
+         折りたたみの開閉は ui.js の setupDisclosures が aria-controls を見て一括で担当する
+         （見出しに class="disclosure" と aria-controls を付ければ増やせる）。
+         ========================================================================== -->
     <div class="clip-ui">
-      <label><input type="checkbox" id="clipOn" checked /> 中心を切り抜く（断面=灰＋黒ハッチ）</label>
-      <div class="clip-row">
-        <input type="range" id="clipSize" min="50" max="500" step="10" value="300" />
-        <span><span class="stat" id="clipSizeLabel">300</span> m 四方</span>
+      <!-- ---------- 地形 ---------- -->
+      <button type="button" class="disclosure" aria-expanded="false" aria-controls="terrainSection">地形</button>
+      <div id="terrainSection" class="disclosure-body">
+        <!-- 地形に貼る画（航空写真／地理院地図／淡色地図／なし）。中身は tiles.js が作る -->
+        <div class="map-switch" id="mapSwitch"></div>
+        <!-- 見せ方の2択。箱庭表示＝中心を四角く切り抜くカットモデル（建物も地形も切る）。
+             切り抜く大きさは親アプリ（01）の下部バーのスライダーで決める。 -->
+        <div class="map-switch" id="clipModeSwitch">
+          <button type="button" id="clipModeBox">箱庭表示</button>
+          <button type="button" id="clipModeAll">全体表示</button>
+        </div>
+        <!-- 地名の重ね合わせ（今後、川名なども増やす） -->
+        <label><input type="checkbox" id="mountainOn" checked /> 山名</label>
+        <div class="stats-line" id="mountainInfo"></div>
       </div>
-      <label><input type="checkbox" id="clipTerrainOn" checked /> 地形も切り抜く（地盤ライン=青）</label>
-      <!-- 景観・眺望規制のレイヤー群。項目が多いので折りたたみにしてある。
-           中身（チェック・色見本・情報行）はすべて config.js の ZONE_LAYERS から組み立てる。
+
+      <!-- ---------- 建物 ---------- -->
+      <button type="button" class="disclosure" aria-expanded="false" aria-controls="buildingSection">建物</button>
+      <div id="buildingSection" class="disclosure-body">
+        <div class="map-switch" id="buildingStyleSwitch">
+          <button type="button" id="bldgStyleDefault">PLATEAUデフォルト</button>
+          <button type="button" id="bldgStyleHeight">高さで色分け</button>
+        </div>
+        <div class="legend" id="heightLegend"></div>
+      </div>
+
+      <!-- ---------- 景観・眺望規制 ---------- -->
+      <!-- レイヤー群の中身（チェック・色見本・情報行）は config.js の ZONE_LAYERS から組み立てる。
            眺望空間保全区域だけは別系統なので viewareas.js が末尾に足す。 -->
       <button type="button" class="disclosure" id="zoneSectionHead"
               aria-expanded="false" aria-controls="zoneLayers">景観・眺望規制</button>
       <div id="zoneLayers" class="disclosure-body"></div>
-      <label><input type="checkbox" id="heightColorOn" /> 建物を高さで色分け（テクスチャ→色）</label>
-      <div class="legend" id="heightLegend"></div>
     </div>
+
     <!-- 自作モデル（親アプリから受け取った建物）の操作。中身は usermodel.js が組み立てる。
          モデルを受け取っていないとき（単独起動）は表示しない。 -->
     <div class="clip-ui" id="userModelUi" style="display:none"></div>
+
     <div class="map-switch"><button id="recenterBtn">注目地点へ戻す</button></div>
-    <div class="map-switch" id="mapSwitch"></div>
-    <div class="muted" style="margin-top:6px; font-size:11px">地図：<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院</a></div>
+
+    <!-- ---------- 情報 ---------- -->
+    <div class="clip-ui" id="infoPanel">
+      <div class="stats-line">表示: <span class="stat" id="statVisible">0</span> 枚 ／ 読込済: <span id="statLoaded">0</span></div>
+      <div class="stats-line">DL: <span id="statDl">0</span>　解析: <span id="statParse">0</span></div>
+      <div class="stats-line">地形: <span class="stat" id="statTerrain">0</span> 枚</div>
+      <div class="muted" style="font-size:11px">地図：<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院</a></div>
+    </div>
   </div>
 
   <!-- 地盤・建物がまだ届いていないことを示す小さな表示（全画面の覆いとは別物）。

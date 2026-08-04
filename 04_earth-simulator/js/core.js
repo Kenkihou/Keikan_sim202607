@@ -103,7 +103,9 @@ export function recenterOnFocus() {
 //   ★ ゾーンレイヤー（風致地区など）は複数あるので、真偽値ではなく【世代番号】にする。
 //     viewareas 側は「前に見た世代と違えば全レイヤーを作り直し待ちに入れる」だけでよく、
 //     レイヤーの種類を core が知らずに済む（＝ここに増やす必要がない）。
-export const dirty = { section: true, viewArea: false, viewLimit: false, zone: 0, userModel: false };
+export const dirty = {
+  section: true, viewArea: false, viewLimit: false, zone: 0, userModel: false, mountains: false,
+};
 export const markSectionDirty = () => { dirty.section = true; };
 export const markViewAreaDirty = () => { dirty.viewArea = true; };
 export const markViewLimitDirty = () => { dirty.viewLimit = true; };
@@ -112,6 +114,9 @@ export const markZonesDirty = () => { dirty.zone++; };
 //   注目地点が動いたとき・地形が増えたときに接地し直す必要があるので、
 //   断面や眺望ポリゴンと同じくフラグで伝える（tiles 側が usermodel を import せずに済む）。
 export const markUserModelDirty = () => { dirty.userModel = true; };
+// 山名ラベルのうち、標高データが無くて【地形から高さを拾う】ものの置き直し。
+//   地形が増えるまで高さが取れないので、増えたら拾い直す（自作モデルの接地と同じ理由）。
+export const markMountainsDirty = () => { dirty.mountains = true; };
 
 export {
   THREE,

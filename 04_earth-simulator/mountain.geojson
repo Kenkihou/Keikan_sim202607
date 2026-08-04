@@ -1,0 +1,4195 @@
+{
+  "type": "FeatureCollection",
+  "generator": "overpass-turbo",
+  "copyright": "The data included in this document is from www.openstreetmap.org. The data is made available under ODbL.",
+  "timestamp": "2026-08-02T13:22:46Z",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/296918539",
+        "ele": "593",
+        "name": "音羽山",
+        "name:en": "Mt. Otowa",
+        "natural": "peak",
+        "wikidata": "Q11664332",
+        "wikipedia": "ja:音羽山 (滋賀県・京都府)"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8529991,
+          34.9768561
+        ]
+      },
+      "id": "node/296918539"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/1242813050",
+        "ele": "271",
+        "name": "善気山",
+        "name:en": "Zenki-san",
+        "natural": "peak",
+        "source": "survey;local knowledge;gps"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8021278,
+          35.023736
+        ]
+      },
+      "id": "node/1242813050"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/1344164809",
+        "ele": "448",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.613407,
+          35.061391
+        ]
+      },
+      "id": "node/1344164809"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/1420101638",
+        "ele": "230",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.760619,
+          35.067022
+        ]
+      },
+      "id": "node/1420101638"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/1882308814",
+        "ele": "298",
+        "fixme:wikipedia": "ja:高峰山 (京都府)",
+        "name": "高峰山",
+        "natural": "peak",
+        "source": "Survey;GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.822291,
+          34.9153046
+        ]
+      },
+      "id": "node/1882308814"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/2503700051",
+        "alt_name": "Inari Mountain",
+        "ele": "233",
+        "name": "稲荷山",
+        "name:en": "Inariyama Mountain",
+        "name:ja": "稲荷山",
+        "name:ja-Hira": "いなりやま",
+        "name:ja-Latn": "Inari yama",
+        "natural": "peak",
+        "source": "GSImaps/std",
+        "wikipedia": "ja:伏見稲荷大社#稲荷山"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7855255,
+          34.9670127
+        ]
+      },
+      "id": "node/2503700051"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/3004516193",
+        "ele": "465.3",
+        "name": "大文字山",
+        "name:en": "Mt. Daimonji",
+        "natural": "peak",
+        "source": "survey;local knowledge;gps",
+        "wikidata": "Q31706159"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8117253,
+          35.0196387
+        ]
+      },
+      "id": "node/3004516193"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/3195192844",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7172379,
+          34.9981048
+        ]
+      },
+      "id": "node/3195192844"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/3265440969",
+        "ele": "924",
+        "name": "愛宕山",
+        "name:en": "Mount Atago",
+        "name:fr": "Mont Atago",
+        "name:ja-Hira": "あたごやま",
+        "name:ja-Latn": "Atagoyama",
+        "natural": "peak",
+        "source": "GSImaps/std",
+        "wikidata": "Q2975204",
+        "wikimedia_commons": "Category:Mount Atago (Kyoto)",
+        "wikipedia": "ja:愛宕山 (京都市)"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6342851,
+          35.0600453
+        ]
+      },
+      "id": "node/3265440969"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/3265440970",
+        "ele": "896",
+        "name": "桟敷ヶ岳",
+        "natural": "peak",
+        "source": "GSImaps/std",
+        "wikidata": "Q17173517"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7172261,
+          35.1592046
+        ]
+      },
+      "id": "node/3265440970"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/3265440973",
+        "ele": "971",
+        "name": "皆子山",
+        "name:en": "Mt. Minago",
+        "name:ja": "皆子山",
+        "name:ja-Latn": "Minakoyama",
+        "natural": "peak",
+        "source": "GSImaps/std",
+        "wikipedia": "ja:皆子山"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8351716,
+          35.2021588
+        ]
+      },
+      "id": "node/3265440973"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/3283370092",
+        "alt_name:ja": "武奈ヶ嶽",
+        "description": "比良山地の山",
+        "ele": "1214",
+        "name": "武奈ヶ岳",
+        "name:en": "Buna-gatake",
+        "name:ja-Latn": "Buna-gatake",
+        "natural": "peak",
+        "source": "GSImaps/std",
+        "wikidata": "Q6919910"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8969848,
+          35.2646197
+        ]
+      },
+      "id": "node/3283370092"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/3283370097",
+        "description": "比良山地の山",
+        "ele": "1173.9",
+        "name": "蓬莱山",
+        "name:en": "Mt. Horai",
+        "name:ja-Latn": "Hōraisan",
+        "natural": "peak",
+        "source": "GSImaps/std",
+        "wikidata": "Q31702882"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8857333,
+          35.2095056
+        ]
+      },
+      "id": "node/3283370097"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/3289546425",
+        "alt_name:fr": "Montagne aux pavots",
+        "ele": "177",
+        "name": "ケシ山",
+        "name:etymology:wikidata": "Q131584",
+        "name:fr": "Mont Keshi",
+        "name:ja-Hira": "ケシやま",
+        "name:ja-Latn": "Keshi-yama",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.767583,
+          35.062476
+        ]
+      },
+      "id": "node/3289546425"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/3585135470",
+        "ele": "180",
+        "name": "三好山（芥川山城跡）",
+        "name:en": "Mt. Miyoshi",
+        "name:ja": "三好山",
+        "name:ja-Hira": "みよしやま",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.5883374,
+          34.8811871
+        ]
+      },
+      "id": "node/3585135470"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/3646872321",
+        "ele": "381",
+        "name": "八王子山",
+        "natural": "peak",
+        "source": "Mapbox Satellite;GSImaps/Std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8593556,
+          35.0740133
+        ]
+      },
+      "id": "node/3646872321"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/4242342534",
+        "ele": "239",
+        "name": "伽藍山",
+        "name:en": "Mt. Garan",
+        "name:fr": "Mont Garan",
+        "name:ja-Hira": "がらんさん",
+        "name:ja-Latn": "Garan-san",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8982933,
+          34.9629561
+        ]
+      },
+      "id": "node/4242342534"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/4311322198",
+        "ele": "600",
+        "name": "千頭岳",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8636366,
+          34.9581236
+        ]
+      },
+      "id": "node/4311322198"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/4349281890",
+        "ele": "270",
+        "name": "天王山",
+        "name:en": "Mt. Tenno",
+        "name:ja": "天王山",
+        "name:ja-Hira": "てんのうざん",
+        "natural": "peak",
+        "wikidata": "Q10940452",
+        "wikipedia": "ja:天王山"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6763013,
+          34.9018536
+        ]
+      },
+      "id": "node/4349281890"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/4377354937",
+        "ele": "231",
+        "name": "大文字山",
+        "name:en": "Daimonjiyama",
+        "name:ja": "大文字山",
+        "name:ja-Hira": "だいもんじやま",
+        "natural": "peak",
+        "source": "GSImaps/std",
+        "wikidata": "Q31706143"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7298163,
+          35.0446298
+        ]
+      },
+      "id": "node/4377354937"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/4379055371",
+        "ele": "515.6",
+        "name": "沢山",
+        "name:en": "Takusan",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7026808,
+          35.0562687
+        ]
+      },
+      "id": "node/4379055371"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/4420298668",
+        "ele": "630.8",
+        "name": "釈迦岳",
+        "name:en": "Mt. Shaka",
+        "name:ja": "釈迦岳",
+        "name:ja-Hira": "しゃかだけ",
+        "natural": "peak",
+        "wikidata": "Q31508629"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6347286,
+          34.9320909
+        ]
+      },
+      "id": "node/4420298668"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/4420298716",
+        "ele": "642",
+        "name": "小塩山",
+        "name:en": "Mt. Koshio",
+        "name:ja": "小塩山",
+        "name:ja-Hira": "こしおやま",
+        "natural": "peak",
+        "wikidata": "Q11459560",
+        "wikipedia": "ja:小塩山"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6338904,
+          34.9617874
+        ]
+      },
+      "id": "node/4420298716"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/4420298717",
+        "ele": "567.6",
+        "name": "大暑山",
+        "name:en": "Mt. Daisho",
+        "name:ja": "大暑山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6438777,
+          34.9709668
+        ]
+      },
+      "id": "node/4420298717"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/4420298769",
+        "ele": "560.9",
+        "name": "金比羅山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.5872043,
+          34.9294603
+        ]
+      },
+      "id": "node/4420298769"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/4420298770",
+        "ele": "480.3",
+        "name": "高ヶ尾山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.5806859,
+          34.9088504
+        ]
+      },
+      "id": "node/4420298770"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5300962168",
+        "ele": "304.4",
+        "man_made": "survey_point",
+        "name": "十方山",
+        "natural": "peak",
+        "source": "survey"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6671737,
+          34.9044427
+        ]
+      },
+      "id": "node/5300962168"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5351652805",
+        "ele": "171",
+        "name": "林山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7795216,
+          35.0547548
+        ]
+      },
+      "id": "node/5351652805"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446135",
+        "ele": "415.9",
+        "name": "喜撰山",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.847631,
+          34.8965743
+        ]
+      },
+      "id": "node/5743446135"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446136",
+        "ele": "233",
+        "name": "明星山",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8252724,
+          34.8986755
+        ]
+      },
+      "id": "node/5743446136"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446137",
+        "ele": "370",
+        "name": "笠取山",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8629314,
+          34.9342154
+        ]
+      },
+      "id": "node/5743446137"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446138",
+        "alt_name": "笠取山;上醍醐;醍醐醍醐山",
+        "alt_name:en": "Mt. Kasatori;Kami-Daigo;Daigo-Daigoyama",
+        "alt_name:fr": "Mont Kasatori;Kami-Daigo;Daigo-Daigoyama",
+        "alt_name:ja": "笠取山;上醍醐;醍醐醍醐山",
+        "alt_name:ja-Hira": "かさとりやま;かみだいご;あいごあいごやま",
+        "alt_name:ja-Latn": "Kasatori-yama;Kami-Daigo;Daigo-Daigoyama",
+        "ele": "454",
+        "name": "醍醐山",
+        "name:en": "Mt. Daigo",
+        "name:etymology:wikidata": "Q5209110",
+        "name:fr": "Mont Daigo",
+        "name:ja": "醍醐山",
+        "name:ja-Hira": "だいごやま",
+        "name:ja-Latn": "Daigo-yama",
+        "natural": "peak",
+        "source": "GSImaps/std",
+        "wikidata": "Q31511077"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8386312,
+          34.9469278
+        ]
+      },
+      "id": "node/5743446138"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446139",
+        "ele": "348",
+        "name": "天下峰",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8295399,
+          34.9250926
+        ]
+      },
+      "id": "node/5743446139"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446140",
+        "ele": "343",
+        "name": "五雲峰",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8257793,
+          34.9111607
+        ]
+      },
+      "id": "node/5743446140"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446141",
+        "ele": "124",
+        "name": "朝日山",
+        "name:en": "Mt. Asahi",
+        "name:fr": "Mont Asahi",
+        "name:ja-Hira": "あさひやま",
+        "name:ja-Latn": "Asahiyama",
+        "natural": "peak",
+        "source": "GSImaps/std",
+        "wikidata": "Q30936650",
+        "wikipedia": "ja:朝日山 (京都府宇治市)"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8162133,
+          34.891069
+        ]
+      },
+      "id": "node/5743446141"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446142",
+        "ele": "131.6",
+        "name": "仏徳山",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.814242,
+          34.892324
+        ]
+      },
+      "id": "node/5743446142"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446143",
+        "ele": "106",
+        "name": "槇ノ尾山",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.813373,
+          34.8843429
+        ]
+      },
+      "id": "node/5743446143"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446144",
+        "ele": "472",
+        "name": "荒木山",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8551921,
+          34.8658648
+        ]
+      },
+      "id": "node/5743446144"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446145",
+        "ele": "506.3",
+        "name": "大峰山",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8565,
+          34.8726729
+        ]
+      },
+      "id": "node/5743446145"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446146",
+        "ele": "443",
+        "name": "岩間山",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.879911,
+          34.9345004
+        ]
+      },
+      "id": "node/5743446146"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446147",
+        "ele": "485.0",
+        "name": "高塚山",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8370936,
+          34.9602702
+        ]
+      },
+      "id": "node/5743446147"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446148",
+        "ele": "354",
+        "name": "長等山",
+        "natural": "peak",
+        "source": "GSImaps/std",
+        "wikidata": "Q134493096"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8447365,
+          35.015929
+        ]
+      },
+      "id": "node/5743446148"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446149",
+        "alt_name": "如意ヶ嶽",
+        "ele": "472",
+        "name": "如意ヶ岳",
+        "name:en": "Nyoigatake Mountain",
+        "name:fr": "Mont Nyoi",
+        "name:ja-Hira": "にょいがたけ",
+        "name:ja-Latn": "Nyoi-ga-take",
+        "natural": "peak",
+        "source": "GSImaps/std",
+        "wikidata": "Q10942951",
+        "wikimedia_commons": "Category:Nyoigatake",
+        "wikipedia": "ja:如意ヶ嶽"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.825954,
+          35.0168756
+        ]
+      },
+      "id": "node/5743446149"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446150",
+        "ele": "242.5",
+        "name": "清水山",
+        "name:en": "Mt. Kiyomizu",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7885753,
+          34.9931377
+        ]
+      },
+      "id": "node/5743446150"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446151",
+        "ele": "201",
+        "name": "六条山",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7890444,
+          34.9868197
+        ]
+      },
+      "id": "node/5743446151"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446152",
+        "ele": "108",
+        "name": "七面山",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7777824,
+          34.96424
+        ]
+      },
+      "id": "node/5743446152"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446153",
+        "ele": "182",
+        "name": "大岩山",
+        "natural": "peak",
+        "source": "GSImaps/std",
+        "wikidata": "Q11434768",
+        "wikipedia": "ja:大岩山 (京都府)"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7940418,
+          34.9518591
+        ]
+      },
+      "id": "node/5743446153"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446154",
+        "ele": "301",
+        "name": "瓜生山",
+        "name:en": "Mt. Uryū",
+        "name:fr": "Mont Uryū",
+        "name:ja-Hira": "うりゅうやま",
+        "name:ja-Latn": "Uryū-yama",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8030093,
+          35.0395478
+        ]
+      },
+      "id": "node/5743446154"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446155",
+        "alt_name": "神楽岡",
+        "alt_name:ja-Hira": "かぐらおか",
+        "alt_name:ja-Latn": "Kagura-oka",
+        "contact:tripadvisor": "6866700",
+        "ele": "105.12",
+        "name": "吉田山",
+        "name:en": "Mt. Yoshida",
+        "name:fr": "Mont Yoshida",
+        "name:ja-Hira": "よしだやま",
+        "name:ja-Latn": "Yoshida-yama",
+        "natural": "peak",
+        "source": "GSImaps/std",
+        "wikidata": "Q18457625",
+        "wikipedia": "ja:吉田山 (京都市)"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7873124,
+          35.0270614
+        ]
+      },
+      "id": "node/5743446155"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446156",
+        "ele": "335",
+        "name": "宇佐山",
+        "natural": "peak",
+        "source": "gGSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.846609,
+          35.0336662
+        ]
+      },
+      "id": "node/5743446156"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446157",
+        "ele": "421",
+        "name": "壺笠山",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8516249,
+          35.0556127
+        ]
+      },
+      "id": "node/5743446157"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446158",
+        "ele": "675.6",
+        "name": "三石岳",
+        "natural": "peak",
+        "source": "GSImaps/Std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8512687,
+          35.0840831
+        ]
+      },
+      "id": "node/5743446158"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446159",
+        "ele": "532.0",
+        "name": "瓢簞崩山",
+        "name:en": "Hyotankuzure-yama",
+        "natural": "peak",
+        "source": "GSImaps/Std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.809774,
+          35.0921913
+        ]
+      },
+      "id": "node/5743446159"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446160",
+        "ele": "767",
+        "name": "横高山",
+        "name:en": "Yokotaka-yama",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8351843,
+          35.0911235
+        ]
+      },
+      "id": "node/5743446160"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446161",
+        "ele": "793.9",
+        "name": "水井山",
+        "name:en": "Mizui-yama",
+        "natural": "peak",
+        "source": "GSImaps/Std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8375638,
+          35.09591
+        ]
+      },
+      "id": "node/5743446161"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446162",
+        "ele": "681",
+        "name": "梶山",
+        "name:en": "Mt. Daibi",
+        "natural": "peak",
+        "source": "GSImaps/Std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8492941,
+          35.1255814
+        ]
+      },
+      "id": "node/5743446162"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446163",
+        "ele": "788",
+        "name": "天ヶ岳",
+        "natural": "peak",
+        "source": "GSImaps/Std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7981913,
+          35.1456306
+        ]
+      },
+      "id": "node/5743446163"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446164",
+        "ele": "717.4",
+        "name": "焼杉山",
+        "name:en": "Yakesugi-yama",
+        "natural": "peak",
+        "source": "GSImaps/Std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.817736,
+          35.1364513
+        ]
+      },
+      "id": "node/5743446164"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446165",
+        "ele": "577",
+        "name": "翠黛山",
+        "name:ja": "翠黛山",
+        "name:ja-Hira": "すいたいさん",
+        "natural": "peak",
+        "source": "GSImaps/Std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8113422,
+          35.1225011
+        ]
+      },
+      "id": "node/5743446165"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446166",
+        "ele": "572.5",
+        "name": "金毘羅山",
+        "name:en": "Mt. Konpira",
+        "natural": "peak",
+        "source": "GSImaps/Std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8070233,
+          35.1175638
+        ]
+      },
+      "id": "node/5743446166"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446167",
+        "ele": "432.3",
+        "name": "箕ノ裏ヶ岳",
+        "name:en": "Minoura-ga-take",
+        "name:ja": "箕ノ裏ヶ岳",
+        "natural": "peak",
+        "source": "GSImaps/Std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.78181,
+          35.09873
+        ]
+      },
+      "id": "node/5743446167"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446168",
+        "ele": "186",
+        "name": "東山",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7869829,
+          35.0554173
+        ]
+      },
+      "id": "node/5743446168"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446169",
+        "ele": "135",
+        "name": "西山",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7708998,
+          35.0563022
+        ]
+      },
+      "id": "node/5743446169"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446170",
+        "ele": "301.2",
+        "man_made": "survey_point",
+        "name": "神山",
+        "natural": "peak",
+        "source": "GSImaps/std",
+        "survey_point:purpose": "horizontal",
+        "survey_point:structure": "block"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7513347,
+          35.0796524
+        ]
+      },
+      "id": "node/5743446170"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446171",
+        "ele": "426",
+        "name": "向山",
+        "name:en": "Mount Mukai",
+        "name:ja": "向山",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7575004,
+          35.0954771
+        ]
+      },
+      "id": "node/5743446171"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446172",
+        "ele": "500",
+        "name": "竜王岳",
+        "natural": "peak",
+        "source": "GSImaps/Std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7744162,
+          35.1086888
+        ]
+      },
+      "id": "node/5743446172"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446173",
+        "contact:tripadvisor": "1424607",
+        "ele": "584",
+        "name": "鞍馬山",
+        "name:en": "Mt. Kurama",
+        "name:fr": "Mont Kurama",
+        "name:ja-Hira": "くらまやま",
+        "name:ja-Latn": "Kurama-yama",
+        "natural": "peak",
+        "source": "GSImaps/std",
+        "wikidata": "Q410132",
+        "wikimedia_commons": "Category:Mount Kurama",
+        "wikipedia": "ja:鞍馬山"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7715628,
+          35.123865
+        ]
+      },
+      "id": "node/5743446173"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446174",
+        "ele": "479.6",
+        "man_made": "survey_point",
+        "name": "城山",
+        "name:en": "Mt. Shiro",
+        "name:ja": "城山",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7193435,
+          35.0773508
+        ]
+      },
+      "id": "node/5743446174"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446175",
+        "ele": "317",
+        "name": "船山",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7320944,
+          35.0675842
+        ]
+      },
+      "id": "node/5743446175"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446176",
+        "ele": "290.9",
+        "name": "釈迦谷山",
+        "name:en": "Mt. Shakayatsu",
+        "name:fr": "Mont Shakayatsu",
+        "name:ja-Hira": "しゃかやつさん",
+        "name:ja-Latn": "Shakayatsu-san",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7269361,
+          35.0614119
+        ]
+      },
+      "id": "node/5743446176"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/5743446177",
+        "ele": "201",
+        "name": "衣笠山",
+        "natural": "peak",
+        "source": "GSImaps/std",
+        "wikidata": "Q11626402",
+        "wikipedia": "ja:衣笠山 (京都府)"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7220322,
+          35.0358019
+        ]
+      },
+      "id": "node/5743446177"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/6266746583",
+        "ele": "795.1",
+        "name": "大段谷山",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7136921,
+          35.2932883
+        ]
+      },
+      "id": "node/6266746583"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/6392004449",
+        "ele": "391",
+        "name": "袴腰山",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8964914,
+          34.9271292
+        ]
+      },
+      "id": "node/6392004449"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/6392004464",
+        "ele": "196",
+        "name": "阿弥陀ヶ峰",
+        "natural": "peak",
+        "source": "GSImaps/std",
+        "wikidata": "Q96074702",
+        "wikipedia": "ja:阿弥陀ヶ峰"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7852187,
+          34.9880199
+        ]
+      },
+      "id": "node/6392004464"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/6392004467",
+        "ele": "495.3",
+        "man_made": "survey_point",
+        "name": "十三石山",
+        "name:en": "Mt. Jusangoku",
+        "name:ja": "十三石山",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7324341,
+          35.0956667
+        ]
+      },
+      "id": "node/6392004467"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/6392004470",
+        "ele": "342",
+        "name": "高雄山",
+        "name:en": "Mt. Takao",
+        "name:ja": "高雄山",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6677227,
+          35.0575767
+        ]
+      },
+      "id": "node/6392004470"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/6392004471",
+        "ele": "537.4",
+        "name": "峰山",
+        "name:en": "Mt. Mine",
+        "name:ja": "峰山",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6761287,
+          35.0711779
+        ]
+      },
+      "id": "node/6392004471"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/6392004472",
+        "ele": "296",
+        "name": "小倉山",
+        "name:en": "Mt. Ogura",
+        "name:fr": "Mont Ogura",
+        "name:ja-Hira": "おぐらやま",
+        "name:ja-Latn": "Ogura-yama",
+        "natural": "peak",
+        "source": "GSImaps/std",
+        "wikidata": "Q27921552",
+        "wikimedia_commons": "Category:Mount Ogura (Kyoto)",
+        "wikipedia": "ja:小倉山 (京都市)"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6590125,
+          35.0235574
+        ]
+      },
+      "id": "node/6392004472"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/6392004802",
+        "ele": "398",
+        "name": "烏ヶ岳",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6612316,
+          35.0113174
+        ]
+      },
+      "id": "node/6392004802"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/6392004803",
+        "ele": "382",
+        "name": "嵐山",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6666769,
+          35.0096056
+        ]
+      },
+      "id": "node/6392004803"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/6392004805",
+        "alt_name": "大比叡",
+        "alt_name:en": "Daihiei Mountain",
+        "alt_name:fr": "Daihiei",
+        "alt_name:ja": "大比叡",
+        "alt_name:ja-Hira": "だい ひえい",
+        "alt_name:ja-Latn": "Daihiei",
+        "ele": "848.1",
+        "name": "比叡山",
+        "name:en": "Mt. Hiei",
+        "name:fr": "Mont Hiei",
+        "name:ja-Hira": "ひえいざん",
+        "name:ja-Latn": "Hiei-zan",
+        "natural": "peak",
+        "source": "GSImaps/Std",
+        "wikidata": "Q748040",
+        "wikimedia_commons": "Category:Mount Hiei",
+        "wikipedia": "ja:比叡山"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8344171,
+          35.0658048
+        ]
+      },
+      "id": "node/6392004805"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/6392004807",
+        "ele": "669.8",
+        "name": "半国高山",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6936081,
+          35.1163605
+        ]
+      },
+      "id": "node/6392004807"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/6392004808",
+        "ele": "996",
+        "name": "権現山",
+        "name:en": "Gongen-zan",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8724886,
+          35.1915871
+        ]
+      },
+      "id": "node/6392004808"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/6392004809",
+        "ele": "750.5",
+        "name": "霊仙山",
+        "name:en": "Ryozen-yama",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.874003,
+          35.1779711
+        ]
+      },
+      "id": "node/6392004809"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/6392004810",
+        "ele": "1108",
+        "name": "打見山",
+        "name:en": "Uchimi-yama",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8940165,
+          35.2134745
+        ]
+      },
+      "id": "node/6392004810"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/6392004811",
+        "ele": "1051",
+        "name": "比良岳",
+        "name:en": "Hira-dake",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8928998,
+          35.2271563
+        ]
+      },
+      "id": "node/6392004811"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/6392004812",
+        "ele": "1076.5",
+        "man_made": "survey_point",
+        "name": "烏谷山",
+        "name:en": "Karasutani-yama",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.89853,
+          35.232462
+        ]
+      },
+      "id": "node/6392004812"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/6392004950",
+        "ele": "950.5",
+        "name": "鎌倉山",
+        "name:en": "Kamakura-yama",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8441025,
+          35.2516852
+        ]
+      },
+      "id": "node/6392004950"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/6392004951",
+        "ele": "969.9",
+        "name": "峰床山",
+        "name:en": "Minetoko-yama",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8237155,
+          35.2374706
+        ]
+      },
+      "id": "node/6392004951"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/6392004952",
+        "ele": "741",
+        "name": "大悲山",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7959861,
+          35.238772
+        ]
+      },
+      "id": "node/6392004952"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/6404546543",
+        "ele": "337",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6554848,
+          35.0083496
+        ]
+      },
+      "id": "node/6404546543"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/6404546545",
+        "ele": "430.1",
+        "name": "みすぎ山",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6206728,
+          35.0132044
+        ]
+      },
+      "id": "node/6404546545"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/6404546547",
+        "ele": "412",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6253757,
+          35.012244
+        ]
+      },
+      "id": "node/6404546547"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/6404546549",
+        "ele": "181",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6284714,
+          35.0205903
+        ]
+      },
+      "id": "node/6404546549"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/6404546550",
+        "ele": "258",
+        "name": "嵯峨陵",
+        "name:en": "Saga-ryō",
+        "name:fr": "Saga-ryō",
+        "name:ja": "嵯峨陵",
+        "name:ja-Hira": "さがりょう",
+        "name:ja-Latn": "Saga-ryō",
+        "natural": "peak",
+        "source": "GSImaps/std"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6571076,
+          35.0319032
+        ]
+      },
+      "id": "node/6404546550"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7173965213",
+        "ele": "526.7",
+        "name": "黒柄岳",
+        "name:en": "Mt. Kurogara",
+        "name:ja": "黒柄岳",
+        "name:ja-Hira": "くろがらだけ",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.5740299,
+          34.9609401
+        ]
+      },
+      "id": "node/7173965213"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7448958731",
+        "ele": "636",
+        "name": "牛松山",
+        "name:en": "Mount Ushimatsu",
+        "name:ja": "牛松山",
+        "name:ja-Hira": "うしまつやま",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6023446,
+          35.0440396
+        ]
+      },
+      "id": "node/7448958731"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7448958733",
+        "ele": "921",
+        "name": "竜ヶ岳",
+        "name:en": "Ryu-gatake",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6329916,
+          35.0763319
+        ]
+      },
+      "id": "node/7448958733"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7448958734",
+        "ele": "947.3",
+        "name": "地蔵山",
+        "name:en": "Jizo-san",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6234685,
+          35.0753842
+        ]
+      },
+      "id": "node/7448958734"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7448958739",
+        "ele": "728",
+        "name": "三頭山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6200887,
+          35.1012034
+        ]
+      },
+      "id": "node/7448958739"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7448958740",
+        "ele": "623",
+        "name": "鎌ヶ岳",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.5975262,
+          35.1100048
+        ]
+      },
+      "id": "node/7448958740"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7448958741",
+        "ele": "627",
+        "name": "千歳山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.579487,
+          35.1173963
+        ]
+      },
+      "id": "node/7448958741"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7448958742",
+        "ele": "688.1",
+        "name": "朝日峯",
+        "name:en": "Mt. Asahimine",
+        "name:ja": "朝日峯",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6578415,
+          35.0878105
+        ]
+      },
+      "id": "node/7448958742"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7448958748",
+        "ele": "876",
+        "name": "滝谷山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7970455,
+          35.1732143
+        ]
+      },
+      "id": "node/7448958748"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7448958753",
+        "ele": "763.1",
+        "name": "湯槽山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7612773,
+          35.2253699
+        ]
+      },
+      "id": "node/7448958753"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7448958766",
+        "ele": "716",
+        "name": "貴船山",
+        "name:en": "Mt. Kibune",
+        "name:fr": "Mont Kibune",
+        "name:ja": "貴船山",
+        "name:ja-Hira": "きぶねやま",
+        "name:ja-Latn": "Kibune-yama",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7554867,
+          35.127031
+        ]
+      },
+      "id": "node/7448958766"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7448958776",
+        "ele": "778",
+        "name": "鴨瀬芦谷山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.685071,
+          35.2443626
+        ]
+      },
+      "id": "node/7448958776"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7448958777",
+        "ele": "765.5",
+        "name": "掛橋谷山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6657329,
+          35.2592102
+        ]
+      },
+      "id": "node/7448958777"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7448958778",
+        "ele": "752",
+        "name": "奥八丁山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6806084,
+          35.2660242
+        ]
+      },
+      "id": "node/7448958778"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7448958779",
+        "ele": "703.9",
+        "name": "ハナノ谷段山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6813751,
+          35.2804744
+        ]
+      },
+      "id": "node/7448958779"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7449011498",
+        "ele": "791",
+        "name": "飯森山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6869549,
+          35.1678835
+        ]
+      },
+      "id": "node/7449011498"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7449011499",
+        "ele": "775",
+        "name": "天童山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6790846,
+          35.1670974
+        ]
+      },
+      "id": "node/7449011499"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7449011517",
+        "ele": "498.5",
+        "name": "龍王ヶ岳",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.5696316,
+          35.1011209
+        ]
+      },
+      "id": "node/7449011517"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7459158523",
+        "ele": "584",
+        "name": "奥東山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6480665,
+          35.2938371
+        ]
+      },
+      "id": "node/7459158523"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7459158524",
+        "ele": "750.2",
+        "name": "ホサビ山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6273122,
+          35.2847916
+        ]
+      },
+      "id": "node/7459158524"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7459158529",
+        "ele": "731",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6265407,
+          35.2646597
+        ]
+      },
+      "id": "node/7459158529"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7459158542",
+        "ele": "665.2",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6056847,
+          35.2525579
+        ]
+      },
+      "id": "node/7459158542"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7459158543",
+        "ele": "403.7",
+        "name": "城山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.5563038,
+          35.2694178
+        ]
+      },
+      "id": "node/7459158543"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7459158544",
+        "ele": "428",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.5639398,
+          35.2705936
+        ]
+      },
+      "id": "node/7459158544"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7461389874",
+        "ele": "588.3",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.5619663,
+          35.2261695
+        ]
+      },
+      "id": "node/7461389874"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7461406386",
+        "ele": "509.3",
+        "name": "黒尾山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6109597,
+          35.1574807
+        ]
+      },
+      "id": "node/7461406386"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7461406387",
+        "ele": "364",
+        "name": "中山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.5955715,
+          35.1586158
+        ]
+      },
+      "id": "node/7461406387"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7461406388",
+        "ele": "540",
+        "name": "白岩山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.5783957,
+          35.1602363
+        ]
+      },
+      "id": "node/7461406388"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7461406389",
+        "ele": "569",
+        "name": "黒尾山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.5680931,
+          35.1611173
+        ]
+      },
+      "id": "node/7461406389"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7461406404",
+        "ele": "380",
+        "name": "紅葉山",
+        "name:en": "Momijiyama",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.5567285,
+          35.10258
+        ]
+      },
+      "id": "node/7461406404"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7461406405",
+        "ele": "445.1",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.5646213,
+          35.1084583
+        ]
+      },
+      "id": "node/7461406405"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7461406424",
+        "ele": "616",
+        "name": "三郎ヶ岳",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.58386,
+          35.0745677
+        ]
+      },
+      "id": "node/7461406424"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7563071024",
+        "ele": "280.9",
+        "name": "阿武山",
+        "name:en": "Mt. Abu",
+        "name:ja": "阿武山",
+        "name:ja-Hira": "あぶやま",
+        "natural": "peak",
+        "wikidata": "Q31395507",
+        "wikipedia": "ja:阿武山 (大阪府)"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.5686663,
+          34.8687534
+        ]
+      },
+      "id": "node/7563071024"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7681120168",
+        "ele": "480",
+        "name": "大枝山",
+        "name:en": "Ōeyama",
+        "natural": "peak",
+        "wikidata": "Q3390824",
+        "wikipedia": "ja:大枝山"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6405416,
+          34.9805384
+        ]
+      },
+      "id": "node/7681120168"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7704850542",
+        "name": "諸羽山",
+        "name:en": "Morohayama",
+        "name:ja": "諸羽山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8231118,
+          34.995796
+        ]
+      },
+      "id": "node/7704850542"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7704870656",
+        "alt_name": "御陵山",
+        "ele": "257",
+        "name": "鏡山",
+        "name:ja-Latn": "Kagamiyama",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8133515,
+          35.0005995
+        ]
+      },
+      "id": "node/7704870656"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7704870657",
+        "ele": "231",
+        "name": "聖山",
+        "name:ja-Latn": "Hijiriyama",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8100415,
+          35.0021343
+        ]
+      },
+      "id": "node/7704870657"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/7704870658",
+        "ele": "231",
+        "name": "神山",
+        "name:ja-Latn": "Kamiyama",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8072179,
+          35.0026953
+        ]
+      },
+      "id": "node/7704870658"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/8095903522",
+        "ele": "523.4",
+        "name": "明神ヶ岳",
+        "name:en": "Mt. Myojingadake",
+        "name:ja": "明神ヶ岳",
+        "name:ja-Hira": "みょうじんがだけ",
+        "natural": "peak",
+        "wikidata": "Q11512572",
+        "wikipedia": "ja:明神ヶ岳 (京都府・大阪府)"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.5950534,
+          34.969953
+        ]
+      },
+      "id": "node/8095903522"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/8129910614",
+        "ele": "164",
+        "name": "呉弥山",
+        "name:en": "Mt. Goyayama",
+        "name:ja": "呉弥山",
+        "name:ja-Hira": "ごややま",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.5625236,
+          35.0679314
+        ]
+      },
+      "id": "node/8129910614"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/8132890227",
+        "ele": "206",
+        "name": "西山",
+        "name:en": "Mt. Nishiyama",
+        "name:ja": "西山",
+        "name:ja-Hira": "にしやま",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.5682421,
+          35.009401
+        ]
+      },
+      "id": "node/8132890227"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/8132890236",
+        "ele": "412.4",
+        "name": "竜ヶ尾山",
+        "name:en": "Mt. Tatsugao",
+        "name:ja": "竜ヶ尾山",
+        "name:ja-Hira": "たつがおやま",
+        "natural": "peak",
+        "wikidata": "Q11598271",
+        "wikipedia": "ja:竜ヶ尾山"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.5638862,
+          34.991824
+        ]
+      },
+      "id": "node/8132890236"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/8757591688",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.680556,
+          34.9138842
+        ]
+      },
+      "id": "node/8757591688"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/9282022973",
+        "ele": "192",
+        "name": "月待山",
+        "name:en": "Tsukimachiyama",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8011831,
+          35.0253897
+        ]
+      },
+      "id": "node/9282022973"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/9282083450",
+        "ele": "349",
+        "name": "熊山",
+        "name:en": "Kumayama",
+        "natural": "peak",
+        "source": "survey;local knowledge;gps"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8127693,
+          35.0238207
+        ]
+      },
+      "id": "node/9282083450"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/9328962715",
+        "ele": "328",
+        "name": "子熊山",
+        "name:en": "Kogumayama",
+        "natural": "peak",
+        "source": "survey;local knowledge;gps"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8129472,
+          35.0273916
+        ]
+      },
+      "id": "node/9328962715"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/9328962717",
+        "ele": "313",
+        "name": "曾孫熊山",
+        "name:en": "Hikokumayama",
+        "natural": "peak",
+        "source": "survey;local knowledge;gps"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8121795,
+          35.0280283
+        ]
+      },
+      "id": "node/9328962717"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/9328962719",
+        "ele": "316",
+        "name": "玄孫熊山",
+        "name:en": "Gensonkumayama",
+        "natural": "peak",
+        "source": "survey;local knowledge;gps"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8119506,
+          35.0283577
+        ]
+      },
+      "id": "node/9328962719"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/9328962775",
+        "ele": "283",
+        "name": "竹若山・猪山",
+        "name:en": "Takewakayama / Inoshishiyama",
+        "natural": "peak",
+        "source": "survey;local knowledge;gps"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8090408,
+          35.0275718
+        ]
+      },
+      "id": "node/9328962775"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/9328962846",
+        "name": "中尾城址",
+        "name:en": "Nakaojo-ato",
+        "natural": "peak",
+        "source": "survey;local knowledge;gps"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8050758,
+          35.0272449
+        ]
+      },
+      "id": "node/9328962846"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/9329020085",
+        "ele": "314",
+        "name": "孫熊山",
+        "name:en": "Magokumayama",
+        "natural": "peak",
+        "source": "survey;local knowledge;gps"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8127266,
+          35.02661
+        ]
+      },
+      "id": "node/9329020085"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/9329020086",
+        "ele": "294",
+        "name": "鹿山",
+        "name:en": "Shikayama",
+        "natural": "peak",
+        "source": "survey;local knowledge;gps"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8093098,
+          35.0292429
+        ]
+      },
+      "id": "node/9329020086"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/9329020087",
+        "ele": "274",
+        "name": "子鹿山",
+        "name:en": "Koshikayama",
+        "natural": "peak",
+        "source": "survey;local knowledge;gps"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8076156,
+          35.0305566
+        ]
+      },
+      "id": "node/9329020087"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/9350096404",
+        "name": "業平",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8143034,
+          35.0303598
+        ]
+      },
+      "id": "node/9350096404"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/9372820210",
+        "ele": "346",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8055516,
+          35.0771515
+        ]
+      },
+      "id": "node/9372820210"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/9821282311",
+        "name": "茶山",
+        "name:en": "Mt. Chayama",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7986881,
+          35.03814
+        ]
+      },
+      "id": "node/9821282311"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/9919547366",
+        "ele": "118",
+        "name": "鴻の巣山",
+        "name:ja": "鴻の巣山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7960264,
+          34.8559569
+        ]
+      },
+      "id": "node/9919547366"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10120672052",
+        "name": "庵寺山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7889568,
+          34.8749375
+        ]
+      },
+      "id": "node/10120672052"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10278119266",
+        "ele": "142.5",
+        "name": "鳩ヶ峰",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6953453,
+          34.8810244
+        ]
+      },
+      "id": "node/10278119266"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10569702936",
+        "ele": "812",
+        "name": "ナッチョ",
+        "name:en": "Mt. Naccho",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8255971,
+          35.1646565
+        ]
+      },
+      "id": "node/10569702936"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10683641382",
+        "name": "氷室山",
+        "name:ja": "一本松",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7961533,
+          35.0571781
+        ]
+      },
+      "id": "node/10683641382"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10683789904",
+        "ele": "179",
+        "name": "高山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7750627,
+          35.0586099
+        ]
+      },
+      "id": "node/10683789904"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10683807205",
+        "ele": "161",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7603351,
+          35.060791
+        ]
+      },
+      "id": "node/10683807205"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10683807206",
+        "alt_name": "丸山",
+        "ele": "152",
+        "name": "丸山",
+        "name:ja": "御生山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7530968,
+          35.0653841
+        ]
+      },
+      "id": "node/10683807206"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10683807207",
+        "ele": "211",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8067242,
+          35.0476678
+        ]
+      },
+      "id": "node/10683807207"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10683807208",
+        "ele": "383",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8141329,
+          35.0445445
+        ]
+      },
+      "id": "node/10683807208"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10683807209",
+        "ele": "421",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8209488,
+          35.0455815
+        ]
+      },
+      "id": "node/10683807209"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10683807210",
+        "ele": "271",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8087802,
+          35.059581
+        ]
+      },
+      "id": "node/10683807210"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10683807211",
+        "ele": "206",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7957545,
+          35.08041
+        ]
+      },
+      "id": "node/10683807211"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10683807212",
+        "ele": "362",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8011107,
+          35.0904062
+        ]
+      },
+      "id": "node/10683807212"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10683807217",
+        "ele": "169",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7730142,
+          35.0730179
+        ]
+      },
+      "id": "node/10683807217"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10683807226",
+        "ele": "309",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7213427,
+          35.0627999
+        ]
+      },
+      "id": "node/10683807226"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10683807227",
+        "ele": "198",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.736179,
+          35.0613041
+        ]
+      },
+      "id": "node/10683807227"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10683807229",
+        "ele": "241",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7125509,
+          35.0385783
+        ]
+      },
+      "id": "node/10683807229"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10683807230",
+        "ele": "400",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8129657,
+          35.0138336
+        ]
+      },
+      "id": "node/10683807230"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10683807231",
+        "ele": "326",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8035619,
+          35.0104378
+        ]
+      },
+      "id": "node/10683807231"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10683807232",
+        "ele": "218",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7979647,
+          35.0055255
+        ]
+      },
+      "id": "node/10683807232"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10684329111",
+        "ele": "239",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7911104,
+          34.9675846
+        ]
+      },
+      "id": "node/10684329111"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10684348196",
+        "ele": "220.9",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7934068,
+          34.9937047
+        ]
+      },
+      "id": "node/10684348196"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10684437968",
+        "ele": "358",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8188063,
+          35.0359014
+        ]
+      },
+      "id": "node/10684437968"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10684663850",
+        "ele": "97",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6988307,
+          35.0249405
+        ]
+      },
+      "id": "node/10684663850"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10684663851",
+        "ele": "167",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6995018,
+          35.0316911
+        ]
+      },
+      "id": "node/10684663851"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10689674064",
+        "ele": "134.4",
+        "name": "寝子ケ山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7800791,
+          35.0611859
+        ]
+      },
+      "id": "node/10689674064"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10689719724",
+        "name": "万灯籠山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7760324,
+          35.056354
+        ]
+      },
+      "id": "node/10689719724"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10689719725",
+        "name": "城山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7889077,
+          35.0552894
+        ]
+      },
+      "id": "node/10689719725"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10689719726",
+        "name": "服部山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.798738,
+          35.0579141
+        ]
+      },
+      "id": "node/10689719726"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10689719727",
+        "name": "横山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.794611,
+          35.0589524
+        ]
+      },
+      "id": "node/10689719727"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10689719728",
+        "ele": "196",
+        "name": "赤山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8042512,
+          35.0575934
+        ]
+      },
+      "id": "node/10689719728"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10689719729",
+        "name": "御蔭山",
+        "name:en": "Mt. Mikage",
+        "name:fr": "Mont Mikage",
+        "name:ja-Hira": "みかげやま",
+        "name:ja-Latn": "Mikage-yama",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8095385,
+          35.0611777
+        ]
+      },
+      "id": "node/10689719729"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10689719730",
+        "ele": "340",
+        "name": "修学院山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8098033,
+          35.0548892
+        ]
+      },
+      "id": "node/10689719730"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10689719731",
+        "ele": "442.2",
+        "name": "てん子山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8139593,
+          35.0526898
+        ]
+      },
+      "id": "node/10689719731"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10689719732",
+        "ele": "180",
+        "name": "葉山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.801886,
+          35.0452326
+        ]
+      },
+      "id": "node/10689719732"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10689719733",
+        "ele": "272",
+        "name": "一乗寺山",
+        "name:en": "Mt. Ichijoji",
+        "name:fr": "Mont Ichijoji",
+        "name:ja-Hira": "いちじょうじさん",
+        "name:ja-Latn": "Ichijōji-san",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8029542,
+          35.0419971
+        ]
+      },
+      "id": "node/10689719733"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10689719735",
+        "name": "丸山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7984789,
+          35.031026
+        ]
+      },
+      "id": "node/10689719735"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10689719736",
+        "name": "千古山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7969198,
+          35.0289377
+        ]
+      },
+      "id": "node/10689719736"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10689719737",
+        "name": "中尾山",
+        "name:en": "Nakayama",
+        "natural": "peak",
+        "source": "survey;local knowledge;gps"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8045594,
+          35.0275871
+        ]
+      },
+      "id": "node/10689719737"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10700893497",
+        "ele": "643",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6051231,
+          35.06164
+        ]
+      },
+      "id": "node/10700893497"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10700893498",
+        "ele": "620",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.5999096,
+          35.0607454
+        ]
+      },
+      "id": "node/10700893498"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10702272611",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6898072,
+          35.0352218
+        ]
+      },
+      "id": "node/10702272611"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10705136332",
+        "name": "小丸山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7559819,
+          35.0641782
+        ]
+      },
+      "id": "node/10705136332"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10705136333",
+        "name": "本山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7562339,
+          35.0608945
+        ]
+      },
+      "id": "node/10705136333"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10705503055",
+        "ele": "420",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8116206,
+          35.0876776
+        ]
+      },
+      "id": "node/10705503055"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10760299628",
+        "ele": "715.6",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7882617,
+          35.2273108
+        ]
+      },
+      "id": "node/10760299628"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10898715095",
+        "ele": "911",
+        "name": "雲取山",
+        "name:en": "Mt. Kumotori",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7647691,
+          35.1784529
+        ]
+      },
+      "id": "node/10898715095"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10898715150",
+        "ele": "862",
+        "name": "寺山",
+        "name:en": "Tera-yama",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7707486,
+          35.1649548
+        ]
+      },
+      "id": "node/10898715150"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10898715191",
+        "ele": "899",
+        "name": "地蔵杉山",
+        "name:en": "Jizo Sugi-yama",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7720362,
+          35.1808625
+        ]
+      },
+      "id": "node/10898715191"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/10898715213",
+        "ele": "899",
+        "name": "雲取山北峰",
+        "name:en": "Kumotori North Peak",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7673073,
+          35.1801081
+        ]
+      },
+      "id": "node/10898715213"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/11228667208",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8107161,
+          35.0132617
+        ]
+      },
+      "id": "node/11228667208"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/11264069010",
+        "natural": "peak",
+        "source": "local knowledge;gps;survey"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8059278,
+          35.0080122
+        ]
+      },
+      "id": "node/11264069010"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/11279026603",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8122315,
+          35.0135815
+        ]
+      },
+      "id": "node/11279026603"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/11433156486",
+        "ele": "1022",
+        "name": "白滝山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8812902,
+          35.2319896
+        ]
+      },
+      "id": "node/11433156486"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/11433156487",
+        "ele": "1097",
+        "name": "御殿山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8900135,
+          35.2555008
+        ]
+      },
+      "id": "node/11433156487"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/11433156488",
+        "name": "コヤマノ岳",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.899786,
+          35.2590061
+        ]
+      },
+      "id": "node/11433156488"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/11433156495",
+        "name": "ホッケ山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.877934,
+          35.1959569
+        ]
+      },
+      "id": "node/11433156495"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/11433156496",
+        "name": "折立山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.866088,
+          35.1871329
+        ]
+      },
+      "id": "node/11433156496"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/11433180408",
+        "ele": "275.6",
+        "name": "松尾山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6760912,
+          35.0038099
+        ]
+      },
+      "id": "node/11433180408"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/11433180409",
+        "ele": "414.7",
+        "name": "沓掛山",
+        "name:en": "Mt. Kutsukake",
+        "name:ja": "沓掛山",
+        "natural": "peak",
+        "wikidata": "Q76966903",
+        "wikipedia": "ja:沓掛山 (京都府)"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6551644,
+          34.9978903
+        ]
+      },
+      "id": "node/11433180409"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/12101965501",
+        "ele": "106",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7860312,
+          34.9623119
+        ]
+      },
+      "id": "node/12101965501"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/12101965502",
+        "ele": "192",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7869435,
+          34.9728093
+        ]
+      },
+      "id": "node/12101965502"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/12101965503",
+        "ele": "72",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7753662,
+          34.9702184
+        ]
+      },
+      "id": "node/12101965503"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/12192601123",
+        "ele": "848.1",
+        "name": "大比叡",
+        "name:en": "Mount Hiei Summit",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8341036,
+          35.0668721
+        ]
+      },
+      "id": "node/12192601123"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/12327813147",
+        "ele": "315.2",
+        "name": "若山",
+        "name:en": "Wakayama",
+        "natural": "peak",
+        "source": "survey",
+        "wikidata": "Q130630932"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.6457942,
+          34.878631
+        ]
+      },
+      "id": "node/12327813147"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/12661997924",
+        "ele": "679",
+        "name": "ポンポン山",
+        "name:en": "Mt. Ponpon",
+        "name:ja": "ポンポン山",
+        "name:ja-Hira": "ぽんぽんやま",
+        "name:ja-Latn": "Ponponyama",
+        "natural": "peak",
+        "source": "GSImaps/std",
+        "wikidata": "Q31691453"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.623822,
+          34.935213
+        ]
+      },
+      "id": "node/12661997924"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/12770185418",
+        "ele": "100",
+        "name": "桃山丘陵",
+        "name:en": "Momoyama Hill",
+        "name:fr": "Colline de Momoyama",
+        "name:ja-Hira": "ももやまきゅうりょう",
+        "name:ja-Latn": "Momoyama-kyūryō",
+        "natural": "peak",
+        "wikidata": "Q48752330",
+        "wikipedia": "ja:桃山丘陵"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7789779,
+          34.937329
+        ]
+      },
+      "id": "node/12770185418"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/12878117307",
+        "ele": "324.7",
+        "name": "逢坂山",
+        "name:en": "Mount Osaka",
+        "natural": "peak",
+        "wikidata": "Q11639802",
+        "wikipedia": "ja:逢坂山"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.8479887,
+          35.0008878
+        ]
+      },
+      "id": "node/12878117307"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/13288476766",
+        "ele": "180",
+        "name": "粟田山",
+        "name:en": "Awata-yama",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7866406,
+          35.0059504
+        ]
+      },
+      "id": "node/13288476766"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/13288476788",
+        "ele": "202",
+        "name": "清閑寺山",
+        "name:en": "Seikanji-yama",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7876424,
+          34.990784
+        ]
+      },
+      "id": "node/13288476788"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/13339730502",
+        "ele": "78",
+        "name": "三の丘",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7137004,
+          35.0200112
+        ]
+      },
+      "id": "node/13339730502"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/13340183624",
+        "ele": "102",
+        "name": "二の丘",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7136422,
+          35.0219332
+        ]
+      },
+      "id": "node/13340183624"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/13340183635",
+        "ele": "116",
+        "name": "一の丘",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7129033,
+          35.0244903
+        ]
+      },
+      "id": "node/13340183635"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/13592402229",
+        "ele": "931.5",
+        "name": "小野村割岳",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7666816,
+          35.2894316
+        ]
+      },
+      "id": "node/13592402229"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/13592402230",
+        "ele": "951",
+        "name": "光砥山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.7741333,
+          35.2834486
+        ]
+      },
+      "id": "node/13592402230"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "node/13592865912",
+        "ele": "557.6",
+        "name": "嶽山",
+        "natural": "peak"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          135.5551515,
+          35.1491958
+        ]
+      },
+      "id": "node/13592865912"
+    }
+  ]
+}

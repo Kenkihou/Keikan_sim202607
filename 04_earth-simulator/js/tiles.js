@@ -15,6 +15,7 @@ import { OBB } from '3d-tiles-renderer/three';
 import {
   THREE, scene, camera, renderer, controls, focusLocal, EARTH_R,
   hideLoading, RETRY_MAX, markSectionDirty, markViewAreaDirty, markZonesDirty, markUserModelDirty,
+  markMountainsDirty,
 } from './core.js';
 import {
   TILESET_URLS_LOD1, TILESET_URLS_LOD2,
@@ -547,6 +548,7 @@ if (SHOW_TERRAIN) {
     markViewAreaDirty();   // 地形が増えた＝沿わせ先が変わった
     markZonesDirty();
     markUserModelDirty();  // 接地の基準になる地形が増えた＝置き直す
+    markMountainsDirty();  // 標高データが無い山名も、地形が増えれば高さを拾える
     hideLoading();
   });
   terrainTiles.addEventListener('dispose-model', ({ scene: s }) => {
@@ -683,6 +685,7 @@ function updateTerrainReady() {
     markViewAreaDirty();
     markZonesDirty();
     markUserModelDirty();  // 十分細かい地形が揃った＝ここで接地し直すと正確になる
+    markMountainsDirty();
   }
 }
 
@@ -735,6 +738,7 @@ function setFocusLatLon(latRad, lonRad, moveCamera = true) {
   markViewAreaDirty();     // 沿わせる範囲は切り抜き箱に追従するので作り直す
   markZonesDirty();        // ゾーンレイヤーも同じ（切り抜きONなら箱まで絞る）
   markUserModelDirty();    // 自作モデルは注目地点に追従して置き直す
+  markMountainsDirty();    // 山名の表示範囲は注目地点からの距離で決まる
   // ※ 標高面（viewLimit）は格子JSONだけから作れて注目地点に依存しないので作り直さない。
 }
 

@@ -406,6 +406,30 @@ export const IMAGERY = {
 };
 export const DEFAULT_IMAGERY = 'photo';
 
+// --- 山名ラベル ---------------------------------------------------------------
+// 京都市内の山頂（OpenStreetMap の natural=peak）。緯度経度・山名・標高(ele)を持つ。
+//   実測: 228地点／うち名前あり185／名前と標高の両方あり166。標高は 78〜1214m
+//   （武奈ヶ岳1214m・蓬莱山1174m・大文字山465m など）。
+// 高さは【データの ele をそのまま使う】のが基本。PLATEAU の地形は山頂を丸めるので、
+// 実際の山頂標高を持っているこのデータの方が「頂上」に合う。
+// ele が無い19地点だけは、読み込み済みの地形から高さを拾って補う（拾えるまで保留）。
+export const MOUNTAIN_URL = 'mountain.geojson';
+export const MOUNTAIN_LABEL_LIFT = 30;      // 山頂から浮かせる高さ[m]（地形にめり込ませない）
+export const MOUNTAIN_LABEL_SCREEN = 0.05;  // ラベルの高さ（画面の高さに対する割合）
+export const MOUNTAIN_MAX_DIST = 30000;     // ラベルを用意しておく範囲（注目地点から）[m]
+// ★ 実際に描くのは【カメラがこの距離まで近づいた山】だけ。遠くの山名まで出すと
+//   地平線あたりに文字が積み重なって読めなくなるため。文字の大きさは距離によらず一定
+//   （sizeAttenuation: false）なので、近づいた山だけが出る＝見たい範囲だけが読める。
+export const MOUNTAIN_VISIBLE_DIST = 8000;  // カメラからこの距離以内の山名を描く[m]
+export const MOUNTAIN_SHOW_ELEVATION = true; // 山名の下に標高も書く
+// ★ ラベルは【描かれている地形の面の少し上】に置きたいので、高さは地形からも拾う。
+//   注目地点まわりに高さグリッドを1枚だけ作って全山を引く（山ごとに作ると重い）。
+export const MOUNTAIN_GRID_CELL = 30;       // 高さグリッドの目[m]
+export const MOUNTAIN_GRID_MARGIN = 4000;   // 表示距離＋この余裕までをグリッドに含める[m]
+// ★ 粗い地形から拾った高さは当てにならない（盆地と山をまたぐ三角形が混ざる）。
+//   標高データがある山では、拾った値がこの範囲を超えて食い違ったら データの標高を採る。
+export const MOUNTAIN_TERRAIN_TOL = 150;    // 許容するズレ[m]
+
 // --- 自作モデル（01_building-builder から受け取る建物）-------------------------
 // 親アプリが GLB の blob URL を sessionStorage に入れて渡す（同一オリジン配信が前提）。
 // キー名は 02/03 の 'munsell_custom_glb' / 'night_custom_glb' と同じ流儀に揃えてある。

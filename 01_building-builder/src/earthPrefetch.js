@@ -101,7 +101,7 @@ export function warmEarthAssets() {
                 ...(cfg.TILESET_URLS_LOD1 || []),
                 ...(cfg.TILESET_URLS_LOD2 || []),
             ].filter(Boolean));
-            await warmAll([cfg.VIEW_AREA_URL, cfg.VIEW_LIMIT_URL, ...zoneUrls]
+            await warmAll([cfg.VIEW_AREA_URL, cfg.VIEW_LIMIT_URL, cfg.MOUNTAIN_URL, ...zoneUrls]
                 .filter(Boolean).map(abs));
         } catch (e) {
             console.warn('地球モードの設定を読めなかったので先読みを中断しました', e);

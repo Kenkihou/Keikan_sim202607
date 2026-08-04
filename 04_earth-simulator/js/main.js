@@ -14,7 +14,7 @@
 import {
   THREE, renderer, scene, camera, controls, focusLocal,
   hideLoading, dirty, markSectionDirty, markViewAreaDirty, markViewLimitDirty, markZonesDirty,
-  markUserModelDirty,
+  markUserModelDirty, markMountainsDirty,
 } from './core.js';
 import { ORIGIN_ELEVATION, SEA_LEVEL_Y, TILESET_URLS_LOD1, TILESET_URLS_LOD2 } from './config.js';
 import {
@@ -35,6 +35,9 @@ import {
   zoneLayers, zoneLineMats, zonesStep, buildZone, setZoneKind, getZoneStats,
 } from './viewareas.js';
 import { updateHud, setClipSizeFromParent, getClipSize } from './ui.js';
+import {
+  mountainGroup, mountainState, buildMountains, updateMountainVisibility,
+} from './mountains.js';
 import {
   userModelState, userModelGroup, updateUserModel, resnapUserModel, restartUserModelSession,
   notifyParentReady,
@@ -74,6 +77,11 @@ const VIEW_AREA_DUTY = 6;      // 生成にかけてよいのは経過時間の 
 //   1フレームに1つだけ作って分散させる（レイヤーの順送りは zonesStep が持つ）。
 let zoneLastBuild = 0;
 let zoneLastMs = 0;
+// 山名ラベルも高さグリッドを作るので同じ扱い（作り直しの間隔を実測時間に連動させる）
+let mountainsLastBuild = 0;
+let mountainsLastMs = 0;
+const MOUNTAIN_MIN_INTERVAL = 800;
+const MOUNTAIN_DUTY = 6;
 
 // ★ 親アプリは地球モードを閉じるとき、この画面を破棄せずに隠すだけにしている
 //   （読み込んだタイルと地形を抱えたまま待機し、次に開いたとき一瞬で戻すため）。
@@ -154,6 +162,22 @@ function animate() {
       markUserModelDirty();
     }
   }
+  // 山名ラベルの置き直し（地形の面に合わせるので、地形が細かくなるたびに引き直す）。
+  //   高さグリッドを1枚作るので断面より重い。前回かかった時間に応じて間隔を空ける
+  //   （眺望ポリゴンと同じ考え方。重い日は自動的に頻度が落ちる）。
+  const mountainWait = Math.max(MOUNTAIN_MIN_INTERVAL, mountainsLastMs * MOUNTAIN_DUTY);
+  if (dirty.mountains && performance.now() - mountainsLastBuild > mountainWait) {
+    dirty.mountains = false;
+    const t0 = performance.now();
+    try {
+      buildMountains();
+    } catch (err) {
+      console.warn('山名ラベルの配置に失敗（次のフレームで再試行）:', err);
+      markMountainsDirty();
+    }
+    mountainsLastMs = performance.now() - t0;
+    mountainsLastBuild = performance.now();
+  }
   // 眺望規制の標高面。地形に依存しないので、切り替えと注目地点の移動のときだけ作り直す。
   if (dirty.viewLimit) {
     dirty.viewLimit = false;
@@ -164,6 +188,7 @@ function animate() {
       markViewLimitDirty();
     }
   }
+  updateMountainVisibility();   // カメラが近づいた山名だけを出す（位置の計算は不要なので軽い）
   const visible = updateHud();
   if (visible > 0) hideLoading();
   renderer.render(scene, camera);
@@ -213,6 +238,7 @@ window.__dbg = {
   zoneLayers, zonesStep, buildZone, setZoneKind, getZoneStats, markZonesDirty,
   isTerrainReady,
   userModelState, userModelGroup, updateUserModel, resnapUserModel, markUserModelDirty,
+  mountainGroup, mountainState, buildMountains, updateMountainVisibility, markMountainsDirty,
   render: () => renderer.render(scene, camera),
 };
 window.__plateauWards = wardTiles;   // 互換用

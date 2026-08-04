@@ -1225,17 +1225,8 @@ function makeLegendRow(id, label, def, k, checked, onChange) {
   vSync();
 })();
 
-// 「景観・眺望規制」の折りたたみ
-(function setupZoneDisclosure() {
-  const head = el('zoneSectionHead'), body = el('zoneLayers');
-  if (!head || !body) return;
-  head.addEventListener('click', () => {
-    const open = !head.classList.contains('open');
-    head.classList.toggle('open', open);
-    body.classList.toggle('open', open);
-    head.setAttribute('aria-expanded', String(open));
-  });
-})();
+// ※ 「景観・眺望規制」の折りたたみの開閉は ui.js の setupDisclosures がまとめて担当する
+//   （地形・建物と同じ仕組みにしたので、ここに個別の処理は要らない）。
 
 
 export {

@@ -64,6 +64,7 @@ jobs:
           cp 04_earth-simulator/index.html combined_dist/earth-api/
           cp -r 04_earth-simulator/js combined_dist/earth-api/
           cp 04_earth-simulator/*.json combined_dist/earth-api/
+          cp 04_earth-simulator/*.geojson combined_dist/earth-api/   # 山名（mountain.geojson）
           rm -f combined_dist/earth-api/settings.json
 
       # 5. GitHub Pagesへアップロード

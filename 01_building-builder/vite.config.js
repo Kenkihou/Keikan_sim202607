@@ -57,6 +57,11 @@ function serveEarthSimulator() {
 
         res.setHeader('Content-Type', MIME[path.extname(target).toLowerCase()] || 'application/octet-stream');
         res.setHeader('Last-Modified', lastModified);
+        // ⚠️ Cache-Control が無いとブラウザは「更新日時からの経過時間の1割」を勝手に
+        //   鮮度とみなし、【編集したのに古いファイルを問い合わせもせず使う】ことがある
+        //   （04 のコードを直したのに反映されない、という形で実際に踏んだ）。
+        //   no-cache＝毎回問い合わせる。中身が同じなら上の 304 で返るので転送は増えない。
+        res.setHeader('Cache-Control', 'no-cache');
         fs.createReadStream(target).pipe(res);
       });
     },

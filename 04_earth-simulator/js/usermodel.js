@@ -11,7 +11,7 @@
 // =============================================================================
 import {
   THREE, scene, el, focusLocal, EARTH_R, markUserModelDirty,
-  camera, controls, renderer, hideLoading,
+  camera, controls, renderer, hideLoading, requestRender,
 } from './core.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
@@ -211,6 +211,11 @@ gizmo.setRotationSnap(THREE.MathUtils.degToRad(USER_MODEL_GIZMO_ROTATE_SNAP));
 scene.add(gizmo.getHelper ? gizmo.getHelper() : gizmo);
 gizmo.enabled = false;
 if (gizmo.getHelper) gizmo.getHelper().visible = false;
+
+// ★ オンデマンド描画なので、ギズモが自分で見た目を変えるとき（軸のホバー強調・
+//   ドラッグ中の追従）は描画ループを起こしてやる必要がある。
+//   カメラ操作と違って controls の change は飛ばないため、ここで拾う。
+gizmo.addEventListener('change', () => requestRender());
 
 gizmo.addEventListener('dragging-changed', (e) => {
   gizmoDragging = e.value;

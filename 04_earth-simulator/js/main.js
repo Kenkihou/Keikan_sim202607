@@ -15,6 +15,7 @@ import {
   THREE, renderer, scene, camera, controls, focusLocal,
   hideLoading, dirty, markSectionDirty, markViewAreaDirty, markViewLimitDirty, markZonesDirty,
   markUserModelDirty, markMountainsDirty,
+  setFrameScheduler, requestRender, isRenderHeld,
 } from './core.js';
 import { ORIGIN_ELEVATION, SEA_LEVEL_Y, TILESET_URLS_LOD1, TILESET_URLS_LOD2 } from './config.js';
 import {
@@ -27,12 +28,13 @@ import {
   wardTiles, focusBox, focusRegion, updateLoadRegion, updateLoadPhase,
   setLoadPhase, getLoadPhase, resetWardTiles, makeWardTiles,
   getTerrainTiles, setFocusLatLon, runEvictBurst, updateTerrainReady, isTerrainReady,
+  reloadAllTiles, tilesBusy, isEvictBursting,
 } from './tiles.js';
 import {
   viewAreaGroup, viewAreaState, viewAreaLineMat, buildViewAreas, getViewAreaStats,
   buildTerrainHeightGrid, sampleGrid, sampleExcess, lonLatToLocal,
   viewLimitGroup, viewLimitState, buildViewLimits, getViewLimitStats,
-  zoneLayers, zoneLineMats, zonesStep, buildZone, setZoneKind, getZoneStats,
+  zoneLayers, zoneLineMats, zonesStep, zonesPending, buildZone, setZoneKind, getZoneStats,
 } from './viewareas.js';
 import { updateHud, setClipSizeFromParent, getClipSize } from './ui.js';
 import {
@@ -89,9 +91,39 @@ const MOUNTAIN_DUTY = 6;
 //   ループごと止める（rAF を積まないので完全に停止する）。
 let running = true;
 
+// =========================================================================
+// オンデマンド描画のスケジューラ
+//   ★ requestAnimationFrame を無条件に積み直さない。1フレーム描き終えたら
+//     「まだ絵が変わる理由があるか」を needsMoreFrames() で確かめ、
+//     無ければ rAF を積まずに眠る（＝CPU/GPU の消費がゼロになる）。
+//   ★ 眠りから起こすのは core.js の requestRender()。カメラ操作・HUD の操作・
+//     タイルの到着（mark〇〇Dirty）など、絵が変わりうる出来事すべてがここに繋がっている。
+// =========================================================================
+let rafId = 0;
+function scheduleFrame() {
+  if (rafId || !running) return;
+  rafId = requestAnimationFrame(animate);
+}
+setFrameScheduler(scheduleFrame);
+
+// まだフレームを回し続ける必要があるか。
+//   ここに挙げたものは「人が触っていなくても絵が変わり続ける」条件。
+//   どれにも当たらなければ、次の操作まで完全に止まってよい。
+function needsMoreFrames() {
+  if (isRenderHeld()) return true;                       // 直近の操作・到着からの余韻
+  if (dirty.section || dirty.viewArea || dirty.viewLimit
+      || dirty.userModel || dirty.mountains) return true; // 作り直し待ち（スロットル中を含む）
+  if (zonesPending()) return true;                        // ゾーンレイヤーの作り直し待ち
+  if (getLoadPhase() === 0) return true;                  // 第1段（中心1枚）の判定中
+  if (getTerrainTiles() && !isTerrainReady()) return true; // 地形が十分細かくなるのを待っている
+  if (isEvictBursting()) return true;                     // 古いタイルの掃き出し中
+  if (tilesBusy()) return true;                           // 取得中・解析中のタイルがある
+  return false;
+}
+
 function animate() {
+  rafId = 0;
   if (!running) return;
-  requestAnimationFrame(animate);
   controls.update();
   camera.updateMatrixWorld();
   updateLoadPhase();                        // 第1段（1枚だけ）が済んだら第2段（500m四方）へ
@@ -192,10 +224,11 @@ function animate() {
   const visible = updateHud();
   if (visible > 0) hideLoading();
   renderer.render(scene, camera);
+  if (needsMoreFrames()) scheduleFrame();   // ★ 必要なときだけ次のフレームを積む
 }
 
 setLoadPhase(0);   // 起動時も「まず指定地点のタイル1枚」から
-animate();
+requestRender();   // 最初の1フレームを起こす（あとは needsMoreFrames が繋いでいく）
 
 // =========================================================================
 // 親アプリ（01）から呼ばれる待機・再開の入口。
@@ -205,6 +238,7 @@ animate();
 // =========================================================================
 window.pauseEarthSimulator = function() {
   running = false;
+  if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
 };
 
 // 親アプリ下部の切り抜きスライダーと双方向でつなぐための入口
@@ -212,13 +246,11 @@ window.setEarthClipSize = (m) => setClipSizeFromParent(m);
 window.getEarthClipSize = () => getClipSize();
 
 window.resumeEarthSimulator = function(opts = {}) {
-  if (!running) {
-    running = true;
-    animate();
-  }
+  running = true;
   // 画面サイズが変わっている可能性があるので、隠れている間の変化を取り込む
   onResize();
   restartUserModelSession(opts);
+  requestRender();   // 眠っていた描画ループを起こす
 };
 
 // デバッグ用（コンソールから描画状態を確認できるように公開）
@@ -236,7 +268,7 @@ window.__dbg = {
   buildTerrainHeightGrid, sampleGrid, sampleExcess, lonLatToLocal, getViewAreaStats,
   viewLimitGroup, viewLimitState, buildViewLimits, getViewLimitStats, markViewLimitDirty,
   zoneLayers, zonesStep, buildZone, setZoneKind, getZoneStats, markZonesDirty,
-  isTerrainReady,
+  isTerrainReady, reloadAllTiles, tilesBusy, requestRender, needsMoreFrames,
   userModelState, userModelGroup, updateUserModel, resnapUserModel, markUserModelDirty,
   mountainGroup, mountainState, buildMountains, updateMountainVisibility, markMountainsDirty,
   render: () => renderer.render(scene, camera),

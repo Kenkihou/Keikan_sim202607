@@ -40,10 +40,11 @@ const mountainState = {
 // ラベルの絵（キャンバス→テクスチャ）
 //   空にも山肌にも重なるので、白フチ＋黒文字で読めるようにする（断面の標高ラベルと同じ手）。
 // =========================================================================
-const PAD = 12, NAME_PX = 44, ELE_PX = 28, LINE_GAP = 6;
-// 1行だけのラベルの高さ。これを基準に「キャンバス1pxあたりの画面上の大きさ」を決めると、
-// 1行でも2行でも【山名の文字の大きさが同じ】になる。
-//   ⚠️ スプライトの高さを一定にすると、2行のラベルは山名が小さくなる（実際にそうなっていた）。
+const PAD = 12, NAME_PX = 44, ELE_PX = 28, TEXT_GAP = 10;
+// ★ ラベルは【1行】にする。山名の下に標高を置く2行組みだと、
+//   下の行が地形に埋まって読めないことがあった（山の斜面に食い込む）。
+//   1行なので全ラベルのキャンバス高さが揃い、文字の大きさも自動的に揃う。
+//   山名と標高の【文字サイズの差】（44px / 28px）はそのまま残す。
 const BASE_CANVAS_H = PAD * 2 + NAME_PX;
 
 function makeLabelTexture(name, eleText) {
@@ -55,26 +56,26 @@ function makeLabelTexture(name, eleText) {
   const nameW = ctx.measureText(name).width;
   ctx.font = `${ELE_PX}px system-ui, sans-serif`;
   const eleW = eleText ? ctx.measureText(eleText).width : 0;
+  const gap = eleText ? TEXT_GAP : 0;
 
-  cvs.width = Math.ceil(Math.max(nameW, eleW)) + PAD * 2;
-  cvs.height = NAME_PX + (eleText ? ELE_PX + LINE_GAP : 0) + PAD * 2;
+  cvs.width = Math.ceil(nameW + gap + eleW) + PAD * 2;
+  cvs.height = BASE_CANVAS_H;
 
-  const draw = (text, px, bold, cx, cy, fill) => {
+  // 左から「山名」「標高」を横に並べる。上下は中央に揃える。
+  const midY = cvs.height / 2;
+  const draw = (text, px, bold, x, fill) => {
     ctx.font = `${bold ? 'bold ' : ''}${px}px system-ui, sans-serif`;
-    ctx.textAlign = 'center';
+    ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     ctx.lineWidth = Math.max(4, px * 0.18);
     ctx.strokeStyle = 'rgba(255,255,255,0.95)';
-    ctx.strokeText(text, cx, cy);
+    ctx.strokeText(text, x, midY);
     ctx.fillStyle = fill;
-    ctx.fillText(text, cx, cy);
+    ctx.fillText(text, x, midY);
   };
 
-  const cx = cvs.width / 2;
-  draw(name, NAME_PX, true, cx, PAD + NAME_PX / 2, '#151a24');
-  if (eleText) {
-    draw(eleText, ELE_PX, false, cx, PAD + NAME_PX + LINE_GAP + ELE_PX / 2, '#3d4657');
-  }
+  draw(name, NAME_PX, true, PAD, '#151a24');
+  if (eleText) draw(eleText, ELE_PX, false, PAD + nameW + gap, '#3d4657');
 
   const tex = new THREE.CanvasTexture(cvs);
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -131,7 +132,6 @@ async function loadMountains() {
   } catch (e) {
     mountainState.error = String(e.message || e);
     console.warn('山名データを読み込めませんでした:', e);
-    updateMountainInfo();
   }
 }
 
@@ -201,7 +201,7 @@ function updateMountainVisibility() {
   if (!mountainState.loaded) return;
   mountainGroup.visible = mountainState.enabled;
   if (!mountainState.enabled) {
-    if (mountainState.shown !== 0) { mountainState.shown = 0; updateMountainInfo(); }
+    mountainState.shown = 0;
     return;
   }
   const cx = camera.position.x, cy = camera.position.y, cz = camera.position.z;
@@ -224,28 +224,12 @@ function updateMountainVisibility() {
     s.visible = near;
     if (near) shown++;
   }
-  if (shown !== mountainState.shown) {   // 表示件数が変わったときだけ HUD を書き換える
-    mountainState.shown = shown;
-    updateMountainInfo();
-  }
+  mountainState.shown = shown;   // 件数は __dbg での確認用に持っておく（HUDには出さない）
 }
 
 // =========================================================================
-// HUD
+// HUD（表示するかどうかのチェックだけ。件数などは出さない）
 // =========================================================================
-function updateMountainInfo() {
-  const info = el('mountainInfo');
-  if (!info) return;
-  if (mountainState.error) { info.textContent = '山名: 読み込み失敗'; return; }
-  if (!mountainState.loaded) { info.textContent = '山名: 読み込み中…'; return; }
-  if (!mountainState.enabled) { info.textContent = ''; return; }
-  const km = (MOUNTAIN_VISIBLE_DIST / 1000).toFixed(0);
-  const base = `山名: ${mountainState.shown} 件（${km}km以内 / 全 ${mountainState.ready} 件）`;
-  info.textContent = mountainState.pending > 0
-    ? `${base}　※ ${mountainState.pending} 件は地形の読み込み待ち`
-    : base;
-}
-
 (function setupMountainUI() {
   const cb = el('mountainOn');
   if (!cb) return;
@@ -253,7 +237,6 @@ function updateMountainInfo() {
   cb.addEventListener('change', () => {
     mountainState.enabled = cb.checked;
     updateMountainVisibility();
-    updateMountainInfo();
   });
 })();
 

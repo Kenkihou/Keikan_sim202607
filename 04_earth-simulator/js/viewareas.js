@@ -1034,6 +1034,11 @@ function zonesStep() {
   return false;       // 作るものが無かった
 }
 
+// まだ作り直すレイヤーが残っているか（オンデマンド描画の継続判定に使う）。
+//   ★ 世代番号の食い違いも見る。zonesStep をまだ一度も通していない時点では
+//     zonePending が空でも「これから全レイヤーが積まれる」ため。
+const zonesPending = () => zonePending.size > 0 || dirty.zone !== zoneEpochSeen;
+
 // 凡例の色見本。★ 画面上の見え方と凡例を一致させる（ハッチならハッチで見せる）。
 //   CSS の repeating-linear-gradient は角度が時計回りなので、GLSL 側と合わせるには 180-angle。
 //   クロスハッチは方向のぶんだけグラデーションを重ねる。
@@ -1233,7 +1238,7 @@ export {
   viewLimitGroup, viewLimitState, buildViewLimits,
   viewAreaGroup, viewAreaState, viewAreaLineMat,
   buildViewAreas, buildTerrainHeightGrid, sampleGrid, sampleExcess, lonLatToLocal, loadViewAreas,
-  zoneLayers, zoneLineMats, zonesStep, buildZone, setZoneKind,
+  zoneLayers, zoneLineMats, zonesStep, zonesPending, buildZone, setZoneKind,
 };
 export const getViewAreaStats = () => viewAreaStats;
 export const getViewLimitStats = () => viewLimitStats;

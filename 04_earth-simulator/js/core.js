@@ -52,8 +52,10 @@ grid.material.opacity = 0.35;
 scene.add(grid);
 
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-controls.dampingFactor = 0.08;
+// ★ 慣性（damping）は切る。指を離した後も流れ続けると狙った構図で止められないうえ、
+//   「操作していない間は描き直さない」オンデマンド描画とも相性が悪い
+//   （惰性が止まるまで描き続ける必要が出る）。離した瞬間にピタッと止める。
+controls.enableDamping = false;
 controls.maxPolarAngle = Math.PI * 0.49;
 controls.minDistance = 20;
 controls.maxDistance = MAX_CAMERA_DISTANCE;
@@ -68,6 +70,41 @@ controls.enablePan = true;
 controls.panSpeed = 1.0;
 controls.target.set(0, 0, 0);
 
+
+// =========================================================================
+// オンデマンド描画（動きが無いときは描き直さない）
+//   ★ 以前は requestAnimationFrame を無条件に積み続けていたので、誰も触っていなくても
+//     毎フレーム シーン全体を描き直していた。地形＋建物＋眺望ポリゴンは重いので、
+//     置いておくだけでCPU/GPUを食い続ける（ノートPCならファンが回りっぱなしになる）。
+//   ★ 仕組みは単純：
+//       ・「何か起きた」ときだけ requestRender() で描画ループを起こす。
+//       ・起こしてから RENDER_HOLD_MS のあいだはフレームを回し続ける（＝余韻）。
+//         タイルの読み込み要求は update() を何度か回さないと積まれないし、
+//         フェードインにも時間がかかるので、1フレームだけでは足りない。
+//       ・読み込み中など「まだ絵が変わり続ける」条件は main.js 側が判定して継ぎ足す。
+//   ★ ここ（最下層）に置くのが要点。dirty フラグと同じく、どのモジュールからも
+//     依存の向きを崩さずに「起こして」と言える。
+const RENDER_HOLD_MS = 600;
+let scheduleFrame = () => {};        // 実体は main.js が登録する（描画ループを持つのはあちら）
+export function setFrameScheduler(fn) { scheduleFrame = fn; }
+let renderHoldUntil = 0;
+export function requestRender(holdMs = RENDER_HOLD_MS) {
+  const t = performance.now() + holdMs;
+  if (t > renderHoldUntil) renderHoldUntil = t;
+  scheduleFrame();
+}
+export const isRenderHeld = () => performance.now() < renderHoldUntil;
+
+// 描画を起こす入口。カメラ操作と、HUD の操作（ボタン・チェック・スライダー・小窓の地図）。
+//   ★ HUD は要素ごとに配線せず、window で一括して拾う。こうしておけば
+//     パネルに項目を増やしても「描き直し忘れ」が起きない。
+//   ※ pointermove は入れない（マウスを動かしただけで描き直すと意味が無くなる）。
+//     カメラのドラッグは controls の change、ギズモのホバーは usermodel.js が拾う。
+controls.addEventListener('change', () => requestRender());
+for (const type of ['pointerdown', 'pointerup', 'click', 'input', 'change', 'keydown', 'wheel']) {
+  window.addEventListener(type, () => requestRender(), { capture: true, passive: true });
+}
+window.addEventListener('resize', () => requestRender());
 
 let hidLoading = false;
 function hideLoading() {
@@ -106,17 +143,20 @@ export function recenterOnFocus() {
 export const dirty = {
   section: true, viewArea: false, viewLimit: false, zone: 0, userModel: false, mountains: false,
 };
-export const markSectionDirty = () => { dirty.section = true; };
-export const markViewAreaDirty = () => { dirty.viewArea = true; };
-export const markViewLimitDirty = () => { dirty.viewLimit = true; };
-export const markZonesDirty = () => { dirty.zone++; };
+// ★ どのフラグも requestRender() を伴う。タイルが届いたときなど、
+//   人が触っていないのに作り直しが必要になる場面があり、
+//   描画ループが寝たままだと「フラグは立ったが誰も見ない」で止まってしまうため。
+export const markSectionDirty = () => { dirty.section = true; requestRender(); };
+export const markViewAreaDirty = () => { dirty.viewArea = true; requestRender(); };
+export const markViewLimitDirty = () => { dirty.viewLimit = true; requestRender(); };
+export const markZonesDirty = () => { dirty.zone++; requestRender(); };
 // 自作モデル（親アプリから受け取った建物）の置き直し。
 //   注目地点が動いたとき・地形が増えたときに接地し直す必要があるので、
 //   断面や眺望ポリゴンと同じくフラグで伝える（tiles 側が usermodel を import せずに済む）。
-export const markUserModelDirty = () => { dirty.userModel = true; };
+export const markUserModelDirty = () => { dirty.userModel = true; requestRender(); };
 // 山名ラベルのうち、標高データが無くて【地形から高さを拾う】ものの置き直し。
 //   地形が増えるまで高さが取れないので、増えたら拾い直す（自作モデルの接地と同じ理由）。
-export const markMountainsDirty = () => { dirty.mountains = true; };
+export const markMountainsDirty = () => { dirty.mountains = true; requestRender(); };
 
 export {
   THREE,

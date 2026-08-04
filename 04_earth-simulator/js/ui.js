@@ -8,7 +8,7 @@ import { DEG2RAD, ORIGIN_LAT, ORIGIN_LON, HEIGHT_BANDS } from './config.js';
 import { CLIP_SIZE_MIN, CLIP_SIZE_MAX, clipState } from './section.js';
 import {
   wardTiles, getLoadPhase, getTerrainTiles, setFocusLatLon,
-  setBuildingColorByHeight, buildingColorState, isTerrainReady,
+  setBuildingColorMode, buildingColorState, isTerrainReady, reloadAllTiles,
 } from './tiles.js';
 
 // 親アプリ（01）の下部パネルにも同じ切り抜きスライダーが並んでいる。
@@ -256,11 +256,11 @@ let setPickerCenter = () => {};
   render();
 })();
 
-// ---- 「建物」の見せ方：PLATEAUデフォルト／高さで色分け の2択と、その凡例 ----------
+// ---- 「建物」の見せ方：PLATEAUデフォルト／白モデル／高さで色分け と、その凡例 ------
 (function setupBuildingStyleUI() {
-  const defBtn = el('bldgStyleDefault'), hBtn = el('bldgStyleHeight');
   const legendEl = el('heightLegend');
-  if (!defBtn || !hBtn || !legendEl) return;
+  const btns = [...document.querySelectorAll('#buildingStyleSwitch button[data-bldg-mode]')];
+  if (!btns.length || !legendEl) return;
   // 凡例は HEIGHT_BANDS からそのまま組み立てる（色や区分を変えても勝手に追従する）
   for (const b of HEIGHT_BANDS) {
     const row = document.createElement('div');
@@ -271,18 +271,18 @@ let setPickerCenter = () => {};
     legendEl.appendChild(row);
   }
   const sync = () => {
-    const on = buildingColorState.byHeight;
-    hBtn.classList.toggle('active', on);
-    defBtn.classList.toggle('active', !on);
-    legendEl.classList.toggle('on', on);   // 凡例は色分けのときだけ出す
+    for (const b of btns) {
+      b.classList.toggle('active', b.dataset.bldgMode === buildingColorState.mode);
+    }
+    legendEl.classList.toggle('on', buildingColorState.mode === 'height'); // 凡例は色分けのときだけ
   };
-  const setStyle = (byHeight) => {
-    if (buildingColorState.byHeight === byHeight) return;
-    setBuildingColorByHeight(byHeight);
-    sync();
-  };
-  defBtn.addEventListener('click', () => setStyle(false));
-  hBtn.addEventListener('click', () => setStyle(true));
+  for (const b of btns) {
+    b.addEventListener('click', () => {
+      if (buildingColorState.mode === b.dataset.bldgMode) return;
+      setBuildingColorMode(b.dataset.bldgMode);
+      sync();
+    });
+  }
   sync();
 })();
 
@@ -290,6 +290,25 @@ let setPickerCenter = () => {};
 (function setupRecenterUI() {
   const b = el('recenterBtn');
   if (b) b.addEventListener('click', () => recenterOnFocus());
+})();
+
+// ---- パネル最下部の「データを再読み込み」-------------------------------------
+//   何らかの不具合（通信失敗・キューの詰まり）で地形や建物が出てこなくなったときの立て直し。
+//   押しっぱなしの連打で余計に詰まらないよう、実行中は少しのあいだ押せなくする。
+(function setupReloadUI() {
+  const b = el('reloadBtn');
+  if (!b) return;
+  b.addEventListener('click', () => {
+    b.disabled = true;
+    const label = b.textContent;
+    b.textContent = '再読み込み中…';
+    try {
+      reloadAllTiles();
+    } catch (e) {
+      console.warn('再読み込みに失敗:', e);
+    }
+    setTimeout(() => { b.disabled = false; b.textContent = label; }, 1500);
+  });
 })();
 
 export { updateHud, setPickerCenter, setClipSizeFromParent, getClipSize };

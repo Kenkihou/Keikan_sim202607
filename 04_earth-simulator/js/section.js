@@ -346,6 +346,11 @@ function makeLabelMesh(fi, tex, toXYZ, uCenter, level) {
 
 // 地盤プロファイルの信頼性判定の内訳（デバッグ用に最後の結果を保持）
 let lastSoilDiag = null;
+// ★ 前回きちんと描けた土が、どの箱に対するものだったか。
+//   カメラを引いたり回したりすると、その場に読み込まれている地形が粗いものだけになり
+//   「解像できていない」と判定されて土が消えてしまう（実際にそう見えていた）。
+//   箱が同じ場所・同じ大きさのままなら、前に細かい地形で作った土をそのまま残す方が正しい。
+let lastGoodSoilKey = null;
 
 // ---- 断面ポリゴンの生成（建物用）-------------------------------------------
 // 面の定義: i=0:+X面, 1:-X面, 2:+Z面, 3:-Z面。
@@ -446,6 +451,7 @@ function buildSectionFill() {
     for (const c of labelGroup.children) { c.geometry.dispose(); c.material.dispose(); }
     labelGroup.clear();
     soilBottomMesh.visible = false;
+    lastGoodSoilKey = null;   // 全体表示に切り替えた＝残しておく土は無い
     return;
   }
 
@@ -575,10 +581,8 @@ function buildSectionFill() {
 
   // --- 地形：地盤ライン（青）／ 土（側面の帯状カーテン＋底面）／ 等高線（黒）---
   // 「地形も切り抜く」ON のときだけ描く（＝地形が実際に切られている場所を示す線）。
-  for (const c of soilFillGroup.children) c.geometry.dispose();
-  soilFillGroup.clear();
-  for (const c of labelGroup.children) { c.geometry.dispose(); c.material.dispose(); }
-  labelGroup.clear();
+  // ※ 消して作り直すのは【今回きちんと描けると分かってから】。粗い地形しか無い瞬間に
+  //   先に消してしまうと、前に作った正しい土まで失われて消えたように見える。
   // ★ 地盤の高さを「u 方向に等間隔サンプリングした連続プロファイル」に変換する。
   //   交線をそのまま使うと、地形メッシュの継ぎ目・欠け・LOD 切替の隙間で線分が足りず
   //   青線と土が途切れる（大文字山のような急斜面で顕著だった）。
@@ -710,9 +714,26 @@ function buildSectionFill() {
       for (let b = 0; b < NBINS; b++) if (p.prof[b] > globalMaxV) globalMaxV = p.prof[b];
     }
   }
+  // ★ カメラを引く・回すと、その場に読み込まれている地形が粗いものだけになって
+  //   「解像できていない」と判定され、土と地盤ラインが消えてしまっていた。
+  //   箱が同じ場所・同じ大きさなら【前に細かい地形で作った土をそのまま残す】。
+  //   （箱が動いた／大きさが変わった／切り抜きをやめたときは、古い土は意味がないので作り直す）
+  const soilKey = `${cx.toFixed(1)},${cz.toFixed(1)},${clipState.size},${clipState.terrain}`;
+  const keepPreviousSoil = !soilReliable && lastGoodSoilKey === soilKey;
+
   lastSoilDiag = { 解像できた: soilReliable,
+    前回の土を維持: keepPreviousSoil,
     面ごとの交線長中央値m: profiles.map((p) => (Number.isFinite(p.medSegLen) ? +p.medSegLen.toFixed(1) : null)),
     必要な上限m: +soilSegLenLimit().toFixed(1) };
+
+  if (keepPreviousSoil) return;   // 土まわりは前回のものを残したまま、ここで終わり
+
+  // ここから先で作り直すので、いま出ている土とラベルを片付ける
+  for (const c of soilFillGroup.children) c.geometry.dispose();
+  soilFillGroup.clear();
+  for (const c of labelGroup.children) { c.geometry.dispose(); c.material.dispose(); }
+  labelGroup.clear();
+  lastGoodSoilKey = soilReliable ? soilKey : null;
   // 等高線の高さ一覧。実際の標高（海水準基準）のキリのいい数字（10, 20, ...）に揃える。
   //   ローカルY と標高の関係: 標高 = ORIGIN_ELEVATION + ローカルY なので、
   //   標高が10の倍数になるローカルY = (10の倍数) − ORIGIN_ELEVATION。

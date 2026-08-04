@@ -107,7 +107,10 @@ function styleBuildingModel(modelScene) {
   });
 }
 
-// ---- 建物の高さ色分け -------------------------------------------------------
+// ---- 建物の見せ方（テクスチャ／高さ色分け／白モデル）--------------------------
+// 白モデルの色。真っ白(0xffffff)だと陰影が飛んで形が読めないので、ごく僅かに落とす。
+const BUILDING_WHITE = 0xf2f2f2;
+
 //   PLATEAU の b3dm には建物ごとの属性表（batchTable）と、頂点がどの建物に属するかを示す
 //   `_batchid` 属性が入っている。これを使って建物単位で色を付ける。
 //   ★ 頂点カラー方式にしている（`color` 属性を書いて material.vertexColors = true）。
@@ -116,7 +119,8 @@ function styleBuildingModel(modelScene) {
 //     追加メモリは頂点あたり12バイト（実測 10.25MB）。
 //   ※ シェーダで `_batchid` からルックアップテクスチャを引けばメモリはほぼゼロにできるが、
 //     断面の灰色（makeInteriorCap の onBeforeCompile）と連結する手間が増えるので採らない。
-const buildingColorState = { byHeight: false };
+// 'default'（PLATEAUのテクスチャ）/ 'height'（高さで色分け）/ 'white'（真っ白）
+const buildingColorState = { mode: 'default' };
 
 // この建物（batchid）の高さ[m]を返す配列を作る。
 //   1) 属性 bldg:measuredHeight があればそれを使う
@@ -204,21 +208,29 @@ function ensureHeightColorAttribute(modelScene) {
   });
 }
 
-// 1タイルぶんのマテリアルを「テクスチャ」⇔「高さ色分け」で切り替える。
+// 1タイルぶんのマテリアルを、建物の見せ方（'default' / 'height' / 'white'）に合わせる。
+//   default … PLATEAU のテクスチャそのまま
+//   height  … 高さで色分け（頂点カラー。テクスチャとは排他）
+//   white   … LOD2 のテクスチャも外して真っ白にする（形だけを見たいとき用）
 function applyBuildingColorMode(modelScene) {
-  const on = buildingColorState.byHeight;
-  if (on) ensureHeightColorAttribute(modelScene);
+  const mode = buildingColorState.mode;
+  if (mode === 'height') ensureHeightColorAttribute(modelScene);
   modelScene.traverse((mesh) => {
     if (!mesh.isMesh || !mesh.material) return;
     const g = mesh.geometry;
     const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
     for (const m of mats) {
       if (m.__origMap === undefined) m.__origMap = m.map || null;   // 元のテクスチャを覚えておく
-      if (on) {
+      if (mode === 'height') {
         if (g.__heightColorAttr) g.setAttribute('color', g.__heightColorAttr);
         m.map = null;              // テクスチャは外す（色分けと排他）
         m.vertexColors = true;
         m.color.setHex(0xffffff);  // 頂点カラーは乗算されるので白にしておく
+      } else if (mode === 'white') {
+        g.deleteAttribute('color');
+        m.map = null;              // ★テクスチャを外すのが要点（LOD2でも真っ白になる）
+        m.vertexColors = false;
+        m.color.setHex(BUILDING_WHITE);
       } else {
         g.deleteAttribute('color');
         m.map = m.__origMap;
@@ -230,9 +242,9 @@ function applyBuildingColorMode(modelScene) {
   });
 }
 
-// 読み込み済みの全建物に反映する（トグル操作時）。
-function setBuildingColorByHeight(on) {
-  buildingColorState.byHeight = !!on;
+// 読み込み済みの全建物に反映する（切り替え操作時）。
+function setBuildingColorMode(mode) {
+  buildingColorState.mode = mode;
   for (const t of wardTiles) t.forEachLoadedModel((modelScene) => applyBuildingColorMode(modelScene));
 }
 
@@ -353,7 +365,7 @@ function makeWardTiles(url) {
     registerClipMeshes(modelScene, false, tile, t.group);
     // ⚠️ 着色は registerClipMeshes の後。高さの算出にワールド行列が要り、
     //   その復元に __clipRoot / __clipGroup（登録時に付与）を使うため。
-    if (buildingColorState.byHeight) applyBuildingColorMode(modelScene);
+    if (buildingColorState.mode !== 'default') applyBuildingColorMode(modelScene);
     markSectionDirty();   // 建物が増えたので断面を作り直す
     hideLoading();
   });
@@ -497,9 +509,39 @@ function updateLoadRegion() {
 //   建物と同じ ReorientationPlugin(lat, lon, height) で整列 → 同一 ECEF 座標系に載るので
 //   建物は地形の標高の上に自動的に乗る（＝地盤高さに合わせた設置）。
 // =========================================================================
+//   ★ 作る手順を関数にまとめてある。「再読み込み」ボタン（reloadAllTiles）で
+//     建物と同じように【破棄して作り直す】ため。
 let terrainTiles = null;
 let terrainWrapGroup = null;
-if (SHOW_TERRAIN) {
+let overlayPlugin = null;
+let currentOverlay = null;
+let currentImageryKey = DEFAULT_IMAGERY;
+
+// --- 航空写真／地図の切り替え（地形を作り直しても選択が引き継がれるよう外に出す）----
+function setImagery(key) {
+  if (!IMAGERY[key]) return;
+  currentImageryKey = key;
+  if (overlayPlugin) {
+    // deleteOverlay は読込中テクスチャがあると稀に内部で例外(DataCache二重解放)を
+    // 投げることがあるので握りつぶす（切り替え自体は成立させる）。
+    if (currentOverlay) {
+      try { overlayPlugin.deleteOverlay(currentOverlay); } catch (err) { /* ignore */ }
+      currentOverlay = null;
+    }
+    const def = IMAGERY[key];
+    if (def.url) {
+      currentOverlay = new XYZTilesOverlay({ url: def.url, levels: def.levels ?? 18 });
+      overlayPlugin.addOverlay(currentOverlay);
+    }
+  }
+  // ボタンの見た目を更新
+  document.querySelectorAll('#mapSwitch button').forEach((b) => {
+    b.classList.toggle('active', b.dataset.key === key);
+  });
+}
+window.__setImagery = setImagery; // デバッグ用
+
+function createTerrainTiles() {
   terrainTiles = new TilesRenderer(TERRAIN_URL);
   // QuantizedMeshPlugin は他プラグインより先に登録する（コンテンツ生成を担うため）。
   terrainTiles.registerPlugin(new QuantizedMeshPlugin({
@@ -510,7 +552,8 @@ if (SHOW_TERRAIN) {
     solid: false,
   }));
   // 航空写真／地図テクスチャを地形に貼るプラグイン（コンテンツ生成の後に登録）。
-  const overlayPlugin = new ImageOverlayPlugin({ renderer, overlays: [] });
+  overlayPlugin = new ImageOverlayPlugin({ renderer, overlays: [] });
+  currentOverlay = null;
   terrainTiles.registerPlugin(overlayPlugin);
   terrainTiles.registerPlugin(new ReorientationPlugin({
     lat: ORIGIN_LAT, lon: ORIGIN_LON, height: ORIGIN_HEIGHT, // 建物と完全に同じ整列
@@ -566,13 +609,17 @@ if (SHOW_TERRAIN) {
   // 山地などでタイルが部分的に存在せず 404 になるが、これは恒久的な欠損なので再試行すると
   // 404 の無限ループ（コンソール大量エラー＋通信を食い潰して建物DLが遅延）になる。
   // 欠損箇所はプラグインが自動的に下位ズームの画像で埋めるので、放置してよい。
-  terrainTiles.addEventListener('load-error', (e) => {
+  //   ⚠️ ハンドラの中では module 変数 terrainTiles ではなく【この renderer 自身】を掴む。
+  //     再読み込みで作り直したあとに古い renderer のエラーが遅れて届くと、
+  //     新しい方のキャッシュを触ってしまうため。
+  const self = terrainTiles;
+  self.addEventListener('load-error', (e) => {
     if (e.overlay) return; // オーバーレイ画像の失敗は無視（リトライ嵐を防ぐ）
     const tile = e.tile;
     if (tile) {
       tile.__retry = (tile.__retry || 0) + 1;
       if (tile.__retry <= RETRY_MAX) {
-        setTimeout(() => { try { terrainTiles.lruCache.remove(tile); } catch (err) {} }, 600 * tile.__retry);
+        setTimeout(() => { try { self.lruCache.remove(tile); } catch (err) {} }, 600 * tile.__retry);
         return;
       }
     }
@@ -588,31 +635,26 @@ if (SHOW_TERRAIN) {
   terrainWrapGroup = terrainWrap;
   window.__plateauTerrain = terrainTiles; // デバッグ用
 
-  // --- 航空写真／地図の切り替え --------------------------------------------
-  let currentOverlay = null;
-  let currentImageryKey = null;
-  function setImagery(key) {
-    if (!IMAGERY[key]) return;
-    currentImageryKey = key;
-    // deleteOverlay は読込中テクスチャがあると稀に内部で例外(DataCache二重解放)を
-    // 投げることがあるので握りつぶす（切り替え自体は成立させる）。
-    if (currentOverlay) {
-      try { overlayPlugin.deleteOverlay(currentOverlay); } catch (err) { /* ignore */ }
-      currentOverlay = null;
-    }
-    const def = IMAGERY[key];
-    if (def.url) {
-      currentOverlay = new XYZTilesOverlay({ url: def.url, levels: def.levels ?? 18 });
-      overlayPlugin.addOverlay(currentOverlay);
-    }
-    // ボタンの見た目を更新
-    document.querySelectorAll('#mapSwitch button').forEach((b) => {
-      b.classList.toggle('active', b.dataset.key === key);
-    });
-  }
-  window.__setImagery = setImagery; // デバッグ用
+  setImagery(currentImageryKey);   // 選ばれている画（既定は航空写真）を貼り直す
+}
 
-  // HUD にボタンを生成して配線
+// 地形レイヤーを丸ごと捨てる（再読み込み用）。dispose() は配下タイルを破棄するので
+// 'dispose-model' が飛び、unregisterClipMeshes / markSectionDirty も連鎖して呼ばれる。
+function disposeTerrainTiles() {
+  if (!terrainTiles) return;
+  try { terrainTiles.dispose(); } catch (e) { console.warn('地形の破棄に失敗:', e); }
+  if (terrainWrapGroup && terrainWrapGroup.parent) terrainWrapGroup.parent.remove(terrainWrapGroup);
+  // 取りこぼした地形メッシュが断面の対象に残らないよう掃除する（建物は別の renderer なので残す）
+  for (const m of Array.from(clipMeshes)) if (m.__clipIsTerrain) clipMeshes.delete(m);
+  terrainTiles = null;
+  terrainWrapGroup = null;
+  overlayPlugin = null;
+  currentOverlay = null;
+}
+
+if (SHOW_TERRAIN) {
+  createTerrainTiles();
+  // HUD に画の切り替えボタンを生成して配線（ボタンは作り直さないのでここで1回だけ）
   const mapSwitch = document.getElementById('mapSwitch');
   if (mapSwitch) {
     for (const [key, def] of Object.entries(IMAGERY)) {
@@ -622,8 +664,11 @@ if (SHOW_TERRAIN) {
       btn.addEventListener('click', () => setImagery(key));
       mapSwitch.appendChild(btn);
     }
+    // 生成前に setImagery を通っているので、選択の見た目だけここで合わせる
+    mapSwitch.querySelectorAll('button').forEach((b) => {
+      b.classList.toggle('active', b.dataset.key === currentImageryKey);
+    });
   }
-  setImagery(DEFAULT_IMAGERY);
 }
 
 // ---- 地形を「見せてよいか」の判定 -------------------------------------------
@@ -695,6 +740,48 @@ function resetTerrainReady() {
   if (terrainWrapGroup) terrainWrapGroup.visible = false;
 }
 
+// =========================================================================
+// 「データを再読み込み」（HUD 最下部のボタン）
+//   通信の失敗やキューの詰まりで建物・地形が出てこなくなったときの立て直し用。
+//   ページを開き直さずに、建物と地形の TilesRenderer を丸ごと作り直す
+//   ＝キャッシュ・ダウンロードキュー・走査状態がすべて新品になり、
+//   「いまの注目地点でページを開いた直後」と同じ状態から読み直す。
+//   ★ 見ているカメラ・注目地点・自作モデル・各レイヤーの選択はそのまま残る。
+// =========================================================================
+function reloadAllTiles() {
+  loadPhase = -1;         // setLoadPhase(0) を必ず通す（同じ値だと素通りするため）
+  setLoadPhase(0);        // 再読み込みでも「まず中心の1枚」から
+  updateLoadRegion();     // 作り直し直後の update が正しい範囲を見るように先に矩形を合わせる
+  resetWardTiles();
+  if (SHOW_TERRAIN) {
+    disposeTerrainTiles();
+    createTerrainTiles();
+  }
+  resetTerrainReady();    // 地形が十分細かくなるまではまた隠す（空から降ってくるのを防ぐ）
+  evictBurstFrames = 30;
+  markSectionDirty();
+  markViewAreaDirty();
+  markZonesDirty();
+  markUserModelDirty();
+  markMountainsDirty();
+}
+
+// ---- 読み込み中かどうか（オンデマンド描画の継続判定に使う）--------------------
+//   取得中・解析中・キュー待ちが1つでもあれば「まだ絵が変わる」＝描き続ける。
+function tilesBusy() {
+  let n = 0;
+  for (const t of wardTiles) {
+    const s = t.stats;
+    if (!s) continue;
+    n += (s.queued || 0) + (s.downloading || 0) + (s.parsing || 0);
+  }
+  if (terrainTiles && terrainTiles.stats) {
+    const s = terrainTiles.stats;
+    n += (s.queued || 0) + (s.downloading || 0) + (s.parsing || 0);
+  }
+  return n > 0;
+}
+
 // 緯度経度[rad]を注目地点に設定する。カメラも（現在の見る向き・距離を保ったまま）そこへ移す。
 //   ローカル座標への変換（原点まわりの局所ENU近似。市内スケールなら十分正確）:
 //     north[m] = (lat - ORIGIN_LAT) * R,  east[m] = (lon - ORIGIN_LON) * R * cos(lat)
@@ -756,8 +843,10 @@ export {
   setLoadPhase, updateLoadPhase, resetWardTiles, makeWardTiles,
   sharedCache, downscaleTexture, dracoLoader,
   setFocusLatLon, runEvictBurst, updateTerrainReady,
-  setBuildingColorByHeight, buildingColorState,
+  setBuildingColorMode, buildingColorState,
+  reloadAllTiles, tilesBusy,
 };
+export const isEvictBursting = () => evictBurstFrames > 0;
 export const isTerrainReady = () => terrainReady;
 export const getLoadPhase = () => loadPhase;
 export const getTerrainTiles = () => terrainTiles;

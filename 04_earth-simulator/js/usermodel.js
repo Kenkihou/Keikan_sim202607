@@ -11,7 +11,7 @@
 // =============================================================================
 import {
   THREE, scene, el, focusLocal, EARTH_R, markUserModelDirty,
-  camera, controls, renderer, hideLoading, requestRender,
+  camera, controls, renderer, hideLoading, requestRender, resetCamera,
 } from './core.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
@@ -127,6 +127,8 @@ function loadUserModel() {
     //   地盤・PLATEAU建物はその周りに後から埋まっていく形にする（切り替えの地続き感）。
     hideLoading();
     pendingHandoffCamera = !!readSession(USER_MODEL_CAMERA_KEY);
+    // 引き継ぐアングルが無いなら、前回いじった視点が残らないよう初期アングルへ戻す
+    if (!pendingHandoffCamera) resetCamera();
     markUserModelDirty();
     updateUserModelUi();
     setGizmoMode(gizmoMode);   // モデルが載ったのでギズモを取り付ける
@@ -456,7 +458,12 @@ function restartUserModelSession(opts = {}) {
   restoreInitialFocus();
   loadUserModel();
   updateUserModelUi();
-  if (!userModelState.present) notifyParentReady();
+  if (!userModelState.present) {
+    // ポータルからの単独起動など、引き継ぐモデルもアングルも無い場合。
+    // 待機中の画面を使い回しているので、明示的に初期アングルへ戻さないと前回の視点が残る。
+    resetCamera();
+    notifyParentReady();
+  }
 }
 
 // 親の「ポータルに戻る」ボタン（画面左上・固定）と HUD が重なるので、

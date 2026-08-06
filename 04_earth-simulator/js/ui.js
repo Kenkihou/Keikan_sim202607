@@ -4,11 +4,15 @@
 //   ・右下の国土地理院地図（クリックで拡大 → 選んだ地点へ注目地点を移す）
 // =============================================================================
 import { el, markSectionDirty, recenterOnFocus } from './core.js';
-import { DEG2RAD, ORIGIN_LAT, ORIGIN_LON, HEIGHT_BANDS } from './config.js';
+import {
+  DEG2RAD, ORIGIN_LAT, ORIGIN_LON, HEIGHT_BANDS,
+  ELEVATION_TINT_STOPS, ELEVATION_TINT_STEPS,
+} from './config.js';
 import { CLIP_SIZE_MIN, CLIP_SIZE_MAX, clipState } from './section.js';
 import {
   wardTiles, getLoadPhase, getTerrainTiles, setFocusLatLon,
   setBuildingColorMode, buildingColorState, isTerrainReady, reloadAllTiles,
+  terrainTintState, setTerrainTintStep, setImageryChangeHandler,
 } from './tiles.js';
 
 // 親アプリ（01）の下部パネルにも同じ切り抜きスライダーが並んでいる。
@@ -73,6 +77,48 @@ let getClipSize = () => 0;
     markSectionDirty();
   };
   getClipSize = () => (clipState.enabled ? clipState.size : 0);
+})();
+
+// ---- 「標高段彩」を選んだときだけ出る操作（刻みの切り替え＋色見本）----------------
+//   地形画像の選択が段彩に変わったかどうかは tiles.js から知らせてもらう
+//   （ボタン自体は tiles.js が IMAGERY から生成しているため）。
+(function setupElevationTintUI() {
+  const box = el('elevTintUi'), stepRow = el('elevStepSwitch'), legend = el('elevLegend');
+  if (!box || !stepRow || !legend) return;
+
+  const stepBtns = ELEVATION_TINT_STEPS.map((m) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = m + 'm';
+    b.dataset.step = String(m);
+    stepRow.appendChild(b);
+    return b;
+  });
+  const syncSteps = () => {
+    for (const b of stepBtns) {
+      b.classList.toggle('active', Number(b.dataset.step) === terrainTintState.step);
+    }
+  };
+  for (const b of stepBtns) {
+    b.addEventListener('click', () => {
+      setTerrainTintStep(Number(b.dataset.step));
+      syncSteps();
+    });
+  }
+  syncSteps();
+
+  // 色見本。config の色そのものを並べる（標高の低い順＝画面の下から上の順）。
+  for (const s of [...ELEVATION_TINT_STOPS].reverse()) {
+    const row = document.createElement('div');
+    const sw = document.createElement('i');
+    sw.style.background = '#' + s.color.toString(16).padStart(6, '0');
+    row.appendChild(sw);
+    row.appendChild(document.createTextNode(`${s.ele} m`));
+    legend.appendChild(row);
+  }
+
+  setImageryChangeHandler(() => { box.style.display = terrainTintState.on ? 'flex' : 'none'; });
+  box.style.display = terrainTintState.on ? 'flex' : 'none';   // 起動時の状態に合わせる
 })();
 
 // 建物の「内側の面（裏面）」を赤く塗るシェーダ改造。

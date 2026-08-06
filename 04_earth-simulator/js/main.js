@@ -15,7 +15,7 @@ import {
   THREE, renderer, scene, camera, controls, focusLocal,
   hideLoading, dirty, markSectionDirty, markViewAreaDirty, markViewLimitDirty, markZonesDirty,
   markUserModelDirty, markMountainsDirty,
-  setFrameScheduler, requestRender, isRenderHeld,
+  setFrameScheduler, requestRender, isRenderHeld, updateFog, resetCamera,
 } from './core.js';
 import { ORIGIN_ELEVATION, SEA_LEVEL_Y, TILESET_URLS_LOD1, TILESET_URLS_LOD2 } from './config.js';
 import {
@@ -126,6 +126,7 @@ function animate() {
   if (!running) return;
   controls.update();
   camera.updateMatrixWorld();
+  updateFog();                              // 霧の距離を今のカメラ距離に合わせる
   updateLoadPhase();                        // 第1段（1枚だけ）が済んだら第2段（500m四方）へ
   updateLoadRegion();                       // 注目地点まわりだけ読み込むよう矩形を更新
   updateClipPlanes();                       // 中心の切り抜き（クリップ面・断面板の位置）
@@ -244,6 +245,11 @@ window.pauseEarthSimulator = function() {
 // 親アプリ下部の切り抜きスライダーと双方向でつなぐための入口
 window.setEarthClipSize = (m) => setClipSizeFromParent(m);
 window.getEarthClipSize = () => getClipSize();
+
+// ★ 親アプリが「ポータルに戻る」たびに呼ぶ入口。
+//   この画面は破棄せず隠して待機させているので、明示的に戻さないと
+//   次にポータルから単独起動したとき前回いじった視点のまま始まってしまう。
+window.resetEarthCamera = () => resetCamera();
 
 window.resumeEarthSimulator = function(opts = {}) {
   running = true;

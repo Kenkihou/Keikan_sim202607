@@ -12,10 +12,27 @@
       position: fixed; top: 12px; left: 12px; z-index: 10;
       color: #e8eef7; background: rgba(15, 23, 42, 0.72);
       backdrop-filter: blur(6px);
-      padding: 12px 14px; border-radius: 10px; max-width: 340px;
+      /* ★ border-box にしておくこと。max-height は既定(content-box)だと余白と枠のぶん
+         (12+12+1+1=26px) だけ実際の高さがはみ出し、下部バーに掛かってしまう。
+         max-width はそのぶん 340→370 にして、見た目の幅は変えない。 */
+      box-sizing: border-box;
+      padding: 12px 14px; border-radius: 10px; max-width: 370px;
       font-size: 13px; line-height: 1.5; box-shadow: 0 4px 20px rgba(0,0,0,0.35);
       border: 1px solid rgba(148, 163, 184, 0.25);
+      /* ★ 中身がウィンドウの高さを超えたら、パネルの中でスクロールさせる。
+         折りたたみを全部開いたり、背の低いウィンドウだと下端が画面外へ出てしまうため。
+         差し引く高さは「上端の位置(12px)＋下の余白(12px)」。 */
+      max-height: calc(100vh - 24px);
+      overflow-y: auto;
+      overscroll-behavior: contain;   /* パネルの端まで来ても後ろの画面を巻き込まない */
+      scrollbar-width: thin;          /* Firefox */
+      scrollbar-color: rgba(148,163,184,0.5) transparent;
     }
+    /* スクロールバーもパネルの色味に合わせる（既定の明るいバーは浮くため） */
+    #hud::-webkit-scrollbar { width: 8px; }
+    #hud::-webkit-scrollbar-track { background: transparent; }
+    #hud::-webkit-scrollbar-thumb { background: rgba(148,163,184,0.45); border-radius: 4px; }
+    #hud::-webkit-scrollbar-thumb:hover { background: rgba(148,163,184,0.75); }
     #hud h1 { font-size: 14px; margin: 0 0 6px; font-weight: 700; }
     #hud .muted { color: #9fb0c7; font-size: 12px; }
     #hud .stat { color: #7ee0c0; font-variant-numeric: tabular-nums; }
@@ -38,7 +55,9 @@
     #userModelUi input[type=range] { width: 96px; accent-color: #63b3ed; }
     /* iframe に埋め込まれたときは、親アプリの「ポータルに戻る」ボタン（左上・固定）と
        重なるので HUD と復帰ボタンを下げる。 */
-    body.embedded #hud { top: 74px; }
+    /* 埋め込み時は上端が下がるうえ、親アプリの下部操作バー（画面下から104px）とも
+       重ねられないので、スクロールできる高さもその両方を差し引く。 */
+    body.embedded #hud { top: 74px; max-height: calc(100vh - 74px - 104px); }
     /* 親アプリの下部操作バー（時刻・🎨・切り抜き。画面下から 20〜93px を占める）と
        重ならないよう、右下の地図と左下の読み込み表示を持ち上げる。
        ※ 拡大表示中（.expanded）の地図は画面中央に来るので対象外。 */
@@ -179,6 +198,12 @@
         <!-- 地形に貼る画（航空写真／地理院地図／淡色地図／なし）。中身は tiles.js が作る -->
         <div class="sub-title">地形画像</div>
         <div class="map-switch" id="mapSwitch"></div>
+        <!-- 「標高段彩」を選んだときだけ出る操作。中身は ui.js が組み立てる。 -->
+        <div id="elevTintUi" style="display:none; flex-direction:column; gap:4px">
+          <div class="sub-title">標高の刻み</div>
+          <div class="map-switch" id="elevStepSwitch"></div>
+          <div class="legend on" id="elevLegend"></div>
+        </div>
         <!-- 見せ方の2択。箱庭表示＝中心を四角く切り抜くカットモデル（建物も地形も切る）。
              切り抜く大きさは親アプリ（01）の下部バーのスライダーで決める。 -->
         <div class="sub-title">表示範囲</div>

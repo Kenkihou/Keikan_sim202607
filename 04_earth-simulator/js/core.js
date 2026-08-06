@@ -4,7 +4,10 @@
 // =============================================================================
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { MAX_CAMERA_DISTANCE } from './config.js';
+import {
+  MAX_CAMERA_DISTANCE,
+  FOG_NEAR_RATIO, FOG_FAR_RATIO, FOG_MIN_NEAR, FOG_MIN_FAR,
+} from './config.js';
 
 const container = document.getElementById('app');
 const loadingEl = document.getElementById('loading');
@@ -28,16 +31,19 @@ container.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0e1626);
-// 霧はカメラを引ける上限に連動させる。
+// 霧は【今のカメラ距離】に連動させる（詳しい理由は config.js の FOG_* を参照）。
 //   ⚠️ 固定値(3000〜9000m)のままカメラ上限を 2000→4000m に広げたら、引いた先で
-//     視界のほとんどが霧に沈んで真っ暗になった。上限の 1.5〜4.5 倍を目安にする。
-scene.fog = new THREE.Fog(0x0e1626, MAX_CAMERA_DISTANCE * 1.5, MAX_CAMERA_DISTANCE * 4.5);
+//     視界のほとんどが霧に沈んで真っ暗になった。以来この対応を欠かさないこと。
+scene.fog = new THREE.Fog(0x0e1626, FOG_MIN_NEAR, FOG_MIN_FAR);
 
 // 座標系（再配置後）: +Z=北 / +X=西 / +Y=上、単位=メートル
+// 初期アングル。注目地点から見た【相対位置】として持つ（注目地点が動いても同じ構図で戻せる）。
+const DEFAULT_FOV = 55;
+const DEFAULT_CAMERA_OFFSET = new THREE.Vector3(-220, 300, -300);
 const camera = new THREE.PerspectiveCamera(
-  55, window.innerWidth / window.innerHeight, 1, 100000,
+  DEFAULT_FOV, window.innerWidth / window.innerHeight, 1, 100000,
 );
-camera.position.set(-220, 300, -300);
+camera.position.copy(DEFAULT_CAMERA_OFFSET);
 
 scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x2b2f38, 1.6));
 const sun = new THREE.DirectionalLight(0xffffff, 2.2);
@@ -45,11 +51,9 @@ sun.position.set(-800, 1200, -600);
 scene.add(sun);
 scene.add(new THREE.AmbientLight(0xffffff, 0.35));
 
-// 作業用グリッド（原点=モデル配置基準。不要なら消してよい）
-const grid = new THREE.GridHelper(4000, 80, 0x3b4a63, 0x223046);
-grid.material.transparent = true;
-grid.material.opacity = 0.35;
-scene.add(grid);
+// ※ 開発初期に置いていた作業用グリッド（原点に 4,000m 四方の GridHelper）は削除した。
+//   地形とは無関係な標高0mの平面なので、地形が入った今は盆地の上に方眼が透けて見えるだけだった。
+//   モデルの配置基準が要るときは、右下の地図の赤い原点マーカーで足りる。
 
 const controls = new OrbitControls(camera, renderer.domElement);
 // ★ 慣性（damping）は切る。指を離した後も流れ続けると狙った構図で止められないうえ、
@@ -132,6 +136,31 @@ export function recenterOnFocus() {
   controls.update();
 }
 
+// 霧の距離をカメラ距離に合わせ直す（描画ループから毎フレーム。数回の演算なので無視できる）。
+//   近景では下限が効いて従来どおりの見え方、引いた先では霧が一緒に押し広がる。
+export function updateFog() {
+  const dist = camera.position.distanceTo(controls.target);
+  scene.fog.near = Math.max(FOG_MIN_NEAR, dist * FOG_NEAR_RATIO);
+  scene.fog.far = Math.max(FOG_MIN_FAR, dist * FOG_FAR_RATIO);
+}
+
+// カメラを初期アングルへ戻す。
+//   ★ ポータルへ戻るたびに親アプリ（01）が呼ぶ。地球画面は破棄せず隠して待機させているので、
+//     何もしないと「前回いじった視点のまま」ポータルから単独起動されてしまうため。
+//   ★ 画角(fov)も戻すこと。モデリング画面から引き継いだときに向こうの fov を写しているので、
+//     位置だけ戻しても構図が一致しない。
+//   ※ 注目地点(focusLocal)は動かさない。戻すのは「そこをどう見るか」だけ。
+export function resetCamera() {
+  controls.target.copy(focusLocal);
+  camera.position.copy(focusLocal).add(DEFAULT_CAMERA_OFFSET);
+  if (camera.fov !== DEFAULT_FOV) {
+    camera.fov = DEFAULT_FOV;
+    camera.updateProjectionMatrix();
+  }
+  controls.update();
+  requestRender();
+}
+
 // ---- 再構築フラグ ------------------------------------------------------------
 //   断面や眺望ポリゴンは「変化があったときだけ」作り直す。
 //   ★ フラグをここ（最下層）に置くのが要点。タイル側や地形側は
@@ -161,6 +190,6 @@ export const markMountainsDirty = () => { dirty.mountains = true; requestRender(
 export {
   THREE,
   container, loadingEl, errEl, el, showError,
-  renderer, scene, camera, controls, sun, grid,
+  renderer, scene, camera, controls, sun,
   hideLoading, RETRY_MAX, focusLocal,
 };

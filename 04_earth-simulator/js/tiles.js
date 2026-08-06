@@ -23,7 +23,9 @@ import {
   LOCAL_WIDTH_EW, LOCAL_WIDTH_NS, LOCAL_HEIGHT,
   SEED_WIDTH, SEED_IDLE_MS, SEED_TIMEOUT_MS,
   SHOW_TERRAIN, TERRAIN_URL, TERRAIN_VERTICAL_OFFSET, IMAGERY, DEFAULT_IMAGERY,
-  HEIGHT_BANDS,
+  HEIGHT_BANDS, SEA_LEVEL_Y,
+  ELEVATION_TINT_STOPS, ELEVATION_TINT_RANGE, ELEVATION_TINT_DEFAULT_STEP,
+  ELEVATION_TINT_LINE_STRENGTH,
 } from './config.js';
 import {
   CAP_COLOR, buildingClipPlanes, terrainClipPlanes, clipMeshes,
@@ -517,10 +519,157 @@ let overlayPlugin = null;
 let currentOverlay = null;
 let currentImageryKey = DEFAULT_IMAGERY;
 
+// =========================================================================
+// 標高段彩（地形を標高で色分けする）
+//
+//   ★ ジオメトリにも頂点属性にも一切手を触れない。地形メッシュのフラグメントシェーダーに
+//     「ワールド座標のYから標高を出して色を決める」数行を差し込むだけなので、
+//     ドローコールも頂点数もメモリも増えない（＝描画コストは実質ゼロ）。
+//     色の階調だけ 256×1 のテクスチャ（1KB）に持つ。
+//
+//   ★ 段は【フラグメント側】で切ること。建物の「高さで色分け」と同じ頂点カラー方式に
+//     すると、頂点と頂点のあいだで色が補間されて 10m の段がぼやけてしまう。
+//     ピクセルごとに floor(標高/刻み) すれば、等高線図のようにくっきり出る。
+//
+//   ★ 地球の丸みを戻すこと。この座標系は原点での接平面なので、遠方の地形はワールドYが
+//     実標高より沈む。実測で 15km 先の山で約 20m、30km 先で約 70m 低く出ていた。
+//     放物線近似 (x²+z²)/2R を足せば、この範囲ならセンチ単位まで戻る。
+//
+//   ★ 切り替えは【uniform だけ】で行い、シェーダーは組み直さない。
+//     100枚を超える地形マテリアルを needsUpdate で再コンパイルすると一瞬固まるため、
+//     読み込み時に一度だけ差し込んでおき、以後は on/off も刻みも uniform の値で変える。
+// =========================================================================
+const terrainTintState = { on: false, step: ELEVATION_TINT_DEFAULT_STEP };
+
+// 段彩の色見本（256×1）。config の色を標高で並べて補間したもの。
+function makeTintRamp() {
+  const N = 256;
+  const [lo, hi] = ELEVATION_TINT_RANGE;
+  const data = new Uint8Array(N * 4);
+  const c0 = new THREE.Color(), c1 = new THREE.Color(), c = new THREE.Color();
+  for (let i = 0; i < N; i++) {
+    const ele = lo + (hi - lo) * (i / (N - 1));
+    let a = ELEVATION_TINT_STOPS[0], b = ELEVATION_TINT_STOPS[ELEVATION_TINT_STOPS.length - 1];
+    for (let k = 0; k < ELEVATION_TINT_STOPS.length - 1; k++) {
+      if (ele >= ELEVATION_TINT_STOPS[k].ele && ele <= ELEVATION_TINT_STOPS[k + 1].ele) {
+        a = ELEVATION_TINT_STOPS[k]; b = ELEVATION_TINT_STOPS[k + 1]; break;
+      }
+    }
+    const t = b.ele === a.ele ? 0 : (ele - a.ele) / (b.ele - a.ele);
+    // ⚠️ 色の混ぜ合わせは【線形空間で】行い、テクスチャには sRGB に戻して詰める。
+    //   setHex(..., SRGBColorSpace) で線形に直してから lerp し、最後に sRGB へ。
+    //   テクスチャ側で colorSpace を宣言してあるので、GPU が読むときにまた線形へ戻る。
+    c0.setHex(a.color, THREE.SRGBColorSpace);
+    c1.setHex(b.color, THREE.SRGBColorSpace);
+    c.copy(c0).lerp(c1, Math.max(0, Math.min(1, t)));
+    const srgb = c.clone().convertLinearToSRGB();
+    data[i * 4] = Math.round(srgb.r * 255);
+    data[i * 4 + 1] = Math.round(srgb.g * 255);
+    data[i * 4 + 2] = Math.round(srgb.b * 255);
+    data[i * 4 + 3] = 255;
+  }
+  const tex = new THREE.DataTexture(data, N, 1, THREE.RGBAFormat);
+  tex.colorSpace = THREE.SRGBColorSpace;   // GPU が sRGB→線形に直して読む
+  tex.minFilter = tex.magFilter = THREE.LinearFilter;
+  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+// 全マテリアルで【同じ uniform オブジェクトを共有】する。値を書き換えるだけで
+// 読み込み済みの地形すべてに一斉に効く（作り直しも再コンパイルも不要）。
+const tintUniforms = {
+  uTintOn:   { value: 0 },
+  uTintStep: { value: ELEVATION_TINT_DEFAULT_STEP },
+  uTintRamp: { value: makeTintRamp() },
+  uTintLo:   { value: ELEVATION_TINT_RANGE[0] },
+  uTintHi:   { value: ELEVATION_TINT_RANGE[1] },
+  uTintSea:  { value: SEA_LEVEL_Y },
+  uTintR2:   { value: 2 * EARTH_R },
+  uTintLine: { value: ELEVATION_TINT_LINE_STRENGTH },
+};
+
+// 地形マテリアル1枚に段彩のシェーダーを差し込む。
+//   ⚠️ ImageOverlayPlugin が既に onBeforeCompile を持っているので【置き換えず連結】する。
+//     しかもプラグインは customProgramCacheKey を自分では持たない（three の既定＝
+//     onBeforeCompile の全文がキーになる）ので、こちらで必ずキーを添えること。
+//     建物の makeInteriorCap で踏んだのと同じ罠。
+//   ⚠️ 差し込む位置は <roughnessmap_fragment>。プラグインは <color_fragment> の直後で
+//     航空写真を合成するので、それより後でなければ画像に上書きされる。
+function applyTerrainTint(material) {
+  if (material.__terrainTint) return;
+  material.__terrainTint = true;
+
+  const ownKey = Object.prototype.hasOwnProperty.call(material, 'customProgramCacheKey')
+    ? material.customProgramCacheKey : null;
+  material.customProgramCacheKey = function () {
+    return 'terrainTint|' + (ownKey ? ownKey.call(this) : '');
+  };
+
+  const prev = material.onBeforeCompile;
+  material.onBeforeCompile = function (shader, rendererRef) {
+    if (prev) prev.call(this, shader, rendererRef);
+    Object.assign(shader.uniforms, tintUniforms);
+
+    shader.vertexShader = 'varying vec3 vTintWorld;\n' + shader.vertexShader.replace(
+      '#include <begin_vertex>',
+      `#include <begin_vertex>
+      vTintWorld = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;`,
+    );
+
+    shader.fragmentShader = `
+      varying vec3 vTintWorld;
+      uniform float uTintOn;
+      uniform float uTintStep;
+      uniform sampler2D uTintRamp;
+      uniform float uTintLo;
+      uniform float uTintHi;
+      uniform float uTintSea;
+      uniform float uTintR2;
+      uniform float uTintLine;
+    ` + shader.fragmentShader.replace(
+      '#include <roughnessmap_fragment>',
+      `#include <roughnessmap_fragment>
+      if ( uTintOn > 0.5 ) {
+        // 接平面座標なので、遠方は地球の丸みで沈む。放物線近似で実標高に戻す。
+        float elev = vTintWorld.y - uTintSea
+          + ( vTintWorld.x * vTintWorld.x + vTintWorld.z * vTintWorld.z ) / uTintR2;
+        float idx  = floor( elev / uTintStep );      // 何段目か
+        float band = idx * uTintStep;                // その段の下端の標高
+        float t = clamp( ( band - uTintLo ) / ( uTintHi - uTintLo ), 0.0, 1.0 );
+        vec3 tint = texture2D( uTintRamp, vec2( t, 0.5 ) ).rgb;
+        // 平地では隣り合う段の色がほとんど変わらないので、1段おきに僅かに落として
+        // 段の切れ目が必ず読めるようにする。
+        tint *= mix( 1.0, 0.93, mod( idx, 2.0 ) );
+        // 段の境目に等高線。fwidth で線幅を1ピクセルに保つ。
+        // 段が画面上で細かくなりすぎたら線を消す（モアレで真っ黒になるのを防ぐ）。
+        float f = elev / uTintStep;
+        float w = max( fwidth( f ), 1e-5 );
+        float line = ( 1.0 - clamp( abs( fract( f + 0.5 ) - 0.5 ) / w, 0.0, 1.0 ) )
+                   * ( 1.0 - smoothstep( 0.35, 1.0, w ) );
+        tint = mix( tint, tint * ( 1.0 - uTintLine ), line );
+        diffuseColor.rgb = tint;
+      }`,
+    );
+  };
+}
+
+// on/off と刻みの変更。uniform を書き換えるだけなので即座に全タイルへ効く。
+function setTerrainTint(on) { terrainTintState.on = on; tintUniforms.uTintOn.value = on ? 1 : 0; }
+function setTerrainTintStep(step) {
+  terrainTintState.step = step;
+  tintUniforms.uTintStep.value = step;
+}
+
 // --- 航空写真／地図の切り替え（地形を作り直しても選択が引き継がれるよう外に出す）----
+let onImageryChange = () => {};
+const setImageryChangeHandler = (fn) => { onImageryChange = fn; };
+
 function setImagery(key) {
   if (!IMAGERY[key]) return;
   currentImageryKey = key;
+  // 標高段彩と航空写真は排他。段彩のときは画像を貼らない（url=null なので自動的にそうなる）。
+  setTerrainTint(!!IMAGERY[key].tint);
   if (overlayPlugin) {
     // deleteOverlay は読込中テクスチャがあると稀に内部で例外(DataCache二重解放)を
     // 投げることがあるので握りつぶす（切り替え自体は成立させる）。
@@ -538,6 +687,7 @@ function setImagery(key) {
   document.querySelectorAll('#mapSwitch button').forEach((b) => {
     b.classList.toggle('active', b.dataset.key === key);
   });
+  onImageryChange(key);   // 段彩のときだけ出す操作（刻み・凡例）を ui.js が付け外しする
 }
 window.__setImagery = setImagery; // デバッグ用
 
@@ -584,6 +734,7 @@ function createTerrainTiles() {
         c.material.side = THREE.DoubleSide;
         c.material.clippingPlanes = terrainClipPlanes; // 建物とは別配列（地形だけ切らない選択が可能）
         c.renderOrder = -1;
+        applyTerrainTint(c.material);   // 標高段彩の数行を仕込む（切り替えは uniform だけで効く）
       }
     });
     registerClipMeshes(s, true, tile, terrainTiles.group); // 断面の対象に登録（地形として）
@@ -845,6 +996,7 @@ export {
   setFocusLatLon, runEvictBurst, updateTerrainReady,
   setBuildingColorMode, buildingColorState,
   reloadAllTiles, tilesBusy,
+  terrainTintState, setTerrainTintStep, setImageryChangeHandler,
 };
 export const isEvictBursting = () => evictBurstFrames > 0;
 export const isTerrainReady = () => terrainReady;

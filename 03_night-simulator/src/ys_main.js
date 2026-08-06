@@ -10,7 +10,7 @@ import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
 
 import {
     baseWallMat, baseRoofMat, floorMat, floorMatDay, floorMatFlat,
-    windowMatDay, windowMatFlat, edgeMaterial, createWindowMaterial, updateShojiTexture
+    windowMatDay, windowMatFlat, edgeMaterial, createWindowMaterial, setupWindowPaneUniforms
 } from './ys_material.js';
 import {
     initLights, sunLight, moonLight, skyFillLight, ambientLight,
@@ -302,7 +302,7 @@ function approxWindowArea(mesh) {
 // 面積の大きい（＝光の切り出しが目立つ）点灯中の窓から順に割り当てる。
 function assignWindowShadows(count) {
     const casters = windowUnits
-        .filter(u => u.light && u.isOn)
+        .filter(u => u.light && (!params.windowVariation || u.isOn))
         .sort((a, b) => b.area - a.area);
 
     casters.forEach((unit, i) => {
@@ -340,19 +340,25 @@ function refreshWaterMoonlight() {
 const _windowColor = new THREE.Color();
 function refreshNightWindows() {
     if (currentMode !== 3) return;
+    const vary = params.windowVariation;
+
     windowUnits.forEach(unit => {
-        kelvinToColor(params.colorTemperature + unit.tempOffset, _windowColor);
+        const isOn = vary ? unit.isOn : true;
+        const tempOffset = vary ? unit.tempOffset : 0;
+        const factor = vary ? unit.intensityFactor : 1.0;
+
+        kelvinToColor(params.colorTemperature + tempOffset, _windowColor);
         unit.material.emissive.copy(_windowColor);
-        unit.material.emissiveIntensity = unit.isOn
-            ? params.windowEmissiveIntensity * unit.intensityFactor
-            : 0.0;
+        unit.material.emissiveIntensity = isOn ? params.windowEmissiveIntensity * factor : 0.0;
+        // 面内の明暗のムラ（「光の不均一さ」スライダー）
+        if (unit.material.userData.shoji) unit.material.userData.shoji.uUneven.value = params.gradientStrength;
+        // 消灯している窓は、真っ黒な穴に見えないよう僅かに素地の色を残す
+        unit.material.color.setHex(isOn ? 0x000000 : 0x0b0d14);
 
         if (unit.light) {
             unit.light.color.copy(_windowColor);
-            unit.light.intensity = unit.isOn
-                ? params.spillLightIntensity * unit.intensityFactor * unit.lightScale
-                : 0.0;
-            unit.light.visible = unit.isOn;
+            unit.light.intensity = isOn ? params.spillLightIntensity * factor * unit.lightScale : 0.0;
+            unit.light.visible = isOn;
         }
     });
 }
@@ -446,14 +452,15 @@ gltfLoader.load(modelUrl, (gltf) => {
                 child.updateMatrixWorld();
                 const worldPos = new THREE.Vector3(); child.getWorldPosition(worldPos);
 
+                // 面内の濃淡を出すための座標系。種を窓ごとに変えてムラの出方をずらす
+                setupWindowPaneUniforms(nightWindowMat, child,
+                    hashString(`${worldPos.x.toFixed(2)}_${worldPos.y.toFixed(2)}_${worldPos.z.toFixed(2)}`) % 1000);
+
                 const isExterior = (matName === 'exteria_poal_light');
                 const unit = Object.assign(
                     { mesh: child, material: nightWindowMat, light: null, area: 0, lightScale: 1.0, isExterior },
                     createWindowVariation(worldPos, isExterior)
                 );
-
-                // 消灯している部屋の窓は、真っ黒な穴に見えないよう僅かに素地の色を残す
-                if (!unit.isOn) nightWindowMat.color.setHex(0x0b0d14);
 
                 // 発光面が向いている方向。窓も門柱灯も、この向きに光を放つ
                 const normal = new THREE.Vector3(0, 0, 1).transformDirection(child.matrixWorld).normalize();
@@ -618,15 +625,26 @@ function triggerDayUpdate() {
 
 const nightFolder = gui.addFolder('夜間明かりの設定');
 const presets = {
-    '朧げ': { colorTemperature: 3000, windowEmissiveIntensity: 0.6, spillLightIntensity: 3.0, moonLightIntensity: 0.5, moonLightBlueness: 0.4, bloomStrength: 1.0, bloomRadius: 0.0, gradientStrength: 1.0 },
-    '煌々': { colorTemperature: 2500, windowEmissiveIntensity: 1.5, spillLightIntensity: 3.0, moonLightIntensity: 0.5, moonLightBlueness: 0.4, bloomStrength: 0.15, bloomRadius: 0.942, gradientStrength: 0.0 }
+    // 行燈のような、淡くて眩しくない光。
+    // 「光源が明るいか」ではなく「滲みで眩しく見えるか」が体感を決めるので、
+    // ブルームは広く弱く掛け、発光そのものも白飛びしない範囲に抑える。
+    // 発光を上げすぎると AgX が高輝度部を脱彩度させ、琥珀色が淡い黄色に転んでしまう
+    '朧げ': { colorTemperature: 2100, windowEmissiveIntensity: 0.26, spillLightIntensity: 0.7, moonLightIntensity: 0.2, moonLightBlueness: 0.6, bloomStrength: 0.3, bloomRadius: 0.6, gradientStrength: 0.75, bloomThreshold: 0.4 },
+    // 煌々も面内に濃淡を持たせる。ただし全室に灯りが回っている状態なので、
+    // 朧げより濃淡は浅くする。発光を上げすぎると明部が飽和して濃淡が潰れるため、
+    // 明るさは保ちつつ階調が残る値に抑える
+    '煌々': { colorTemperature: 2500, windowEmissiveIntensity: 1.15, spillLightIntensity: 3.0, moonLightIntensity: 0.5, moonLightBlueness: 0.4, bloomStrength: 0.15, bloomRadius: 0.942, gradientStrength: 0.4, bloomThreshold: 1.0 }
 };
 // 以下はプリセットで上書きしない、画づくり全体に効く設定
 const params = Object.assign({}, presets['朧げ'], {
-    bloomThreshold: 1.0,     // この輝度(リニアHDR)を超えた部分だけが滲む
     filmGrain: 0.035,        // フィルムグレインの量
     windowShadowCount: 6,    // 影を落とす窓の本数
-    envIntensity: 2.0        // 夜空を光源とした環境反射の強さ
+    envIntensity: 2.0,       // 夜空を光源とした環境反射の強さ
+    // 部屋ごとの明るさ・色温度・点灯のばらつき。
+    // 「部屋」は窓の位置をセル単位に丸めて判定しているため、同じ窓の左右のガラスが
+    // セル境界をまたぐと別の部屋と見なされ、窓が半分だけ消灯することがある。
+    // 既定では切っておき、破綻しないモデルでのみ有効にする
+    windowVariation: false
 });
 
 const ctController = nightFolder.add(params, 'colorTemperature', 2500, 6500, 50).name('色温度 (K)').onChange(() => { refreshNightWindows(); window.requestRender(); });
@@ -636,17 +654,18 @@ const mlController = nightFolder.add(params, 'moonLightIntensity', 0, 1).name('�
 const mbController = nightFolder.add(params, 'moonLightBlueness', 0, 1).name('月明かりの青味').onChange(v => { updateNightTint(v, currentMode); refreshWaterMoonlight(); window.requestRender(); });
 const bsController = nightFolder.add(params, 'bloomStrength', 0, 1).name('ブルームの強さ').onChange(v => { if (currentMode === 3) bloomPass.strength = v * 0.3; window.requestRender(); });
 const brController = nightFolder.add(params, 'bloomRadius', 0, 1).name('ブルームの半径').onChange(v => { bloomPass.radius = v; window.requestRender(); });
-const gsController = nightFolder.add(params, 'gradientStrength', 0.0, 1.0).name('光の不均一さ').onChange(v => { if (currentMode === 3) updateShojiTexture(v); window.requestRender(); });
+const gsController = nightFolder.add(params, 'gradientStrength', 0.0, 1.0).name('光の不均一さ').onChange(() => { refreshNightWindows(); window.requestRender(); });
 
-nightFolder.add(params, 'bloomThreshold', 0.0, 3.0, 0.05).name('ブルームのしきい値').onChange(v => { bloomPass.threshold = v; window.requestRender(); });
+const btController = nightFolder.add(params, 'bloomThreshold', 0.0, 3.0, 0.05).name('ブルームのしきい値').onChange(v => { bloomPass.threshold = v; window.requestRender(); });
 nightFolder.add(params, 'filmGrain', 0.0, 0.15, 0.005).name('フィルムグレイン').onChange(v => { if (currentMode === 3) grainPass.uniforms.uGrain.value = v; window.requestRender(); });
 nightFolder.add(params, 'windowShadowCount', 0, 12, 1).name('窓の影の本数（重い）').onChange(v => assignWindowShadows(v));
 nightFolder.add(params, 'envIntensity', 0.0, 3.0, 0.05).name('環境反射の強さ').onChange(v => { if (currentMode === 3) scene.environmentIntensity = v; window.requestRender(); });
+nightFolder.add(params, 'windowVariation').name('窓ごとのばらつき').onChange(() => { refreshNightWindows(); assignWindowShadows(params.windowShadowCount); window.requestRender(); });
 
 const presetState = { '朧げの照明': true, '煌々の照明': false };
 function applyPreset(presetName) {
     const p = presets[presetName]; Object.assign(params, p);
-    ctController.setValue(p.colorTemperature); weController.setValue(p.windowEmissiveIntensity); slController.setValue(p.spillLightIntensity); mlController.setValue(p.moonLightIntensity); mbController.setValue(p.moonLightBlueness); bsController.setValue(p.bloomStrength); brController.setValue(p.bloomRadius); gsController.setValue(p.gradientStrength);
+    ctController.setValue(p.colorTemperature); weController.setValue(p.windowEmissiveIntensity); slController.setValue(p.spillLightIntensity); mlController.setValue(p.moonLightIntensity); mbController.setValue(p.moonLightBlueness); bsController.setValue(p.bloomStrength); brController.setValue(p.bloomRadius); gsController.setValue(p.gradientStrength); btController.setValue(p.bloomThreshold);
 }
 nightFolder.add(presetState, '朧げの照明').listen().onChange(v => { if (v) { presetState['煌々の照明'] = false; applyPreset('朧げ'); } else if (!presetState['煌々の照明']) presetState['朧げの照明'] = true; });
 nightFolder.add(presetState, '煌々の照明').listen().onChange(v => { if (v) { presetState['朧げの照明'] = false; applyPreset('煌々'); } else if (!presetState['朧げの照明']) presetState['煌々の照明'] = true; });
@@ -711,7 +730,6 @@ export function updateSceneByTime(val) {
         // 夜空を環境光源にする。空の明るさの分布が材質の鏡面反射に乗る
         scene.environment = nightEnvMap;
         scene.environmentIntensity = params.envIntensity;
-        updateShojiTexture(params.gradientStrength);
         // 部屋ごとの色温度・明るさ・点灯状態をここで一括反映する（消灯窓のライトはここで非表示になる）
         refreshNightWindows();
 

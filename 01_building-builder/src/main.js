@@ -1451,7 +1451,16 @@ document.addEventListener('DOMContentLoaded', () => {
             if (isEarthModeActive) {
                 if (typeof window.closeEarthSimulator === 'function') window.closeEarthSimulator();
             }
-            
+
+            // ★地球モードのカメラを初期アングルへ戻す。
+            //   地球画面は破棄せず隠して待機させてある（タイルを抱えたまま次に備えるため）ので、
+            //   何もしないと「01→地球でぐるぐる回した視点」のままポータルから単独起動されてしまう。
+            //   ※ closeEarthSimulator は上で済ませてある＝あちらのアングルは既に 01 側へ取り込み済み。
+            const earthFrame = document.getElementById('earth-sim-iframe');
+            const earthWin = earthFrame && earthFrame.contentWindow;
+            if (earthWin && typeof earthWin.resetEarthCamera === 'function') earthWin.resetEarthCamera();
+            sessionStorage.removeItem('earth_camera_state');   // 預けてあるアングルも捨てる
+
             setMainAppVisibility(false);
             setBottomBarVisible(false);   // ポータル画面では下部バーも引っ込める
             isPortalLaunch = false;

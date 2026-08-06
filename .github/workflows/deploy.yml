@@ -73,6 +73,26 @@ jobs:
             fi
           done
 
+      # 4.5 地球シミュレーターの必須ファイルが揃っているか検証
+      #     ⚠️ 上のコピーは [ -f ... ] で守っているので、どれか1つが欠けていても
+      #     デプロイ自体は失敗しない（＝気づかないまま一部データが無いサイトが公開されてしまう）。
+      #     ここで欠けを検出して明示的に失敗させ、静かな破損を防ぐ。
+      - name: Verify earth-api files
+        run: |
+          missing=0
+          for file in index.html js mountain.geojson 建造物修景地区.json 自然風景保全地区.json 眺望規制面.json 眺望空間保全地域.json 伝統的建造物群保存地区.json 美観地区.json 風致地区.json 風致地区特別修景地域.json 歴史的風土特別保存地区.json 歴史的風土保存区域.json; do
+            if [ ! -e "combined_dist/earth-api/$file" ]; then
+              echo "::error::地球シミュレーターに必須のファイルが見つかりません: $file"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "combined_dist/earth-api の中身:"
+            ls -la combined_dist/earth-api/
+            exit 1
+          fi
+          echo "地球シミュレーターの必須ファイルはすべて揃っています。"
+
       # 5. GitHub Pagesへアップロード
       - name: Setup Pages
         uses: actions/configure-pages@v5

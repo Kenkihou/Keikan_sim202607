@@ -57,23 +57,21 @@ jobs:
           mkdir -p combined_dist/night-api
           cp -r 03_night-simulator/dist/* combined_dist/night-api/
 
-          # 🌐 地球シミュレーター（必要なファイルだけを個別にコピーして安全化）
+          # 🌐 地球シミュレーター（必要なファイルだけを安全にコピー）
           mkdir -p combined_dist/earth-api
-          cp 04_earth-simulator/index.html combined_dist/earth-api/
-          cp -r 04_earth-simulator/js combined_dist/earth-api/
           
-          # 景観・地景に必要な各JSONデータのみを厳選コピー（package-lock.json等の混入を防ぐ）
-          cp 04_earth-simulator/mountain.geojson combined_dist/earth-api/ 2>/dev/null || true
-          cp 04_earth-simulator/建造物修景地区.json combined_dist/earth-api/ 2>/dev/null || true
-          cp 04_earth-simulator/自然風景保全地区.json combined_dist/earth-api/ 2>/dev/null || true
-          cp 04_earth-simulator/眺望規制面.json combined_dist/earth-api/ 2>/dev/null || true
-          cp 04_earth-simulator/眺望空間保全地域.json combined_dist/earth-api/ 2>/dev/null || true
-          cp 04_earth-simulator/伝統的建造物群保存地区.json combined_dist/earth-api/ 2>/dev/null || true
-          cp 04_earth-simulator/美観地区.json combined_dist/earth-api/ 2>/dev/null || true
-          cp 04_earth-simulator/風致地区.json combined_dist/earth-api/ 2>/dev/null || true
-          cp 04_earth-simulator/風致地区特別修景地域.json combined_dist/earth-api/ 2>/dev/null || true
-          cp 04_earth-simulator/歴史的風土特別保存地区.json combined_dist/earth-api/ 2>/dev/null || true
-          cp 04_earth-simulator/歴史的風土保存区域.json combined_dist/earth-api/ 2>/dev/null || true
+          # index.html のコピー
+          [ -f 04_earth-simulator/index.html ] && cp 04_earth-simulator/index.html combined_dist/earth-api/
+          
+          # js フォルダが存在すればコピー
+          [ -d 04_earth-simulator/js ] && cp -r 04_earth-simulator/js combined_dist/earth-api/
+
+          # データファイルの個別にコピー
+          for file in mountain.geojson 建造物修景地区.json 自然風景保全地区.json 眺望規制面.json 眺望空間保全地域.json 伝統的建造物群保存地区.json 美観地区.json 風致地区.json 風致地区特別修景地域.json 歴史的風土特別保存地区.json 歴史的風土保存区域.json; do
+            if [ -f "04_earth-simulator/$file" ]; then
+              cp "04_earth-simulator/$file" combined_dist/earth-api/
+            fi
+          done
 
       # 5. GitHub Pagesへアップロード
       - name: Setup Pages

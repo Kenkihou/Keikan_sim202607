@@ -10,6 +10,10 @@ import { AppInit } from './init.js';
 import { TutorialManager } from './tutorialManager.js';
 import { setOnTextureAssetsReady, SUGI_BOARD_WIDTH_M, SUGI_BOARD_HEIGHT_M } from './materialTextureFactory.js';
 import { setupEarthPrefetchTriggers } from './earthPrefetch.js';
+// ★追加：外構作図モード（tree/planner.html から移植した地面・囲い・外構・樹木の作図機能）
+import { initExterior, toggleExterior, exitExterior, isExteriorActive,
+         applyGhost as applyExteriorGhost, serializeExterior, restoreExterior,
+         clearExterior, exteriorWorld } from './exterior/index.js';
 
 // --- UI・操作状態（画面固有のもの） ---
 let interactiveMeshes = [];
@@ -227,6 +231,10 @@ function rebuildMeshes() {
 
     });
 
+    // ★追加：外構作図モード中に建物を作り直したときは、半透明ゴーストを塗り直す
+    //   （メッシュ・マテリアルは rebuild のたびに作り直されるため）
+    applyExteriorGhost();
+
     if (window.renderAllViews) window.renderAllViews();
     // ★追加：メッシュを再構築した直後に、編集中の水色ハイライト状態を復元する
     if (window.triggerHighlightSync) window.triggerHighlightSync();
@@ -282,6 +290,9 @@ window.setMeshActiveMaterial = function(id) {
     if (meshMap[id]) meshMap[id].mesh.material = activeMat;
 };
 window.getHouseGroup = function() { return houseGroup; };
+// ★追加：外構（芝生・囲い・カーポートなど）の入れ物。子アプリ（夜間景観）が
+//   「モデリング画面に中身があるか」を判定するのに使う
+window.getExteriorWorld = function() { return exteriorWorld; };
 window.getEdgeMat = function() { return edgeMat; };
 
 // ViewManagerの初期化
@@ -293,6 +304,46 @@ InteractionHandler.init({
     camera, scene, controls, hoverMesh, activeMat, rebuildMeshes, saveState,
     getInteractiveMeshes: () => interactiveMeshes
 });
+
+// ==========================================
+// ★追加：外構作図モードの初期化
+//   本体アプリのシーン・カメラ・レンダラーをそのまま貸して、その上に
+//   外構専用のレイヤー（照明・作図用の目印・地物の入れ物）を足す。
+//   ・単位は本体が mm、外構の地物は m。境界は src/exterior/core/viewer.js
+//   ・スナップ量はツールバーの「📏」と共有する
+// ==========================================
+initExterior({
+    scene, camera, renderer, controls, houseGroup,
+    render: () => { if (window.renderAllViews) window.renderAllViews(); },
+    getSnapMM: () => InteractionHandler.getSnap(),
+    setBuildingLocked: (v) => InteractionHandler.setLocked(v),
+});
+window.toggleExterior = toggleExterior;
+
+// ==========================================================================
+// ★追加：子アプリ（夜間景観・マンセル値・地球モード）へ渡す GLB の書き出し対象。
+//   建物（houseGroup）に加えて、外構（芝生・囲い・カーポート・樹木）も一緒に渡す。
+//   GLTFExporter は Object3D の配列を受け取れるので、シーングラフを組み替えずに済む。
+// ==========================================================================
+function getExportRoots() {
+    // 外構作図モード中は建物が半透明ゴーストのままなので、書き出す前にモードを閉じて
+    // 元のマテリアルへ戻す（透けた建物が子アプリへ渡ってしまうのを防ぐ）
+    if (isExteriorActive()) exitExterior();
+
+    const hasExterior = exteriorWorld && exteriorWorld.children.length > 0;
+    if (!hasExterior) return houseGroup;
+
+    // 子アプリ側は「マテリアル名」で色を扱うので、名前のないものには名前を付ける。
+    // ※ 建物側の `${ブロックID}__${部位}` 形式とは別物とわかるよう ext_ を頭に付ける
+    //   （マンセル側から戻ってきた色を建物へ取り込む処理に拾われないようにするため）
+    exteriorWorld.traverse(child => {
+        if (!child.isMesh || !child.material) return;
+        const mats = Array.isArray(child.material) ? child.material : [child.material];
+        mats.forEach(m => { if (m && !m.name) m.name = 'ext_' + m.uuid.substring(0, 8); });
+    });
+
+    return [houseGroup, exteriorWorld];
+}
 
 // ==========================================
 // ★追加：チュートリアルマネージャーの初期化と登録
@@ -341,6 +392,7 @@ window.toggleSnap = function() {
 window.clearAll = function() {
     if(confirm('すべてのオブジェクトを消去しますか？')) {
         AppState.clearAll();
+        clearExterior();          // ★追加：外構（芝生・フェンス・カーポートなど）も一緒に消す
         window.setTool(null);
         rebuildMeshes();
         UIController.hideFloatingMenu(); 
@@ -389,6 +441,10 @@ document.getElementById('btn-save-json').addEventListener('click', () => {
         cesiumState: {
             lastPlacedLocation: window.lastPlacedLocation,
             lastPlacedHeading: window.lastPlacedHeading // 地球上でのモデルの回転角度
+        },
+        // ★追加：外構（地面・囲い・外構・樹木）の配置。地物の種類・位置(m)・寸法パラメータだけを持つ
+        exteriorState: {
+            items: serializeExterior()
         }
     };
 
@@ -453,7 +509,10 @@ inputLoadJson.addEventListener('change', (e) => {
                 window.lastPlacedHeading = 0;
             }
 
-            // 3. 各種3DメッシュとUIパネルの同期・再描画
+            // ★追加：3. 外構の復元（含まれない古いデータなら空にする）
+            restoreExterior(json.exteriorState && json.exteriorState.items);
+
+            // 4. 各種3DメッシュとUIパネルの同期・再描画
             UIController.clearGUI();
             UIController.hideFloatingMenu();
             rebuildMeshes(); // Three.jsシーンを完全再構築
@@ -520,9 +579,9 @@ function openNightSimulation(initialSliderPct = NIGHT_START_PCT, fromPortal = fa
         sessionStorage.removeItem('night_custom_glb');
         proceedOpenNightIframe(initialSliderPct, true);
     } else {
-        // ★通常（モデリング画面）から起動時は現在のモデルをパッキング
+        // ★通常（モデリング画面）から起動時は現在のモデルをパッキング（外構も含む）
         const exporter = new GLTFExporter();
-        exporter.parse(houseGroup, (glb) => {
+        exporter.parse(getExportRoots(), (glb) => {
             const blob = new Blob([glb], { type: 'application/octet-stream' });
             const glbUrl = URL.createObjectURL(blob);
             sessionStorage.setItem('night_custom_glb', glbUrl);
@@ -926,7 +985,8 @@ function toggleMunsellSimulator(fromPortal = false) {
             sessionStorage.removeItem('munsell_custom_glb');
             sessionStorage.removeItem('munsell_initial_textures');
             openMunsellIframe(true);
-        } else if (AppState.buildingData.length > 0) {
+        // ★変更：建物が無くても外構だけ置かれていれば書き出す
+        } else if (AppState.buildingData.length > 0 || exteriorWorld.children.length > 0) {
             houseGroup.traverse(child => {
                 if (child.isMesh && child.material) {
                     const mat = Array.isArray(child.material) ? child.material[0] : child.material;
@@ -939,7 +999,7 @@ function toggleMunsellSimulator(fromPortal = false) {
 
             const restoreTextures = stripPartTexturesForExport(houseGroup);
             const exporter = new GLTFExporter();
-            exporter.parse(houseGroup, (glb) => {
+            exporter.parse(getExportRoots(), (glb) => {
                 restoreTextures(); // ★このアプリ自身の表示には簡易テクスチャを戻す
                 const blob = new Blob([glb], { type: 'application/octet-stream' });
                 const glbUrl = URL.createObjectURL(blob);
@@ -1042,7 +1102,8 @@ function openEarthSimulator(fromPortal = false) {
     const prevGlb = sessionStorage.getItem('earth_custom_glb');
     if (prevGlb && prevGlb.startsWith('blob:')) URL.revokeObjectURL(prevGlb);
 
-    if (fromPortal || AppState.buildingData.length === 0) {
+    // ★変更：建物が無くても外構だけ置かれていれば、それを持って地球へ行く
+    if (fromPortal || (AppState.buildingData.length === 0 && exteriorWorld.children.length === 0)) {
         // ポータルからの単独起動（またはモデルが無いとき）は街並みだけを表示する
         sessionStorage.removeItem('earth_custom_glb');
         sessionStorage.removeItem('earth_camera_state');
@@ -1062,7 +1123,7 @@ function openEarthSimulator(fromPortal = false) {
             }
         });
         const exporter = new GLTFExporter();
-        exporter.parse(houseGroup, (glb) => {
+        exporter.parse(getExportRoots(), (glb) => {
             const blob = new Blob([glb], { type: 'application/octet-stream' });
             sessionStorage.setItem('earth_custom_glb', URL.createObjectURL(blob));
             proceedOpenEarthIframe(fromPortal);
@@ -1313,7 +1374,11 @@ let isPortalLaunch = false;
 function setMainAppVisibility(visible) {
     const displayVal = visible ? 'block' : 'none';
     const flexVal = visible ? 'flex' : 'none';
-    
+
+    // ★追加：他のシミュレーターやポータルへ移る前に外構作図モードを閉じる
+    //   （建物のゴースト表示と外構パネルを出しっぱなしにしないため）
+    if (!visible && isExteriorActive()) exitExterior();
+
     // 1. Three.js Canvasの表示切り替え
     if (renderer && renderer.domElement) {
         renderer.domElement.style.display = displayVal;

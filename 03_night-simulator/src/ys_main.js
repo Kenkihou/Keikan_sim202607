@@ -375,18 +375,23 @@ let isHoveringWater = false; // 水面にマウスが乗っているかのフラ
 // ==========================================
 const nightCustomGlb = sessionStorage.getItem('night_custom_glb');
 
-// 💡 メインアプリ側で実際に「メッシュ（建物）」が描画されているかチェックを挟む
+// 💡 メインアプリ側で実際に「メッシュ」が描画されているかチェックを挟む
+//    ★変更：建物（houseGroup）だけでなく、外構（芝生・囲い・カーポートなど）も見る。
+//    外構だけを作ってこちらへ来た場合にデフォルトモデルへ差し替わってしまわないようにする。
 let isMainAppEmpty = true;
-if (nightCustomGlb && window.parent && typeof window.parent.getHouseGroup === 'function') {
-    const parentHouseGroup = window.parent.getHouseGroup();
-    if (parentHouseGroup) {
+if (nightCustomGlb && window.parent) {
+    const parentRoots = [];
+    if (typeof window.parent.getHouseGroup === 'function') parentRoots.push(window.parent.getHouseGroup());
+    if (typeof window.parent.getExteriorWorld === 'function') parentRoots.push(window.parent.getExteriorWorld());
+    parentRoots.forEach((root) => {
+        if (!root) return;
         // 子要素の中に一つでもMeshがあるかスキャン
-        parentHouseGroup.traverse((child) => {
+        root.traverse((child) => {
             if (child.isMesh) {
                 isMainAppEmpty = false;
             }
         });
-    }
+    });
 }
 
 // 💡 メイン側が完全に空、または単独起動（nightCustomGlbがない）の場合はデフォルトモデルを使用

@@ -9,6 +9,9 @@ let rebuildMeshes = () => {};
 let saveState = () => {};
 
 let currentTool = null;
+// ★追加：外構作図モードの間は、建物側の作図・押し出し・編集操作をすべて止める
+//   （キャンバス上のクリックは外構モジュールが受け取る）
+let isLocked = false;
 const pointer = new THREE.Vector2();
 const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 let activePlane = new THREE.Plane(); 
@@ -258,6 +261,28 @@ init(params) {
         return currentTool;
     },
 
+    // ★追加：現在のスナップ量（mm）。外構作図モードでも同じ刻みで点を拾うために使う
+    getSnap() {
+        return currentSnap;
+    },
+
+    // ★追加：外構作図モードの出入りで、建物側の操作をまるごとロック／解除する
+    setLocked(v) {
+        isLocked = !!v;
+        if (isLocked) {
+            this.setTool(null);          // 作図・押し出し中なら解除（編集モードもここで抜ける）
+            hoverMesh.visible = false;
+            document.body.style.cursor = 'default';
+            if (tooltip) tooltip.style.display = 'none';
+            UIController.clearGUI();
+            UIController.hideFloatingMenu();
+        }
+    },
+
+    isLocked() {
+        return isLocked;
+    },
+
     setTool(toolName) {
         currentTool = toolName;
         // ★追加：別のツールが選ばれたら編集・移動モードを解除
@@ -296,6 +321,7 @@ init(params) {
 
     setupEventListeners() {
         window.addEventListener('pointerdown', (e) => {
+            if (isLocked) return;                 // ★外構作図モード中
             if (e.target.closest('#floating-menu')) return;
             UIController.hideFloatingMenu();
             if (e.button !== 0) return; 
@@ -500,6 +526,7 @@ init(params) {
         });
 
         window.addEventListener('pointermove', (e) => {
+            if (isLocked) return;                 // ★外構作図モード中
             const p = getMainPointer(e);
             if (!p) {
                 document.body.style.cursor = 'default';
@@ -818,6 +845,7 @@ init(params) {
         });
 
         window.addEventListener('keydown', (e) => {
+            if (isLocked) return;                 // ★外構作図モード中（Delete等は外構側が受け取る）
             if (currentTool === 'EXTRUDE' && !isExtruding && hoverMesh.visible && e.key === 'Shift') {
                 document.body.style.cursor = 'copy'; 
             }
@@ -836,6 +864,7 @@ init(params) {
         });
 
         window.addEventListener('keyup', (e) => {
+            if (isLocked) return;                 // ★外構作図モード中
             if (currentTool === 'EXTRUDE' && !isExtruding && e.key === 'Shift' && hoverMesh.visible) {
                 if (hoverMesh.rotation.x === -Math.PI/2) document.body.style.cursor = 'ns-resize'; 
                 else if (hoverMesh.rotation.y === Math.PI/2 || hoverMesh.rotation.y === -Math.PI/2) document.body.style.cursor = 'ew-resize';
@@ -844,6 +873,7 @@ init(params) {
         });
 
         window.addEventListener('pointerup', (e) => {
+            if (isLocked) return;                 // ★外構作図モード中
             const upPointer = new THREE.Vector2(e.clientX, e.clientY);
             const isClick = downPointer.distanceTo(upPointer) < 5;
             
@@ -1035,6 +1065,7 @@ init(params) {
         // ★前回のダブルクリック処理を更新（フラグ追加）
         // =========================================
         window.addEventListener('dblclick', (e) => {
+            if (isLocked) return;                 // ★外構作図モード中
             if (e.target.tagName !== 'CANVAS') return;
 
             const p = getMainPointer(e);
@@ -1083,6 +1114,7 @@ init(params) {
         // ★新規追加：トリプルクリック処理（建物全体の選択・移動）
         // =========================================
         window.addEventListener('click', (e) => {
+            if (isLocked) return;                 // ★外構作図モード中
             // e.detail に連続クリック回数が入っています
             if (e.detail === 3) {
                 if (e.target.tagName !== 'CANVAS') return;

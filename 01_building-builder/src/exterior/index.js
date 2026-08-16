@@ -12,6 +12,7 @@ import { initViewer, pickGround, pickItem, showMarker, showRubber, clearOverlays
 import * as store from './core/store.js';
 import { initUI, showUI, setActive, getActive, refreshReadouts } from './core/ui.js';
 import { initGizmo, refreshHandles, gizmoBusy, setGizmoActive } from './core/gizmo.js';
+import * as paint from './core/paint.js';
 
 let active = false;
 let houseGroup = null;
@@ -130,6 +131,26 @@ export function restoreExterior(list){
 }
 export function clearExterior(){ store.clearAll(); render(); }
 export const exteriorCount = () => store.items.length;
+
+/* ============================================================
+   ★追加：外構の着色（02＝マンセル値シミュレーターとの色のやり取り）
+   名前の付け方と、共有マテリアルであることの帰結は core/paint.js の頭に書いてある。
+   ============================================================ */
+export { nameExteriorMaterials, EXT_MAT_PREFIX, getExteriorColors } from './core/paint.js';
+
+/* 02 から返ってきた色を取り込んで塗り直す。戻り値は「取り込むものがあったか」。 */
+export function mergeExteriorColors(colorMap){
+  const changed = paint.mergeReturnedColors(colorMap);
+  if (changed) render();   // 外構は本体アプリの rebuildMeshes では作り直されないので自分で描き直す
+  return changed;
+}
+
+/* 保存ファイルから色を戻す。地物を組み立て終わってから呼ぶこと
+   （マテリアルは地物を作った時点で生まれるため、順序を逆にすると当たらない）。 */
+export function restoreExteriorColors(map){
+  paint.setExteriorColors(map);
+  render();
+}
 
 /* ============================================================
    操作（planner の js/main.js 相当）

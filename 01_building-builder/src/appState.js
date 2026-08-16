@@ -6,6 +6,11 @@ export const AppState = {
     selectedId: null,
     selectedFaceDir: null,
 
+    // ※ 02（マンセル値シミュレーター）で塗った外構の色は、ここではなく
+    //   exterior/core/paint.js が持つ（マテリアルが地物の種類ごとの共有インスタンスで、
+    //   それを持っているモジュールに置くほうが素直なため）。保存・復元は
+    //   getExteriorColors / restoreExteriorColors を通す。
+
     // --- 履歴管理データ ---
     history: [],
     historyIndex: -1,

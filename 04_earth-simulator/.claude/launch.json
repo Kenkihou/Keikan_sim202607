@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "earth-simulator",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "8734"],
+      "port": 8734
+    },
+    {
+      "name": "building-builder",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "../01_building-builder", "run", "dev", "--", "--port", "5173", "--strictPort"],
+      "port": 5173
+    }
+  ]
+}

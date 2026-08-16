@@ -13,7 +13,9 @@ import { setupEarthPrefetchTriggers } from './earthPrefetch.js';
 // ★追加：外構作図モード（tree/planner.html から移植した地面・囲い・外構・樹木の作図機能）
 import { initExterior, toggleExterior, exitExterior, isExteriorActive,
          applyGhost as applyExteriorGhost, serializeExterior, restoreExterior,
-         clearExterior, exteriorWorld } from './exterior/index.js';
+         clearExterior, exteriorWorld,
+         nameExteriorMaterials, mergeExteriorColors, restoreExteriorColors,
+         getExteriorColors, EXT_MAT_PREFIX } from './exterior/index.js';
 
 // --- UI・操作状態（画面固有のもの） ---
 let interactiveMeshes = [];
@@ -148,7 +150,11 @@ function rebuildMeshes() {
         // 別のマテリアルにして、両者が同じ色に連動してしまわないようにする
         const roofTopMatB = ModelingEngine.getMaterial(b, 'roofTop', roofMat);
 
-        const geo = new THREE.BoxGeometry(b.w, b.h, b.d);
+        const baseY = b.y || 0;
+        // ★変更：窓・玄関の位置に実際の開口をくり抜いた本体ジオメトリを使う
+        //   （建具を壁に貼り付けるのをやめ、開口に落とし込む納まりにしたため）
+        //   グループ順・法線は BoxGeometry と同じなので、下の面別マテリアルと面選択はそのまま効く。
+        const geo = ModelingEngine.buildBodyGeometry(b, baseY);
 
         // ★変更：側面(px/nx/pz/nz)は壁色、上面(top)は屋上専用色を使い、外壁と屋上を別々に着色できるようにする
         const mats = [wallMatB, wallMatB, roofTopMatB, wallMatB, wallMatB, wallMatB];
@@ -159,7 +165,6 @@ function rebuildMeshes() {
         }
 
         const mesh = new THREE.Mesh(geo, mats);
-        const baseY = b.y || 0;
         mesh.position.set(b.x, baseY + b.h / 2, b.z);
         mesh.userData.id = b.id; 
 
@@ -212,11 +217,12 @@ function rebuildMeshes() {
         const pilastersGroup = ModelingEngine.buildPilasters(b, baseY, pilasterMaterials);
         houseGroup.add(pilastersGroup);
 
-        const windowMaterials = { edgeMat: edgeMat };
+        // ★変更：開口の見込み面（内側の筒）を壁と同じ色で仕上げるため wallMat を渡す
+        const windowMaterials = { edgeMat: edgeMat, wallMat: wallMatB };
         const windowsGroup = ModelingEngine.buildWindows(b, baseY, windowMaterials);
         houseGroup.add(windowsGroup);
 
-        const doorMaterials = { edgeMat: edgeMat };
+        const doorMaterials = { edgeMat: edgeMat, wallMat: wallMatB };
         const doorsGroup = ModelingEngine.buildDoors(b, baseY, doorMaterials);
         houseGroup.add(doorsGroup);
 
@@ -256,6 +262,9 @@ function applyReturnedMunsellColors(colorMap, textureMap) {
     const applyMap = (map, targetField) => {
         if (!map) return;
         for (const matName in map) {
+            // ★外構は建物とは別に持つ（下の applyExteriorMap で拾う）。ここでは飛ばす。
+            if (matName.startsWith(EXT_MAT_PREFIX)) continue;
+
             const idx = matName.lastIndexOf('__');
             if (idx === -1) continue;
             const blockId = matName.slice(0, idx);
@@ -273,11 +282,18 @@ function applyReturnedMunsellColors(colorMap, textureMap) {
     applyMap(colorMap, 'materialColors');
     applyMap(textureMap, 'materialTextures');
 
+    // ★追加：外構（芝生・囲い・カーポート・樹木）の色。
+    //   建物は「ブロックごと」に色を持つが、外構のマテリアルは地物の種類ごとの共有
+    //   インスタンスなので、それを持っている exterior 側にまとめて覚えさせる
+    //   （保存時は getExteriorColors で取り出す）。塗り直しも向こうがやる。
+    const exteriorChanged = mergeExteriorColors(colorMap);
+
     if (changed) {
         AppState.saveState();
         UIController.updateActionButtons();
         rebuildMeshes();
     }
+    if (changed || exteriorChanged) UIController.updateActionButtons();
 }
 
 // 履歴初期保存
@@ -333,14 +349,13 @@ function getExportRoots() {
     const hasExterior = exteriorWorld && exteriorWorld.children.length > 0;
     if (!hasExterior) return houseGroup;
 
-    // 子アプリ側は「マテリアル名」で色を扱うので、名前のないものには名前を付ける。
-    // ※ 建物側の `${ブロックID}__${部位}` 形式とは別物とわかるよう ext_ を頭に付ける
-    //   （マンセル側から戻ってきた色を建物へ取り込む処理に拾われないようにするため）
-    exteriorWorld.traverse(child => {
-        if (!child.isMesh || !child.material) return;
-        const mats = Array.isArray(child.material) ? child.material : [child.material];
-        mats.forEach(m => { if (m && !m.name) m.name = 'ext_' + m.uuid.substring(0, 8); });
-    });
+    // 子アプリ側は「マテリアル名」で色を扱うので、外構にも名前を付ける。
+    // ※ 建物側の `${ブロックID}__${部位}` 形式とは別物とわかるよう ext__ を頭に付ける
+    //   （マンセル側から戻ってきた色を、建物用と外構用に振り分けるのに使う）
+    // ⚠️ 以前はここで `ext_<uuidの先頭8桁>` を付けていたが、uuid はページを開き直すたびに
+    //   変わるので、02 で塗った色を保存しても次に開いたとき対応先が分からなくなっていた。
+    //   読み込み直しても同じになる名前の付け方は exterior/core/paint.js を参照。
+    nameExteriorMaterials();
 
     return [houseGroup, exteriorWorld];
 }
@@ -444,7 +459,10 @@ document.getElementById('btn-save-json').addEventListener('click', () => {
         },
         // ★追加：外構（地面・囲い・外構・樹木）の配置。地物の種類・位置(m)・寸法パラメータだけを持つ
         exteriorState: {
-            items: serializeExterior()
+            items: serializeExterior(),
+            // ★追加：02 で塗った外構の色（マテリアル名 → #rrggbb）。
+            //   地物ごとではなく種類ごとの共有マテリアルなので、配置とは別に1つのマップで持つ。
+            colors: getExteriorColors()
         }
     };
 
@@ -511,6 +529,9 @@ inputLoadJson.addEventListener('change', (e) => {
 
             // ★追加：3. 外構の復元（含まれない古いデータなら空にする）
             restoreExterior(json.exteriorState && json.exteriorState.items);
+            // ★追加：外構の色も戻す。地物を組み立て終わってから当てること
+            //   （マテリアルは地物を作った時点で生まれるため、順序を逆にすると当たらない）。
+            restoreExteriorColors(json.exteriorState && json.exteriorState.colors);
 
             // 4. 各種3DメッシュとUIパネルの同期・再描画
             UIController.clearGUI();
@@ -809,10 +830,33 @@ window.closeNightSimulation = function() {
     // イベントリスナーの登録
     timeSlider.addEventListener('input', updateSliderUI);
 
+    // ★左端の🌃ボタンでオンオフする（スライダーの近道）。
+    //   起動・終了・ランプ・時刻表示の判定はすべて updateSliderUI が持っているので、
+    //   ここではスライダーの値を動かして同じ処理へ流すだけにする（判定を二重に書かない）。
+    //   ・オフ（0）→ 09:00 の位置（＝夜間シミュレーターが起動する最初の位置）へ
+    //   ・オン（0より右）→ 0（陰影なし）へ戻して終了
+    //   ※ 夜間シミュレーターの単独起動中は 0 に戻せない決まりだが、その差し戻しも
+    //     updateSliderUI が行うので、ここで気にする必要はない。
+    const nightBtn = document.getElementById('app1-night-lamp');
+    if (nightBtn) {
+        nightBtn.addEventListener('click', () => {
+            timeSlider.value = parseFloat(timeSlider.value) > 0 ? 0 : NIGHT_START_PCT;
+            updateSliderUI();
+        });
+    }
+
     // 初期化 (アプリ2に合わせて 0% 陰影なしスタート)
     timeSlider.value = 0;
     updateSliderUI();
 })();
+
+// 切り抜きスライダーの上限（500＝04側の CLIP_SIZE_MAX）を超えた1段分＝「全体表示」を表す値。
+//   04 側（js/ui.js の setClipSizeFromParent）も、箱の上限を超える値が来たら
+//   同じ意味（全体表示＝切り抜きなし）に解釈するようにしてある。変えるなら両方直すこと。
+const APP1_CLIP_MAX_SIZE = 500, APP1_CLIP_FULL_SIZE = 550;
+// 切り抜きの下限（＝地球モードをオンにしたときの最初の大きさ）。🌐ボタンでオンにするときも
+// スライダーをここへ動かす。
+const APP1_CLIP_MIN_SIZE = 50;
 
 // ==========================================
 // ★追加：地球モードの「切り抜き」スライダー（時刻スライダーの右隣）
@@ -826,16 +870,20 @@ window.closeNightSimulation = function() {
     if (!slider) return;
 
     // 04 側の切り抜き（50〜500m・10m刻み）に合わせる。0 だけが「地球モードなし」。
-    const MIN_SIZE = 50, MAX_SIZE = 500, TICK_STEP = 50;
+    const MIN_SIZE = APP1_CLIP_MIN_SIZE, MAX_SIZE = APP1_CLIP_MAX_SIZE, FULL_SIZE = APP1_CLIP_FULL_SIZE, TICK_STEP = 50;
 
-    // 目盛り（0・50・…・500）
+    // 目盛り（0・50・…・500）＋ 最後にもう1つ、全体表示の目印（太い目盛り）
     if (ticks) {
         for (let v = 0; v <= MAX_SIZE; v += TICK_STEP) {
             const tick = document.createElement('div');
             tick.className = 'tick';
-            tick.style.left = `${(v / MAX_SIZE) * 100}%`;
+            tick.style.left = `${(v / FULL_SIZE) * 100}%`;
             ticks.appendChild(tick);
         }
+        const fullTick = document.createElement('div');
+        fullTick.className = 'tick full';
+        fullTick.style.left = '100%';
+        ticks.appendChild(fullTick);
     }
 
     function sendSizeToEarth(size) {
@@ -845,7 +893,14 @@ window.closeNightSimulation = function() {
     }
 
     function onSliderInput() {
-        let size = Number(slider.value);
+        let raw = Number(slider.value);
+        // 500 を超えたところを触った瞬間に、中間値を作らず最後（全体表示）へカクッと
+        // 吸い付かせる。50刻みの続きのような曖昧な位置を作らないための処置。
+        if (raw > MAX_SIZE) {
+            raw = FULL_SIZE;
+            slider.value = String(raw);
+        }
+        let size = raw;
         // 0 の次は 50m（04 の切り抜きの下限）。間の値はつまみごと 50 に吸い付かせて、
         // 目盛りの位置と実際の大きさが食い違わないようにする。
         // ★地球モードの単独起動中は 0（終了）も許さないので、0 まで下げても 50 に戻す。
@@ -873,8 +928,115 @@ window.closeNightSimulation = function() {
     }
 
     slider.addEventListener('input', onSliderInput);
+
+    // ★左端の🌐ボタンでオンオフする（時刻パネルの🌃と同じ作法）。
+    //   起動・終了・大きさの送信はすべて onSliderInput が持っているので、ここでは
+    //   スライダーの値を動かして同じ処理へ流すだけにする。
+    //   ・オフ（0）→ 50m（切り抜きの下限＝地球モードが起動する最初の大きさ）へ
+    //   ・オン（0より右）→ 0（地球なし）へ戻して終了
+    //   ※ 地球モードの単独起動中は 0 に戻せない決まりだが、その差し戻しは onSliderInput が行う。
+    const earthBtn = document.getElementById('app1-earth-lamp');
+    if (earthBtn) {
+        earthBtn.addEventListener('click', () => {
+            slider.value = Number(slider.value) > 0 ? '0' : String(MIN_SIZE);
+            onSliderInput();
+        });
+    }
+
     slider.value = '0';
     updateClipPanelDisplay(0);
+})();
+
+// ==========================================
+// ★追加：東西30km断面のオン・オフ（切り抜きスライダーの右のボタン）
+//   地球モード中だけ押せる。地球側の表示状態を持ち主とし、こちらはボタンの見た目を
+//   合わせるだけ（地球側が実際に開いたときに getEarthProfileOn() で現在値を取りに行く）。
+// ==========================================
+let isProfileOn = false;
+// 地球側で断面を閉じたとき（パネルの「×」など、こちらのボタンを経由しない操作）に
+// ボタンの見た目だけ合わせる。window.syncEarthClipSize と同じ作法。
+window.syncEarthProfileOn = function(on) {
+    isProfileOn = !!on;
+    applyProfileButtonState();
+};
+function applyProfileButtonState() {
+    const btn = document.getElementById('app1-profile-toggle');
+    if (!btn) return;
+    btn.classList.toggle('active', isProfileOn);
+    btn.setAttribute('data-tooltip', isProfileOn ? '断面を非表示にする' : '東西断面を表示する');
+}
+(function setupApp1ProfileToggle() {
+    const btn = document.getElementById('app1-profile-toggle');
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+        if (!isEarthModeActive) return;   // 地球モード以外では意味がない（膜で押せなくもしてある）
+        const iframe = document.getElementById('earth-sim-iframe');
+        const win = iframe && iframe.contentWindow;
+        if (!win || typeof win.setEarthProfileOn !== 'function') return;
+        isProfileOn = !isProfileOn;
+        win.setEarthProfileOn(isProfileOn);
+        applyProfileButtonState();
+    });
+    applyProfileButtonState();
+})();
+
+// ==========================================
+// ★追加：ストリートビュー（道路に降りて歩く）のボタン。地形断面ボタンの右隣。
+//   実体は 04 側の js/streetview.js。こちらはボタンの見た目と呼び出しだけを持つ
+//   （地形断面の app1-profile-toggle と同じ作法）。
+// ==========================================
+let isStreetViewOn = false;
+// ストリートビューに入る直前の切り抜きの大きさ（抜けるときに戻す）
+let clipSizeBeforeStreetView = null;
+function restoreClipSizeAfterStreetView() {
+    const cs = document.getElementById('app1-clip-slider');
+    if (!cs || clipSizeBeforeStreetView === null) return;
+    if (cs.value !== clipSizeBeforeStreetView) {
+        cs.value = clipSizeBeforeStreetView;
+        cs.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    clipSizeBeforeStreetView = null;
+}
+// 04 側で Esc で抜けたとき（こちらのボタンを経由しない操作）に見た目だけ合わせる
+window.syncEarthStreetView = function(on) {
+    isStreetViewOn = !!on;
+    if (!isStreetViewOn) restoreClipSizeAfterStreetView();
+    applyStreetViewButtonState();
+    updateBottomBar();
+};
+function applyStreetViewButtonState() {
+    const btn = document.getElementById('app1-streetview-toggle');
+    if (!btn) return;
+    btn.classList.toggle('active', isStreetViewOn);
+    btn.setAttribute('data-tooltip', isStreetViewOn ? '👣 ストリートビューを終わる' : '👣 道路に降りて歩く');
+}
+(function setupApp1StreetViewToggle() {
+    const btn = document.getElementById('app1-streetview-toggle');
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+        if (!isEarthModeActive) return;   // 地球モード以外では意味がない
+        const iframe = document.getElementById('earth-sim-iframe');
+        const win = iframe && iframe.contentWindow;
+        if (!win || typeof win.toggleEarthStreetView !== 'function') return;
+        // ★入るときは箱庭をやめて全体表示にする。
+        //   切り抜きの箱が小さいと、その外の道路には降りられず歩いても壁で止まるため。
+        //   入る前の大きさを覚えておいて、抜けるときに戻す。
+        if (!isStreetViewOn) {
+            const cs = document.getElementById('app1-clip-slider');
+            if (cs) {
+                clipSizeBeforeStreetView = cs.value;
+                if (Number(cs.value) !== APP1_CLIP_FULL_SIZE) {
+                    cs.value = String(APP1_CLIP_FULL_SIZE);
+                    cs.dispatchEvent(new Event('input', { bubbles: true }));
+                }
+            }
+        }
+        isStreetViewOn = !!win.toggleEarthStreetView();
+        if (!isStreetViewOn) restoreClipSizeAfterStreetView();
+        applyStreetViewButtonState();
+        updateBottomBar();   // スライダーと断面ボタンの膜を掛け外しする
+    });
+    applyStreetViewButtonState();
 })();
 
 // ==========================================
@@ -1197,6 +1359,13 @@ window.showEarthSimulator = function() {
         window.syncEarthClipSize(win.getEarthClipSize());
     }
     pendingEarthClipSize = null;
+
+    // 断面（30km東西縦断図）のオン・オフも、地球側の現在値にボタンを合わせる
+    // （前回開いたときの状態を隠して待機させているだけなので、消えているとは限らない）。
+    if (win && typeof win.getEarthProfileOn === 'function') {
+        isProfileOn = !!win.getEarthProfileOn();
+        applyProfileButtonState();
+    }
 };
 
 // パネル左端の表示灯を点けたり消したりする。
@@ -1211,8 +1380,8 @@ function setPanelLamp(id, on, offText, onText) {
 
 function setNightLamp(on) {
     setPanelLamp('app1-night-lamp', on,
-        '🌃 スライダーを動かすと夜間景観モードへ',
-        '🌃 夜間景観モード：スライダーを「陰影なし」に戻すと終了');
+        '🌃 夜間景観モードにする',
+        '🌃 夜間景観モードを終了する');
 }
 
 // 切り抜きパネルの表示（大きさのラベルと、左端の🌐ランプ）をまとめて更新する。
@@ -1221,10 +1390,11 @@ function updateClipPanelDisplay(size) {
     const v = Number(size) || 0;
     // ★中央の表示は短くする（「250 m 四方」だと左の「地球なし」と重なるため）。
     //   0 のときは何も出さない（左端の「地球なし」が状態を示している）。
-    if (display) display.textContent = v === 0 ? '' : `${v}m`;
+    //   全体表示（550）のときも同じ理由で「全体」とだけ出す（右端の固定ラベルと同じ表記）。
+    if (display) display.textContent = v === 0 ? '' : (v > APP1_CLIP_MAX_SIZE ? '全体' : `${v}m`);
     setPanelLamp('app1-earth-lamp', v > 0,
-        '🌐 スライダーを動かすと地球モードへ',
-        '🌐 地球モード：スライダーを「地球なし」に戻すと終了');
+        '🌐 地球モードにする',
+        '🌐 地球モードを終了する');
 }
 
 // 地球側のHUDで切り抜きが変わったときに、こちらのスライダーの位置だけ合わせる
@@ -1241,6 +1411,9 @@ window.syncEarthClipSize = function(size) {
 window.closeEarthSimulator = function() {
     isEarthModeActive = false;
     updateBottomBar();
+    applyProfileButtonState();   // ボタンの表示（active/tooltip）を非地球モードの状態に戻す
+    isStreetViewOn = false;
+    applyStreetViewButtonState();
 
     // 地球側で決めた向き・配置地点を受け取り、セーブデータに残るようにする
     const heading = parseFloat(sessionStorage.getItem('earth_model_heading'));
@@ -1350,8 +1523,31 @@ function updateBottomBar() {
                           (isMunsellModeActive && isPortalLaunch);
 
     lock('app1-time-slider-group', timeLocked, 'locked-slider');
+    // 🌃表示灯（夜間シミュレーターへの入口の案内）もスライダーと同じ条件で塞ぐ。
+    //   ★ これが無いと、時刻スライダーが塞がっている間（マンセルモード中など）でも
+    //     表示灯だけはホバーできてしまい、「動かすと夜間モードへ」というツールチップが
+    //     出てしまう（実際には動かせないのに、という食い違いになる）。
+    //     .locked は pointer-events:none も兼ねるので、これを付けるだけでツールチップも
+    //     自然に出なくなる（ホバー自体が起きないため）。
+    lock('app1-night-lamp', timeLocked, 'locked-btn');
     lock('app1-munsell-btn', munsellLocked, 'locked-btn');
     lock('app1-clip-slider-container', clipLocked);   // こちらはパネルごと塞ぐ
+    // 断面ボタンは「地球モードが動いていない間」も塞ぐ（切り抜きスライダー自体は
+    // 塞がれていなくても、地球モードに入る前は断面を開いても意味がないため）。
+    // ★ストリートビュー中は切り抜きスライダーと断面ボタンを塞ぐ。
+    //   歩いている間に箱庭へ戻されると、道路が箱の外に出て動けなくなるため。
+    //   👣だけは塞がない（これが唯一の出口になる）。
+    lock('app1-clip-slider-group', isStreetViewOn, 'locked-slider');
+    // 🌐（地球モードの入口／出口）を塞ぐ条件。
+    //   ・ストリートビュー中 … 先にストビューを抜けさせる（歩いている最中に地球モードごと
+    //     畳まれると、キャラクターも道路も消えたまま操作だけ残る）。
+    //   ・ポータルから地球モードを単独起動したとき … 戻る先が無いので終了させない
+    //     （切り抜きスライダーを 0 に戻せない clipSliderZeroAllowed と対になる扱い）。
+    lock('app1-earth-lamp',
+         clipLocked || isStreetViewOn || (isEarthModeActive && isPortalLaunch),
+         'locked-btn');
+    lock('app1-profile-toggle', !isEarthModeActive || clipLocked || isStreetViewOn, 'locked-btn');
+    lock('app1-streetview-toggle', !isEarthModeActive || clipLocked, 'locked-btn');
 
     // ★単独起動（ポータルのタイルから直接開いた）中は、スライダーを 0 まで下げて
     //   そのシミュレーターを終了できないようにする。モデリング画面から開いたときは

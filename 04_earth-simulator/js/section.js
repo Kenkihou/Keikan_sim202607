@@ -414,24 +414,50 @@ function linkLoops(segs) {
   }
   const used = new Uint8Array(n);
   const loops = [];
+  // curU,curV から未使用の線分を辿れるだけ辿り、通った点を out に積む。
+  const walk = (startU, startV, out) => {
+    let curU = startU, curV = startV;
+    for (let guard = 0; guard < 100000; guard++) {
+      const cands = ends.get(key(curU, curV));
+      if (!cands) return false;
+      let nx = null;
+      for (const c of cands) { if (!used[c.s]) { nx = c; break; } }
+      if (!nx) return false;
+      used[nx.s] = 1;
+      const o = nx.w === 0 ? 1 : 0; // 反対側の端点へ進む
+      curU = segs[nx.s * 4 + o * 2];
+      curV = segs[nx.s * 4 + o * 2 + 1];
+      out.push(curU, curV);
+      if (Math.abs(curU - startU) < 1e-6 && Math.abs(curV - startV) < 1e-6) return true; // 閉じた
+    }
+    return false;
+  };
   for (let s0 = 0; s0 < n; s0++) {
     if (used[s0]) continue;
     used[s0] = 1;
     // s0 の端点0から出発して端点1へ、そこから繋がる線分を辿る
     const pts = [segs[s0 * 4], segs[s0 * 4 + 1], segs[s0 * 4 + 2], segs[s0 * 4 + 3]];
-    let curU = segs[s0 * 4 + 2], curV = segs[s0 * 4 + 3];
-    for (let guard = 0; guard < 100000; guard++) {
-      const cands = ends.get(key(curU, curV));
-      if (!cands) break;
-      let nx = null;
-      for (const c of cands) { if (!used[c.s]) { nx = c; break; } }
-      if (!nx) break;
-      used[nx.s] = 1;
-      const o = nx.w === 0 ? 1 : 0; // 反対側の端点へ進む
-      curU = segs[nx.s * 4 + o * 2];
-      curV = segs[nx.s * 4 + o * 2 + 1];
-      pts.push(curU, curV);
-      if (Math.abs(curU - pts[0]) < 1e-6 && Math.abs(curV - pts[1]) < 1e-6) break; // 閉じた
+    const fwd = [];
+    const closed = walk(segs[s0 * 4 + 2], segs[s0 * 4 + 3], fwd);
+    // ↑ walk は「出発点に戻ったか」で閉じたと判定するが、ここでの出発点は s0 の端点1。
+    //   実際に閉じたかどうかは、辿り終えた先端が pts の先頭に戻ったかで見る。
+    const tipU = fwd.length ? fwd[fwd.length - 2] : segs[s0 * 4 + 2];
+    const tipV = fwd.length ? fwd[fwd.length - 1] : segs[s0 * 4 + 3];
+    const isClosed = Math.abs(tipU - pts[0]) < 1e-6 && Math.abs(tipV - pts[1]) < 1e-6;
+    for (const v of fwd) pts.push(v);
+    // ★ 開いたままなら、出発点から【逆方向】にも辿って前に継ぎ足す。
+    //   これをしないと、開いた鎖の【途中】の線分から探索を始めたときに手前半分を
+    //   取りこぼし、1本の鎖が複数の断片に割れる。閉ループでは起きないので長く
+    //   表面化しなかったが、床面を持たない LOD2/LOD3 の建物を切ると断面が開くため、
+    //   壁と屋根がバラバラの折れ線になって現れた。
+    if (!isClosed) {
+      const back = [];
+      walk(pts[0], pts[1], back);
+      if (back.length) {
+        const head = [];
+        for (let i = back.length - 2; i >= 0; i -= 2) head.push(back[i], back[i + 1]);
+        pts.unshift(...head);
+      }
     }
     if (pts.length >= 6) loops.push(pts); // 3点以上あれば面になる
   }
@@ -830,12 +856,13 @@ function buildSectionFill() {
 }
 
 export {
-  CLIP_SIZE_MIN, CLIP_SIZE_MAX, CLIP_SIZE_STEP,
+  CLIP_SIZE_MIN, CLIP_SIZE_MAX, CLIP_SIZE_STEP, CLIP_SIZE_DEFAULT,
   CAP_COLOR, clipState, buildingClipPlanes, terrainClipPlanes, updateClipPlanes,
   clipMeshes, registerClipMeshes, unregisterClipMeshes,
   computeClipMeshWorld, keepFinestLod,
   sectionFillGroup, soilFillGroup, soilBottomMesh, labelGroup,
   groundLines, groundLineMats, soilContourLines, soilContourMats, soilMats,
   buildSectionFill,
+  triPlaneSegment, linkLoops,   // 断面図（profile.js）の建物断面トライアルで再利用
 };
 export const getSoilDiag = () => lastSoilDiag;

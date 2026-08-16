@@ -67,6 +67,203 @@ function getCachedMaterial(b, partKey, templateMat) {
     return mat;
 }
 
+// ==========================================
+// 建具の納まり寸法
+//   02_munsell-simulator/public/normal_house.glb を実測して決めた値。
+//   （あのモデルの窓は「壁に開けた穴」＋「奥に引っ込んだ引き違い障子2枚」でできている）
+//     ・壁の開口 1700×1000 に対して障子2枚の外形 1650×950 ＝ 四周 25mm の見込み
+//     ・障子1枚 845×950×見込40mm。2枚は 40mm 重なる（召し合わせ）
+//     ・外障子の外面は壁面から 20mm 引っ込み、内障子はさらに 40mm 奥
+//       （＝開口の内側は合計 100mm の見込みがある）
+//     ・右の障子が外側（日本の引き違いの通常の建て方）
+// ==========================================
+const WIN_W = 1970;          // 窓の開口幅。従来の障子外形と同じ値にして見た目の大きさを変えない
+const WIN_HEAD_Y = 2100;     // 窓上端の高さ（従来どおり）
+const DOOR_W = 900, DOOR_H = 2000, PORCH_H = 100;
+const FRAME_MITSUKE = 40;    // 窓・玄関の枠の見付幅（開口の縁から内側に見える枠の幅）
+const FRAME_PROTRUDE = 20;   // 枠が壁面から外側（手前）へ出る寸法
+const SASH_D = 40;           // 障子1枚の見込み
+const SASH_INSET = 20;       // 外障子の外面が壁面から引っ込む量
+const JAMB_D = SASH_INSET + SASH_D * 2;   // = 100。開口の内側（見込み面）の深さ
+const FRAME_W = 30;          // 障子の框（ガラスまわりの見付）。窓枠(FRAME_MITSUKE)とは別物
+const GLASS_T = 20;
+
+// 頂点配列に平面クワッドを1枚追加する共通ヘルパー（buildRevealTunnelGeometry / buildFrameGeometry で共用）。
+function pushQuad(pos, nrm, uvs, a, bb, c, dd, n) {
+    for (const p of [a, bb, c, a, c, dd]) { pos.push(p[0], p[1], p[2]); nrm.push(n[0], n[1], n[2]); }
+    for (const t of [[0,0],[1,0],[1,1],[0,0],[1,1],[0,1]]) uvs.push(t[0], t[1]);
+}
+
+// 開口の内側（室内側）を塞ぐ筒。壁に穴を開けた以上、その厚みの面が要る。壁色で仕上げる。
+//   内寸(iw×ih)のまま z=0（壁面）から z=-depth（室内側）へ伸ばすだけ。法線は内向き
+//   （筒の中を見上げる向き）。見え掛かりの枠（サッシ／ドアと同色）は buildFrameGeometry が
+//   壁の外側に別体で作るので、ここには含めない。
+function buildRevealTunnelGeometry(iw2, ih2, depth) {
+    const iw = iw2 / 2, ih = ih2 / 2;
+    const pos = [], nrm = [], uvs = [];
+    const q = (a, bb, c, dd, n) => pushQuad(pos, nrm, uvs, a, bb, c, dd, n);
+    q([-iw, ih, 0], [-iw, ih, -depth], [iw, ih, -depth], [iw, ih, 0], [0, -1, 0]);   // 上（下向き）
+    q([-iw, -ih, 0], [iw, -ih, 0], [iw, -ih, -depth], [-iw, -ih, -depth], [0, 1, 0]); // 下（上向き）
+    q([-iw, -ih, 0], [-iw, -ih, -depth], [-iw, ih, -depth], [-iw, ih, 0], [1, 0, 0]); // 左（右向き）
+    q([iw, -ih, 0], [iw, ih, 0], [iw, ih, -depth], [iw, -ih, -depth], [-1, 0, 0]);    // 右（左向き）
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    return g;
+}
+
+// 窓・玄関の枠（見え掛かり）。壁の穴のフチにぴたり合わせた「額縁の箱」で、
+// 壁面(z=0)から z=+protrude だけ手前（外側）に飛び出す。サッシ／ドアと同色で塗る。
+//   ・外側の側面（外周サイズ一定、z:0→+protrude）… 額縁の外側の返り。法線は外向き。
+//   ・正面リング（z=+protrude、外周→内周）… 見え掛かりの面そのもの（幅 mitsuke）。法線は+z。
+//   ・内側の側面（内周サイズ一定、z:+protrude→0）… 額縁の内側の返り（ガラス側）。法線は内向き。
+//   外周は開口(w×h)と同寸にしてあるので、壁の穴のフチとの間に隙間ができない。
+function buildFrameGeometry(w, h, mitsuke, protrude) {
+    const hw = w / 2, hh = h / 2;                    // 開口（＝枠の外周）
+    const iw = w / 2 - mitsuke, ih = h / 2 - mitsuke; // 枠の内周（＝サッシ／扉本体の外形）
+    const pos = [], nrm = [], uvs = [];
+    const q = (a, bb, c, dd, n) => pushQuad(pos, nrm, uvs, a, bb, c, dd, n);
+    // --- 外側の返り（外周、z:0→+protrude、外向き）---
+    //   ⚠️ 頂点順序は buildRevealTunnelGeometry の対応する面から「-depth を +protrude に
+    //     置き換えただけ」の形にすること。そうすると外積の符号が自動的に反転し、
+    //     内向き（トンネル）から外向き（返り）に正しく変わる。手で符号を作ろうとすると
+    //     巻き順を誤りやすい（実測で外側4面すべて法線と巻き順が逆になった）。
+    q([-hw, hh, 0], [-hw, hh, protrude], [hw, hh, protrude], [hw, hh, 0], [0, 1, 0]);    // 上
+    q([-hw, -hh, 0], [hw, -hh, 0], [hw, -hh, protrude], [-hw, -hh, protrude], [0, -1, 0]); // 下
+    q([-hw, -hh, 0], [-hw, -hh, protrude], [-hw, hh, protrude], [-hw, hh, 0], [-1, 0, 0]); // 左
+    q([hw, -hh, 0], [hw, hh, 0], [hw, hh, protrude], [hw, -hh, protrude], [1, 0, 0]);     // 右
+    // --- 正面リング（z=+protrude、外周→内周）---
+    //   ⚠️ 4枚のクワッドをつなげて作らないこと。継ぎ目が EdgesGeometry に稜線として
+    //     拾われ、枠の面に余計な線が出る（実測で本来8本のところ18本になった）。
+    //     穴あきの Shape 1枚として三角形分割すれば、内部の辺は同一平面どうしで打ち消される。
+    {
+        const shape = new THREE.Shape();
+        shape.moveTo(-hw, -hh); shape.lineTo(hw, -hh); shape.lineTo(hw, hh); shape.lineTo(-hw, hh);
+        shape.closePath();
+        const hole = new THREE.Path();      // 外形と逆回り
+        hole.moveTo(-iw, -ih); hole.lineTo(-iw, ih); hole.lineTo(iw, ih); hole.lineTo(iw, -ih);
+        hole.closePath();
+        shape.holes.push(hole);
+        const ring = new THREE.ShapeGeometry(shape);
+        const rp = ring.attributes.position.array;
+        const ridx = ring.index ? ring.index.array : null;
+        const rn = ridx ? ridx.length : ring.attributes.position.count;
+        for (let i = 0; i < rn; i++) {
+            const vi = ridx ? ridx[i] : i;
+            pos.push(rp[vi * 3], rp[vi * 3 + 1], protrude);
+            nrm.push(0, 0, 1);
+            uvs.push((rp[vi * 3] + hw) / w, (rp[vi * 3 + 1] + hh) / h);
+        }
+        ring.dispose();
+    }
+    // --- 内側の返り（内周、z:+protrude→0、内向き）---
+    q([-iw, ih, protrude], [-iw, ih, 0], [iw, ih, 0], [iw, ih, protrude], [0, -1, 0]);    // 上
+    q([-iw, -ih, protrude], [iw, -ih, protrude], [iw, -ih, 0], [-iw, -ih, 0], [0, 1, 0]); // 下
+    q([-iw, -ih, protrude], [-iw, -ih, 0], [-iw, ih, 0], [-iw, ih, protrude], [1, 0, 0]); // 左
+    q([iw, -ih, protrude], [iw, ih, protrude], [iw, ih, 0], [iw, -ih, 0], [-1, 0, 0]);    // 右
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    return g;
+}
+
+// 面ごとの開口を、その面のローカル2D座標(u,v)で返す。
+//   u = 建具の offsetX が動く向き、v = ワールドY（本体ボックスの中心を原点とする）
+//   ★ ここで返す矩形が、そのまま壁に開ける穴になる。buildWindows / buildDoors は
+//     同じ計算で建具を置くので、両者がずれないようこの関数に一本化してある。
+function getWallOpenings(b, baseY) {
+    const res = { px: [], nx: [], pz: [], nz: [] };
+    const cy = baseY + b.h / 2;   // 本体ボックスの中心Y（ワールド）
+    if (b.windows) {
+        for (const dir in b.windows) {
+            if (!res[dir]) continue;
+            const p = (b.windowParams && b.windowParams[dir]) || { height: 2000, offsetX: 0, offsetY: 0 };
+            const h = p.height;
+            const topY = baseY + WIN_HEAD_Y + (p.offsetY || 0);
+            res[dir].push({ kind: 'window', u: p.offsetX || 0, v: topY - h / 2 - cy, w: WIN_W, h });
+        }
+    }
+    // 玄関は1階（baseY=0）のみ。buildDoors の条件と揃えること。
+    if (b.doors && baseY === 0) {
+        for (const dir in b.doors) {
+            if (!res[dir]) continue;
+            const p = (b.doorParams && b.doorParams[dir]) || { offsetX: 0 };
+            res[dir].push({ kind: 'door', u: p.offsetX || 0, v: (PORCH_H + DOOR_H / 2) - cy, w: DOOR_W, h: DOOR_H });
+        }
+    }
+    return res;
+}
+
+// 開口をくり抜いた本体ボックスのジオメトリ。
+//   ⚠️ BoxGeometry の差し替えなので、次の2つを必ず保つこと。
+//     ① グループ（マテリアル）の順序 px, nx, top, bottom, pz, nz
+//        … main.js が selectedFaceDir → materialIndex の対応でハイライトしている。
+//     ② 面の法線
+//        … interactionHandler.js の面判定が materialIndex ではなく【法線】を見ている。
+function buildBodyGeometryFor(b, baseY) {
+    const w = b.w, h = b.h, d = b.d;
+    const openings = getWallOpenings(b, baseY);
+    // map(u,v) は BoxGeometry と同じ向き・同じ法線になるよう組んである（外側から見て反時計回り）
+    const faces = [
+        { dir: 'px',     W: d, H: h, n: [1, 0, 0],  map: (u, v) => [w / 2, v, -u] },
+        { dir: 'nx',     W: d, H: h, n: [-1, 0, 0], map: (u, v) => [-w / 2, v, u] },
+        { dir: 'top',    W: w, H: d, n: [0, 1, 0],  map: (u, v) => [u, h / 2, -v] },
+        { dir: 'bottom', W: w, H: d, n: [0, -1, 0], map: (u, v) => [u, -h / 2, v] },
+        { dir: 'pz',     W: w, H: h, n: [0, 0, 1],  map: (u, v) => [u, v, d / 2] },
+        { dir: 'nz',     W: w, H: h, n: [0, 0, -1], map: (u, v) => [-u, v, -d / 2] },
+    ];
+    const positions = [], normals = [], uvs = [], groups = [];
+    let start = 0;
+    for (const f of faces) {
+        const hw = f.W / 2, hh = f.H / 2;
+        const shape = new THREE.Shape();
+        shape.moveTo(-hw, -hh); shape.lineTo(hw, -hh); shape.lineTo(hw, hh); shape.lineTo(-hw, hh);
+        shape.closePath();
+        for (const o of (openings[f.dir] || [])) {
+            // 開口が面からはみ出す指定のときは穴を開けない（三角形分割が壊れるため）
+            if (o.u - o.w / 2 <= -hw || o.u + o.w / 2 >= hw) continue;
+            if (o.v - o.h / 2 <= -hh || o.v + o.h / 2 >= hh) continue;
+            const x0 = o.u - o.w / 2, x1 = o.u + o.w / 2, y0 = o.v - o.h / 2, y1 = o.v + o.h / 2;
+            const p = new THREE.Path();            // 外形と逆回り（時計回り）にして穴として扱わせる
+            p.moveTo(x0, y0); p.lineTo(x0, y1); p.lineTo(x1, y1); p.lineTo(x1, y0);
+            p.closePath();
+            shape.holes.push(p);
+        }
+        const g = new THREE.ShapeGeometry(shape);
+        const pa = g.attributes.position.array;
+        const idx = g.index ? g.index.array : null;
+        const n = idx ? idx.length : g.attributes.position.count;
+        for (let i = 0; i < n; i++) {
+            const vi = idx ? idx[i] : i;
+            const u = pa[vi * 3], v = pa[vi * 3 + 1];
+            const P = f.map(u, v);
+            positions.push(P[0], P[1], P[2]);
+            normals.push(f.n[0], f.n[1], f.n[2]);
+            uvs.push((u + hw) / f.W, (v + hh) / f.H);
+        }
+        g.dispose();
+        groups.push({ start, count: n });
+        start += n;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    groups.forEach((gr, i) => geo.addGroup(gr.start, gr.count, i));
+    return geo;
+}
+
+// 面の向き → 回転角と、中心から壁面までの距離。buildWindows / buildDoors で共用。
+function faceTransform(b, dir) {
+    if (dir === 'pz') return { rotY: 0, offsetZ: b.d / 2 };
+    if (dir === 'nz') return { rotY: Math.PI, offsetZ: b.d / 2 };
+    if (dir === 'px') return { rotY: Math.PI / 2, offsetZ: b.w / 2 };
+    if (dir === 'nx') return { rotY: -Math.PI / 2, offsetZ: b.w / 2 };
+    return null;
+}
+
 export const ModelingEngine = {
     /**
      * rebuild1回につき1回呼び出し、マテリアルキャッシュを完全にリセットする
@@ -81,6 +278,14 @@ export const ModelingEngine = {
      */
     getMaterial(b, partKey, templateMat) {
         return getCachedMaterial(b, partKey, templateMat);
+    },
+
+    /**
+     * 本体ボックスのジオメトリ（窓・玄関の開口をくり抜いたもの）。
+     * BoxGeometry の差し替えなので、グループ順（px,nx,top,bottom,pz,nz）と法線を保っている。
+     */
+    buildBodyGeometry(b, baseY) {
+        return buildBodyGeometryFor(b, baseY);
     },
 
     /**
@@ -100,16 +305,17 @@ export const ModelingEngine = {
                 const doorGroup = new THREE.Group();
                 const p = b.doorParams && b.doorParams[dir] ? b.doorParams[dir] : { offsetX: 0 };
                 
-                // 寸法設定
-                const w_door = 900, h_door = 2000, d_door = 50; 
-                const w_porch = 1500, h_porch = 100, d_porch = 900;
+                // 寸法設定。開口は DOOR_W×DOOR_H で、扉本体は四周 FRAME_MITSUKE ぶん小さい（枠の見え掛かり）。
+                const h_door = DOOR_H - FRAME_MITSUKE * 2;
+                const w_door = DOOR_W - FRAME_MITSUKE * 2;
+                const d_door = SASH_D;
+                const doorMatB = getCachedMaterial(b, 'door', doorMat);
+                const w_porch = 1500, h_porch = PORCH_H, d_porch = 900;
 
                 // 面の方向に応じた回転とオフセット（壁表面のZ位置）
-                let rotY = 0, offsetZ = 0;
-                if (dir === 'pz') { rotY = 0; offsetZ = b.d / 2; }
-                else if (dir === 'nz') { rotY = Math.PI; offsetZ = b.d / 2; }
-                else if (dir === 'px') { rotY = Math.PI / 2; offsetZ = b.w / 2; }
-                else if (dir === 'nx') { rotY = -Math.PI / 2; offsetZ = b.w / 2; }
+                const ft = faceTransform(b, dir);
+                if (!ft) continue;
+                const { rotY, offsetZ } = ft;
 
                 // --- 1. 玄関ポーチ (Porch) ---
                 const porchGeo = new THREE.BoxGeometry(w_porch, h_porch, d_porch);
@@ -120,10 +326,30 @@ export const ModelingEngine = {
                 porchLine.position.copy(porchPos);
                 doorGroup.add(porchMesh, porchLine);
 
-                // --- 2. 玄関扉 (Door) ---
+                // --- 2. 見込み面（開口の内側の筒。室内側）---
+                //   窓と同じ考え方。壁に開けた穴の厚みを見せる。枠の正面と同じくドアと同色で塗る
+                //   （壁色にすると、枠の内側だけ色が違って見えてしまうため）。
+                const dTunnelGeo = buildRevealTunnelGeometry(
+                    DOOR_W - FRAME_MITSUKE * 2, DOOR_H - FRAME_MITSUKE * 2, JAMB_D);
+                const dTunnel = new THREE.Mesh(dTunnelGeo, doorMatB);
+                dTunnel.position.set(0, PORCH_H + DOOR_H / 2, offsetZ);
+                const dTunnelLine = new THREE.LineSegments(new THREE.EdgesGeometry(dTunnelGeo), edgeMat);
+                dTunnelLine.position.copy(dTunnel.position);
+                doorGroup.add(dTunnel, dTunnelLine);
+
+                // --- 3. 玄関の枠（見え掛かり。壁面から外側へ FRAME_PROTRUDE 飛び出す。扉と同色）---
+                const dFrameGeo = buildFrameGeometry(DOOR_W, DOOR_H, FRAME_MITSUKE, FRAME_PROTRUDE);
+                const dFrame = new THREE.Mesh(dFrameGeo, doorMatB);
+                dFrame.position.set(0, PORCH_H + DOOR_H / 2, offsetZ);
+                const dFrameLine = new THREE.LineSegments(new THREE.EdgesGeometry(dFrameGeo), edgeMat);
+                dFrameLine.position.copy(dFrame.position);
+                doorGroup.add(dFrame, dFrameLine);
+
+                // --- 4. 玄関扉 (Door) ---
+                //   扉は開口の中に落とし込み、外面を壁面から SASH_INSET だけ引っ込ませる。
                 const doorGeo = new THREE.BoxGeometry(w_door, h_door, d_door);
-                const doorPos = new THREE.Vector3(0, h_porch + h_door / 2, offsetZ + d_door / 2);
-                const doorMesh = new THREE.Mesh(doorGeo, getCachedMaterial(b, 'door', doorMat));
+                const doorPos = new THREE.Vector3(0, h_porch + DOOR_H / 2, offsetZ - SASH_INSET - d_door / 2);
+                const doorMesh = new THREE.Mesh(doorGeo, doorMatB);
                 doorMesh.position.copy(doorPos);
                 const doorLine = new THREE.LineSegments(new THREE.EdgesGeometry(doorGeo), edgeMat);
                 doorLine.position.copy(doorPos);
@@ -158,83 +384,86 @@ export const ModelingEngine = {
                 const windowGroup = new THREE.Group();
                 const p = b.windowParams && b.windowParams[dir] ? b.windowParams[dir] : { height: 2000, offsetX: 0, offsetY: 0 };
 
-                const h_sash = p.height; 
-                const w_total = 1970; 
-                const fw = 30; 
-                const z_thick = 30; 
-                const g_thick = 20; 
+                // 開口（＝壁に開いている穴）の寸法。buildBodyGeometryFor と同じ計算にすること。
+                const h_open = p.height;
+                const w_open = WIN_W;
 
-                const topY = baseY + 2100 + p.offsetY; 
-                windowGroup.position.set(b.x, topY - h_sash / 2, b.z);
+                const topY = baseY + WIN_HEAD_Y + (p.offsetY || 0);
+                windowGroup.position.set(b.x, topY - h_open / 2, b.z);
 
-                let rotY = 0, offsetZ = 0;
-                if (dir === 'pz') { rotY = 0; offsetZ = b.d / 2; }
-                else if (dir === 'nz') { rotY = Math.PI; offsetZ = b.d / 2; }
-                else if (dir === 'px') { rotY = Math.PI / 2; offsetZ = b.w / 2; }
-                else if (dir === 'nx') { rotY = -Math.PI / 2; offsetZ = b.w / 2; }
+                const ft = faceTransform(b, dir);
+                if (!ft) continue;
+                const { rotY, offsetZ } = ft;
+                const sashMatB = getCachedMaterial(b, 'windowSash', sashMat);
 
-                const sashShape = new THREE.Shape();
-                sashShape.moveTo(-w_total/2, -h_sash/2);
-                sashShape.lineTo(w_total/2, -h_sash/2);
-                sashShape.lineTo(w_total/2, h_sash/2);
-                sashShape.lineTo(-w_total/2, h_sash/2);
-                sashShape.lineTo(-w_total/2, -h_sash/2);
+                // --- 1. 見込み面（開口の内側の筒。室内側）---
+                //   壁は板ではなく箱なので、穴を開けたらその内側の面が要る。枠の正面と同じく
+                //   サッシと同色で塗る（壁色にすると、枠の内側だけ色が違って見えてしまうため）。
+                const tunnelGeo = buildRevealTunnelGeometry(
+                    w_open - FRAME_MITSUKE * 2, h_open - FRAME_MITSUKE * 2, JAMB_D);
+                const tunnelMesh = new THREE.Mesh(tunnelGeo, sashMatB);
+                tunnelMesh.position.set(0, 0, offsetZ);
+                const tunnelLine = new THREE.LineSegments(new THREE.EdgesGeometry(tunnelGeo), edgeMat);
+                tunnelLine.position.set(0, 0, offsetZ);
+                windowGroup.add(tunnelMesh, tunnelLine);
 
-                const holeL = new THREE.Path();
-                holeL.moveTo(-w_total/2 + fw, -h_sash/2 + fw);
-                holeL.lineTo(-fw/2, -h_sash/2 + fw);
-                holeL.lineTo(-fw/2, h_sash/2 - fw);
-                holeL.lineTo(-w_total/2 + fw, h_sash/2 - fw);
-                holeL.lineTo(-w_total/2 + fw, -h_sash/2 + fw);
-                sashShape.holes.push(holeL);
+                // --- 2. 窓枠（見え掛かり。壁面から外側へ FRAME_PROTRUDE 飛び出す。サッシと同色）---
+                //   ★枠はドーナツ型の角柱なので、正面からは「穴の縁に沿った二重の四角」、
+                //     斜めからはそれをつなぐ厚み方向の線が見える。稜線を引いて形を出す。
+                const frameGeo = buildFrameGeometry(w_open, h_open, FRAME_MITSUKE, FRAME_PROTRUDE);
+                const frameMesh = new THREE.Mesh(frameGeo, sashMatB);
+                frameMesh.position.set(0, 0, offsetZ);
+                const frameLine = new THREE.LineSegments(new THREE.EdgesGeometry(frameGeo), edgeMat);
+                frameLine.position.set(0, 0, offsetZ);
+                windowGroup.add(frameMesh, frameLine);
 
-                const holeR = new THREE.Path();
-                holeR.moveTo(fw/2, -h_sash/2 + fw);
-                holeR.lineTo(w_total/2 - fw, -h_sash/2 + fw);
-                holeR.lineTo(w_total/2 - fw, h_sash/2 - fw);
-                holeR.lineTo(fw/2, h_sash/2 - fw);
-                holeR.lineTo(fw/2, -h_sash/2 + fw);
-                sashShape.holes.push(holeR);
+                // --- 3. 引き違い障子 2枚 ---
+                //   障子2枚の外形は開口より四周 FRAME_MITSUKE だけ小さい（枠の見え掛かり）。
+                //   2枚は框の見付ぶん（FRAME_W）重なる＝召し合わせ。
+                const w_asm = w_open - FRAME_MITSUKE * 2;
+                const h_sash = h_open - FRAME_MITSUKE * 2;
+                const w_sash = (w_asm + FRAME_W) / 2;
 
-                const sashGeo = new THREE.ExtrudeGeometry(sashShape, { depth: z_thick, bevelEnabled: false });
-                sashGeo.translate(0, 0, -z_thick/2); 
+                // 障子1枚ぶんのジオメトリ（框＝外形から内側をくり抜いた枠）
+                const makeSashGeo = () => {
+                    const s = new THREE.Shape();
+                    s.moveTo(-w_sash/2, -h_sash/2); s.lineTo(w_sash/2, -h_sash/2);
+                    s.lineTo(w_sash/2, h_sash/2);   s.lineTo(-w_sash/2, h_sash/2);
+                    s.closePath();
+                    const hole = new THREE.Path();
+                    hole.moveTo(-w_sash/2 + FRAME_W, -h_sash/2 + FRAME_W);
+                    hole.lineTo(-w_sash/2 + FRAME_W, h_sash/2 - FRAME_W);
+                    hole.lineTo(w_sash/2 - FRAME_W, h_sash/2 - FRAME_W);
+                    hole.lineTo(w_sash/2 - FRAME_W, -h_sash/2 + FRAME_W);
+                    hole.closePath();
+                    s.holes.push(hole);
+                    const g = new THREE.ExtrudeGeometry(s, { depth: SASH_D, bevelEnabled: false });
+                    g.translate(0, 0, -SASH_D / 2);   // 原点を見込みの中心へ
+                    return g;
+                };
 
-                const sashPos = new THREE.Vector3(0, 0, offsetZ + z_thick/2);
-                const sashMesh = new THREE.Mesh(sashGeo, getCachedMaterial(b, 'windowSash', sashMat));
-                sashMesh.position.copy(sashPos);
-                const sashLine = new THREE.LineSegments(new THREE.EdgesGeometry(sashGeo), edgeMat);
-                sashLine.position.copy(sashPos);
-                windowGroup.add(sashMesh, sashLine);
+                const glassGeo = new THREE.BoxGeometry(w_sash - FRAME_W * 2, h_sash - FRAME_W * 2, GLASS_T);
 
-                const g_width = (w_total - fw * 3) / 2; 
-                const g_height = h_sash - fw * 2;       
-                const glassGeo = new THREE.BoxGeometry(g_width, g_height, g_thick);
+                // 右が外、左が内（日本の引き違いの通常の建て方。参照モデルもこの順）
+                const leaves = [
+                    { x: w_asm / 2 - w_sash / 2,  z: offsetZ - SASH_INSET - SASH_D / 2 },        // 外障子（右）
+                    { x: -w_asm / 2 + w_sash / 2, z: offsetZ - SASH_INSET - SASH_D * 1.5 },      // 内障子（左）
+                ];
+                for (const lf of leaves) {
+                    const sashGeo = makeSashGeo();
+                    const pos = new THREE.Vector3(lf.x, 0, lf.z);
+                    const sashMesh = new THREE.Mesh(sashGeo, sashMatB);
+                    sashMesh.position.copy(pos);
+                    const sashLine = new THREE.LineSegments(new THREE.EdgesGeometry(sashGeo), edgeMat);
+                    sashLine.position.copy(pos);
+                    windowGroup.add(sashMesh, sashLine);
 
-                const glassPosX_L = -w_total/2 + fw + g_width/2; 
-                const glassPosX_R = w_total/2 - fw - g_width/2;  
-
-                const posL = new THREE.Vector3(glassPosX_L, 0, offsetZ + z_thick/2);
-                const posR = new THREE.Vector3(glassPosX_R, 0, offsetZ + z_thick/2);
-
-                const leftGlass = new THREE.Mesh(glassGeo, windowGlassMat);
-                // ▼▼▼ 追加: 名前と属性を付与 ▼▼▼
-                leftGlass.name = "window_glass"; 
-                leftGlass.userData.isGlass = true;
-                // ▲▲▲ 追加ここまで ▲▲▲
-                leftGlass.position.copy(posL);
-                const leftGlassLine = new THREE.LineSegments(new THREE.EdgesGeometry(glassGeo), edgeMat);
-                leftGlassLine.position.copy(posL);
-                windowGroup.add(leftGlass, leftGlassLine);
-
-                const rightGlass = new THREE.Mesh(glassGeo, windowGlassMat);
-                // ▼▼▼ 追加: 名前と属性を付与 ▼▼▼
-                rightGlass.name = "window_glass"; 
-                rightGlass.userData.isGlass = true; 
-                // ▲▲▲ 追加ここまで ▲▲▲
-                rightGlass.position.copy(posR);
-                const rightGlassLine = new THREE.LineSegments(new THREE.EdgesGeometry(glassGeo), edgeMat);
-                rightGlassLine.position.copy(posR);
-                windowGroup.add(rightGlass, rightGlassLine);
+                    const glass = new THREE.Mesh(glassGeo, windowGlassMat);
+                    glass.name = "window_glass";
+                    glass.userData.isGlass = true;
+                    glass.position.copy(pos);
+                    windowGroup.add(glass);
+                }
 
                 windowGroup.rotation.y = rotY;
                 windowGroup.translateX(p.offsetX); 

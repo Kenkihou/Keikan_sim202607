@@ -55,7 +55,15 @@ const sandMap   = sandTexture();
 const blockMat  = new THREE.MeshStandardMaterial({ map: blockTexture(), color: 0xbfbeb8, roughness: 0.95 });
 const stuccoMat = new THREE.MeshStandardMaterial({ map: sandMap, bumpMap: sandMap,
                     bumpScale: 0.005, color: 0xefeade, roughness: 1.0 });
-const jointMat  = new THREE.MeshStandardMaterial({ color: 0x8e8d88, roughness: 1.0 });
+/* 目地（ブロックの奥にある下地の板）。
+   ⚠️ ブロックは目地より 10.5mm しか手前に出ていない。このアプリのカメラは
+     near 1mm / far 1,000,000mm と範囲が極端で、20m 先での深度の分解能は 20mm 程度しか
+     ないため、その差では前後が決まらず縞状にちらつく。既定色どうしは色が近いので
+     目立たないが、02 で対比の強い色を塗ると 2色が争ってはっきり出る。
+     目地の側をポリゴンオフセットで奥へ逃がし、ブロックが必ず手前に描かれるようにする。
+     考え方は core/store.js の applyGroundPolygonOffset（地面と方眼の対策）と同じ。 */
+const jointMat  = new THREE.MeshStandardMaterial({ color: 0x8e8d88, roughness: 1.0,
+                    polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 2 });
 const capMat    = new THREE.MeshStandardMaterial({ color: 0xd3d7d9, roughness: 0.45 });
 const stoneMat  = new THREE.MeshStandardMaterial({ color: 0x9d9a92, roughness: 1.0, vertexColors: true });
 const mortarMat = new THREE.MeshStandardMaterial({ color: 0x4b483f, roughness: 1.0 });

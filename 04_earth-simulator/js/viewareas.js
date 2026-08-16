@@ -7,7 +7,7 @@ import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { THREE, scene, el, focusLocal, dirty, markViewAreaDirty, markViewLimitDirty } from './core.js';
 import {
-  DEG2RAD, ORIGIN_LAT, ORIGIN_LON,
+  DEG2RAD, ORIGIN_LAT, ORIGIN_LON, HAS_REGULATION_LAYERS,
   VIEW_AREA_URL, VIEW_AREA_FILL_COLOR, VIEW_AREA_FILL_OPACITY,
   VIEW_AREA_LINE_COLOR, VIEW_AREA_LINE_WIDTH,
   VIEW_AREA_MAX_RADIUS, VIEW_AREA_GRID_MAX_SIDE, VIEW_AREA_LIFT,
@@ -66,6 +66,7 @@ function lonLatToLocal(lonDeg, latDeg) {
 }
 
 async function loadViewAreas() {
+  if (!VIEW_AREA_URL) return; // 京都市以外は対象データが無い
   try {
     const res = await fetch(VIEW_AREA_URL);
     if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -502,6 +503,7 @@ const viewLimitMat = new THREE.MeshLambertMaterial({
 });
 
 async function loadViewLimits() {
+  if (!VIEW_LIMIT_URL) return; // 京都市以外は対象データが無い
   try {
     const res = await fetch(VIEW_LIMIT_URL);
     if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -1084,6 +1086,14 @@ function makeLegendRow(id, label, def, k, checked, onChange) {
 (function setupZoneUI() {
   const host = el('zoneLayers');
   if (!host) return;
+  // 京都市以外はこの都市計画データが無いので、折りたたみごと隠す
+  // （中の「眺望空間保全区域」トグルは ZONE_LAYERS とは別系統で無条件に組み立てるため、
+  //   ここで早期リターンしないと fetch も HUD 項目も作られてしまう）。
+  if (!HAS_REGULATION_LAYERS) {
+    const head = el('zoneSectionHead');
+    if (head) head.style.display = 'none';
+    return;
+  }
   // ★ group が同じ【連続した】レイヤーは1つのまとまりにする。
   //   まとめても描画・生成は独立のまま。まとめるのは HUD の見せ方だけ。
   const blocks = [];

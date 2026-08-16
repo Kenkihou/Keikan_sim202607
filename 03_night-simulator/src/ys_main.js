@@ -523,19 +523,36 @@ gltfLoader.load(modelUrl, (gltf) => {
                 const currentMat = Array.isArray(child.material) ? child.material[0] : child.material;
                 const baseColor = (currentMat && currentMat.color) ? currentMat.color.clone() : new THREE.Color(0xe8e8e8);
 
-                const createModeMats = (col) => {
+                // ★元のマテリアルから、色以外に「見た目を決めている属性」を引き継ぐ。
+                //   ⚠️ 以前は color だけで作り直していたため、色を【頂点カラー】で持っている
+                //     ものが白一色になっていた。外構の生垣の葉・石積み・芝生は
+                //     color:0xffffff（や灰色）× vertexColors で色を出しているので、
+                //     vertexColors を落とすと元の色がまったく出ない。
+                //     テクスチャ（ブロック塀の割付など）や透明度（カーポート屋根・ガラス）も
+                //     同じ理由で落ちていたので一緒に運ぶ。
+                const carryFrom = (m) => ({
+                    vertexColors: !!(m && m.vertexColors),
+                    map: (m && m.map) || null,
+                    alphaMap: (m && m.alphaMap) || null,
+                    transparent: !!(m && m.transparent),
+                    opacity: (m && typeof m.opacity === 'number') ? m.opacity : 1,
+                    alphaTest: (m && m.alphaTest) || 0,
+                });
+
+                const createModeMats = (col, src) => {
+                    const c = carryFrom(src);
                     return {
-                        f: new THREE.MeshBasicMaterial({ color: col, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1, side: THREE.DoubleSide }),
-                        d: new THREE.MeshLambertMaterial({ color: col, side: THREE.DoubleSide }),
-                        n: new THREE.MeshStandardMaterial({ color: col, roughness: 0.9, side: THREE.DoubleSide })
+                        f: new THREE.MeshBasicMaterial({ ...c, color: col, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1, side: THREE.DoubleSide }),
+                        d: new THREE.MeshLambertMaterial({ ...c, color: col, side: THREE.DoubleSide }),
+                        n: new THREE.MeshStandardMaterial({ ...c, color: col, roughness: 0.9, side: THREE.DoubleSide })
                     };
                 };
-                
+
                 if (Array.isArray(child.material)) {
                     nMat = []; dMat = []; fMat = [];
-                    child.material.forEach(m => { const mats = createModeMats(m.color || baseColor); fMat.push(mats.f); dMat.push(mats.d); nMat.push(mats.n); });
+                    child.material.forEach(m => { const mats = createModeMats(m.color || baseColor, m); fMat.push(mats.f); dMat.push(mats.d); nMat.push(mats.n); });
                 } else {
-                    const mats = createModeMats(baseColor); fMat = mats.f; dMat = mats.d; nMat = mats.n;
+                    const mats = createModeMats(baseColor, currentMat); fMat = mats.f; dMat = mats.d; nMat = mats.n;
                 }
             }
             managedMeshes.push({ mesh: child, nightMat: nMat, dayMat: dMat, flatMat: fMat });

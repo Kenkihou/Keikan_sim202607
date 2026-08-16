@@ -98,10 +98,13 @@ export function warmEarthAssets() {
             const zoneUrls = (cfg.ZONE_LAYERS || []).map(z => z.url).filter(Boolean);
             await warmAll([
                 cfg.TERRAIN_URL,
-                ...(cfg.TILESET_URLS_LOD1 || []),
-                ...(cfg.TILESET_URLS_LOD2 || []),
+                // ★ 実際に使うのは WARD_TILESETS（区ごとに LOD3>LOD2>LOD1 で選ばれた1本）。
+                //   LOD1/LOD2 を一律に温めると、LOD3 を使う区では使われない root を取ってしまう。
+                ...(cfg.WARD_TILESETS || [...(cfg.TILESET_URLS_LOD1 || []), ...(cfg.TILESET_URLS_LOD2 || [])]),
             ].filter(Boolean));
-            await warmAll([cfg.VIEW_AREA_URL, cfg.VIEW_LIMIT_URL, cfg.MOUNTAIN_URL, ...zoneUrls]
+            await warmAll([cfg.VIEW_AREA_URL, cfg.VIEW_LIMIT_URL, cfg.MOUNTAIN_URL,
+                cfg.CITY_BOUNDARY_URL, cfg.CITY_ROADS_URL, cfg.CITY_WARD_BOUNDARY_URL, cfg.CITY_TEMPLES_URL,
+                ...zoneUrls]
                 .filter(Boolean).map(abs));
         } catch (e) {
             console.warn('地球モードの設定を読めなかったので先読みを中断しました', e);

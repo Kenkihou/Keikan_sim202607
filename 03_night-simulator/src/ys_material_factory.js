@@ -23,12 +23,27 @@ export function createThreeModeMaterials(baseMaterial) {
     const texType = baseMaterial.userData.texType || 'none';
     const baseColor = baseMaterial.color ? baseMaterial.color.clone() : new THREE.Color('#e8e8e8');
     
+    // ★元のマテリアルから引き継ぐ属性。
+    //   ⚠️ 以前は color だけを見て作り直していたため、色を【頂点カラー】で持っている
+    //     ものが白一色になっていた。外構の生垣の葉・石積み・芝生は
+    //     color:0xffffff（または灰色）× vertexColors で色を出しているので、
+    //     vertexColors を落とすと元の色がまったく出ない。
+    //     テクスチャ（ブロック塀の割付など）や透明度も同じ理由で落ちていたので一緒に運ぶ。
+    const carry = {
+        vertexColors: baseMaterial.vertexColors === true,
+        map: baseMaterial.map || null,
+        alphaMap: baseMaterial.alphaMap || null,
+        transparent: baseMaterial.transparent === true,
+        opacity: (typeof baseMaterial.opacity === 'number') ? baseMaterial.opacity : 1,
+        alphaTest: baseMaterial.alphaTest || 0,
+    };
+
     // 基本的な3モードマテリアル（フラット・昼用・夜用）の雛形を作る関数
     const createBaseMats = (col) => {
         return {
-            f: new THREE.MeshBasicMaterial({ color: col, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1, side: THREE.DoubleSide }),
-            d: new THREE.MeshLambertMaterial({ color: col, side: THREE.DoubleSide }),
-            n: new THREE.MeshStandardMaterial({ color: col.clone().multiplyScalar(1.0), roughness: 0.9, side: THREE.DoubleSide })
+            f: new THREE.MeshBasicMaterial({ ...carry, color: col, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1, side: THREE.DoubleSide }),
+            d: new THREE.MeshLambertMaterial({ ...carry, color: col, side: THREE.DoubleSide }),
+            n: new THREE.MeshStandardMaterial({ ...carry, color: col.clone().multiplyScalar(1.0), roughness: 0.9, side: THREE.DoubleSide })
         };
     };
 

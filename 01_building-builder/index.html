@@ -406,6 +406,41 @@
             margin-left: 12px;   /* 「夜間照明」ラベルとボタンが近づきすぎないように */
         }
 
+        /* ★変更：🎨（マンセルへ）・⛰（断面表示）の2つは、.sim-panel-btn 標準の
+           「立体ボタン」見た目（自前の背景・枠線・下側ベゼル・影・角丸）をやめる。
+           パネルの端にこのボタンだけ角丸の縁と影が付くと、パネルの中にもう1枚
+           ミニパネルが乗っているように見えてしまう（実際にそう見えると指摘された）。
+           枠を持たない、周りの黒パネルにそのまま溶け込むアイコンボタンにする。
+           ⚠️ .sim-panel-btn 本体のクラス（indicator の🌃・🌐ランプ）は変えない。
+             あちらは操作不能な表示灯で、押しボタンの立体感がむしろ「操作できない
+             もの」と視覚的に区別する役目を持っているため。 */
+        #app1-munsell-btn,
+        #app1-profile-toggle,
+        #app1-streetview-toggle {
+            background: transparent;
+            border: none;
+            border-bottom: none;
+            box-shadow: none;
+            border-radius: 8px;
+        }
+        #app1-munsell-btn:hover,
+        #app1-profile-toggle:hover,
+        #app1-streetview-toggle:hover {
+            background: rgba(255, 255, 255, 0.1);
+            border-color: transparent;
+        }
+        /* ON状態は「枠で囲む」のではなく、背景をうっすら光らせるだけにする
+           （枠付きの立体表現は使わない＝押し込みアニメーションもここでは無し）。 */
+        #app1-munsell-btn.active,
+        #app1-profile-toggle.active,
+        #app1-streetview-toggle.active {
+            background: rgba(255, 255, 255, 0.16);
+            border-color: transparent;
+            box-shadow: none;
+            transform: none;
+            padding-top: 6px;
+        }
+
         .slider-ui-inner {
             position: relative;
             flex-grow: 1;
@@ -413,18 +448,12 @@
             margin: 0 25px 0 25px;
         }
 
-        /* パネル左端に置く「どのシミュレーターか」を示す表示灯。
-           見た目は🎨ボタンと同じラジカセ風だが、操作するものではない（隣のスライダーが操作子）。
-           スライダーが 0 より動く＝そのモードが動いている間だけ .active を付けてランプを灯す。 */
-        .sim-panel-btn.indicator {
-            cursor: default;   /* 押せるものではない（操作子は隣のスライダー）。
-                                  ただし説明を出すためにホバーは受け取る */
-        }
-        /* 押せると誤解されないよう、ホバーしても見た目は変えない（出るのは説明だけ） */
-        .sim-panel-btn.indicator:hover {
-            background: #4e4e5e;
-            border-color: #666677;
-        }
+        /* パネル左端に置く「どのシミュレーターか」を示す表示灯 兼 オンオフボタン。
+           見た目は🎨ボタンと同じラジカセ風。スライダーが 0 より動く＝そのモードが動いている
+           間だけ .active を付けてランプを灯す。
+           ★以前は「操作するものではない」表示灯だったので cursor:default／ホバー無反応に
+             していたが、押してオンオフできるようにしたので、その打ち消しは外してある
+             （.sim-panel-btn 標準のカーソルとホバーがそのまま効く）。 */
 
         .slider-labels-wrapper {
             position: relative;
@@ -466,14 +495,29 @@
            ==========================================
            時刻パネル（min-width 520px・中央寄せ）の右隣に、同じ見た目で並べる。
            ※ 時刻パネルの寸法は 03_night-simulator の同じパネルと揃えてあるので触らない。
-             こちらの left は「画面中央 ＋ 時刻パネルの半分(260px) ＋ 隙間(12px)」で決めている。 */
+             こちらの left は「画面中央 ＋ 時刻パネルの半分(260px) ＋ 隙間(12px)」で決めている。
+           ★ 断面（東西30km）のオン・オフボタンも、このパネルの中の3人目のボタンとして
+             同じ枠に収めてある（🌐ランプ・スライダー・断面ボタンで1枚の黒モーダル）。
+             幅 296px は 240px（従来）＋ gap12px＋ボタン44px の合計。
+             断面パネル（04側）を開いても、この配置・幅は【変えない】
+             （以前は断面表示中だけ幅いっぱいに広げて時刻パネルを隠す作りにしていたが、
+             「01の配置から変えないでほしい」という要望で撤回した）。
+           ★ 時刻パネルとこのパネルは【別の黒モーダルのまま】でよい（隙間12pxを空けて
+             隣に並べるだけ）。1枚に融合してほしいのではなく、各パネルの中で
+             🎨・⛰ボタンが「ミニパネル」に見えるのが不要、という指摘だったため
+             （対応は #app1-munsell-btn / #app1-profile-toggle 側の見た目で行う）。 */
         #app1-clip-slider-container {
             position: absolute;
             bottom: 20px;
-            /* 時刻パネル（468px）＋隙間12px＋このパネル（240px）＝720px を中央に置いたときの位置 */
+            /* 時刻パネル（468px）＋隙間12px＋このパネル（296px）＝776px を中央に置いたときの位置。
+               left の 120px は「時刻パネルの右端 − 画面中央」の固定値（時刻パネル側の
+               -126px オフセットと対で決まる）。ここへ、このパネル自身の半幅を足す。 */
             left: 50%;
-            transform: translateX(calc(-50% + 240px));
-            width: 240px;
+            /* ★ストリートビュー（👣）のボタンを地形断面の右に足したぶん、黒帯を
+               56px（ボタン44px＋隙間12px）伸ばしてある。左端の位置は動かさずに右へ
+               伸ばしたいので、増えた幅の半分（28px）だけ中心をずらす。 */
+            transform: translateX(calc(-50% + 296px));
+            width: 352px;
             background: rgba(15, 15, 25, 0.85);
             padding: 14px 20px;
             border-radius: 10px;
@@ -489,7 +533,7 @@
             gap: 12px;          /* 左端のアイコンとスライダーの間隔（時刻パネルと揃える） */
         }
 
-        /* 2枚並べると 720px 必要になる。それも置けないほど狭い画面では、
+        /* 2枚並べると 776px 必要になる。それも置けないほど狭い画面では、
            時刻パネルを中央に戻し、切り抜きパネルはツールバーの上へ回す
            （下から: 時刻パネル 20〜93px → ツールバー 100〜155px → ここ 163px〜）。 */
         @media (max-width: 800px) {
@@ -501,6 +545,18 @@
                 bottom: 163px;
             }
         }
+
+        /* ★追加：断面（30km東西縦断図）のオン・オフ。切り抜きスライダーパネルの中の
+           3人目のボタンとして、他の物理ボタン（🌐ランプ等）と同じ並びに置く
+           （以前は position:absolute でパネルの外に逃がして別の箱に見えていたが、
+           普通の flex の子にして1枚の黒モーダルに merge した）。 */
+        #app1-profile-toggle:disabled { cursor: default; }
+        /* ツールチップの矢印がアイコンに重ならないよう、SVG は中央に置くだけにする */
+        #app1-profile-toggle svg,
+        #app1-streetview-toggle svg { display: block; }
+        /* 黒帯の上で沈まないよう、少し明るい色にしておく（SVGなので currentColor が効く） */
+        #app1-streetview-toggle { color: #e8eef8; }
+        #app1-streetview-toggle.active { color: #ffd23c; }
 
         /* ラベルは中央基準で置かれてスライダーの左右にはみ出すので、その安全地帯を確保する */
         .slider-ui-inner.clip {
@@ -522,6 +578,12 @@
             height: 8px;
             background: rgba(255, 255, 255, 0.7);
             transform: translate(-50%, -50%);
+        }
+        /* 500m の先、全体表示の位置だけ太く・色を変えて「ここから先は別モード」と示す */
+        #app1-clip-ticks .tick.full {
+            width: 3px;
+            height: 12px;
+            background: #4fd1c5;
         }
 
         #app1-time-slider, #app1-clip-slider {
@@ -815,16 +877,18 @@
         box-shadow: none;
     }
     /* パネルの一部だけを塞ぐときは、その操作が占めている範囲にきっちり合わせる。
-       数字はパネルの造り（縦 padding 14px・中身の高さ42px・🎨は44px角）から決めている。
+       数字はパネルの造り（縦 padding 14px・中身の高さ42px・🎨/⛰は44px角）から決めている。
         ・スライダー … 左右のラベル（陰影なし／夜間照明）が箱から 24px はみ出すので、
           margin と同じ 25px 広げてラベルごと覆う。上下はパネルの高さいっぱい。
-        ・🎨ボタン  … 上下はパネルの高さいっぱい、左右はボタンの縁に沿わせる。 */
+        ・🎨/⛰ボタン … 上下はパネルの高さいっぱい、左右はボタンの縁に沿わせる。
+          ⚠️ 上方向は -14px が実測の上限（パネル上端＝ボタン上端から 14.67px。
+          これより大きく広げるとパネルの角丸の外に膜がはみ出す。実測で確認済み）。 */
     .locked.locked-slider::after {
-        inset: -16px -25px -15px;
+        inset: -15px -25px -15px;
         border-radius: 8px;
     }
     .locked.locked-btn::after {
-        inset: -18px -12px -11px;
+        inset: -14px -12px -11px;
         border-radius: 8px;
     }
 
@@ -1086,11 +1150,13 @@
 
     <div id="app1-time-slider-container">
         <!-- どのシミュレーターに繋がるスライダーかを示す表示灯（ポータルのタイルと同じ絵柄）。
-             スライダーを動かして夜間シミュレーターが動いている間、ランプが点灯する。 -->
-        <div class="sim-panel-btn indicator" id="app1-night-lamp"
-             data-tooltip="🌃 スライダーを動かすと夜間景観モードへ">
+             夜間シミュレーターが動いている間ランプが点灯する。
+             ★押すとスライダーごと切り替わる（オフなら 09:00 の位置へ、オンなら「陰影なし」へ）。
+               スライダー自体の役割は今までどおりで、ボタンはその近道。 -->
+        <button type="button" class="sim-panel-btn indicator" id="app1-night-lamp"
+             data-tooltip="🌃 夜間景観モードにする">
             <span class="led-lamp"></span>🌃
-        </div>
+        </button>
         <div class="slider-ui-inner" id="app1-time-slider-group">
             <!-- 幅を 0.9倍にしたので、文字が重なる 09:00 と 17:00 のラベルは省いた
                  （目盛りは1時間ごとに全部あるので位置は読める）。
@@ -1117,25 +1183,70 @@
          その右隣に並べる。0＝地球モードなし、50m以上に動かすと地球モードが起動する。
          値は 04 側の HUD スライダーと双方向で同期する。 -->
     <div id="app1-clip-slider-container">
-        <!-- 地球モードが動いている間はランプが点灯する（時刻パネルの🌃と同じ作法） -->
-        <div class="sim-panel-btn indicator" id="app1-earth-lamp"
-             data-tooltip="🌐 スライダーを動かすと地球モードへ">
+        <!-- 地球モードが動いている間はランプが点灯する（時刻パネルの🌃と同じ作法）。
+             ★押すとスライダーごと切り替わる（オフなら 50m へ、オンなら「地球なし」へ）。 -->
+        <button type="button" class="sim-panel-btn indicator" id="app1-earth-lamp"
+             data-tooltip="🌐 地球モードにする">
             <span class="led-lamp"></span>🌐
-        </div>
+        </button>
         <div class="slider-ui-inner clip" id="app1-clip-slider-group">
             <div class="slider-labels-wrapper">
                 <span style="left: 0%;">地球なし</span>
                 <span style="left: 50%;" id="app1-clip-display"></span>
-                <span style="left: 100%;">500m</span>
+                <span style="left: 100%;">全体</span>
             </div>
             <div class="slider-wrapper">
                 <div class="slider-rail-bg"></div>
                 <!-- 刻みは 04 側の切り抜きスライダー（50〜500m・10m刻み）に合わせる。
-                     0 だけが特別で「地球モードなし」。0 と 50 の間は 50 に吸い付く。 -->
-                <input type="range" id="app1-clip-slider" min="0" max="500" step="10" value="0">
+                     0 だけが特別で「地球モードなし」。0 と 50 の間は 50 に吸い付く。
+                     500m を超えたところにもう1段「全体表示」があり、そこへ動かすと
+                     中間値を作らずカクッと最後まで飛ぶ（app1-clip-ticks の最後の目盛りが太いのが目印）。 -->
+                <input type="range" id="app1-clip-slider" min="0" max="550" step="10" value="0">
                 <div class="slider-ticks" id="app1-clip-ticks"></div>
             </div>
         </div>
+        <!-- 東西30km断面のオン・オフ。地球モード中のみ押せる（それ以外は膜で塞ぐ）。
+             アイコンは「山を水平に切って、切り口にハッチが掛かった」断面図の絵。 -->
+        <button type="button" id="app1-profile-toggle" class="sim-panel-btn"
+                data-tooltip="東西断面を表示する">
+            <svg viewBox="0 0 24 24" width="23" height="23" aria-hidden="true" focusable="false">
+                <defs>
+                    <pattern id="profIconHatch" width="3.4" height="3.4"
+                             patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+                        <line x1="0" y1="0" x2="0" y2="3.4" stroke="currentColor" stroke-width="1.1" />
+                    </pattern>
+                    <clipPath id="profIconClip">
+                        <path d="M2 19 L8.4 7 L12.4 12.6 L16.4 5 L22 19 Z" />
+                    </clipPath>
+                </defs>
+                <!-- 切り口（水平線より下）のハッチ -->
+                <g clip-path="url(#profIconClip)">
+                    <rect x="0" y="12.6" width="24" height="7" fill="url(#profIconHatch)" />
+                </g>
+                <!-- 山の輪郭と、切った面の線 -->
+                <path d="M2 19 L8.4 7 L12.4 12.6 L16.4 5 L22 19 Z"
+                      fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
+                <line x1="1.2" y1="12.6" x2="22.8" y2="12.6" stroke="currentColor" stroke-width="1.7" />
+            </svg>
+        </button>
+        <!-- ストリートビュー（道路に降りて歩く）。地形断面と同じく地球モード中だけ押せる。
+             実体は 04 側の js/streetview.js。ここはボタンだけで、押すと iframe の
+             toggleEarthStreetView を呼ぶ（app1-profile-toggle と同じ作法）。 -->
+        <!-- アイコンは絵文字（👣）だと黒く潰れて黒帯に埋没するので、
+             断面ボタンと同じく currentColor で描く SVG にして明るさを揃える。 -->
+        <button type="button" id="app1-streetview-toggle" class="sim-panel-btn"
+                data-tooltip="道路に降りて歩く">
+            <svg viewBox="0 0 24 24" width="23" height="23" aria-hidden="true" focusable="false">
+                <!-- 左足（奥）-->
+                <ellipse cx="8.2" cy="8.6" rx="3.0" ry="4.3" fill="currentColor"
+                         transform="rotate(-12 8.2 8.6)" />
+                <ellipse cx="6.6" cy="13.6" rx="1.25" ry="1.05" fill="currentColor" />
+                <!-- 右足（手前）-->
+                <ellipse cx="15.9" cy="14.6" rx="3.0" ry="4.3" fill="currentColor"
+                         transform="rotate(10 15.9 14.6)" />
+                <ellipse cx="17.6" cy="19.6" rx="1.25" ry="1.05" fill="currentColor" />
+            </svg>
+        </button>
     </div>
 
 <script type="module" src="/src/main.js"></script>

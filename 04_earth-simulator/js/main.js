@@ -28,7 +28,7 @@ import {
   wardTiles, focusBox, focusRegion, updateLoadRegion, updateLoadPhase,
   setLoadPhase, getLoadPhase, resetWardTiles, makeWardTiles,
   getTerrainTiles, setFocusLatLon, runEvictBurst, updateTerrainReady, isTerrainReady,
-  reloadAllTiles, tilesBusy, isEvictBursting,
+  reloadAllTiles, tilesBusy, isEvictBursting, setFocusChangeHandler,
 } from './tiles.js';
 import {
   viewAreaGroup, viewAreaState, viewAreaLineMat, buildViewAreas, getViewAreaStats,
@@ -36,7 +36,17 @@ import {
   viewLimitGroup, viewLimitState, buildViewLimits, getViewLimitStats,
   zoneLayers, zoneLineMats, zonesStep, zonesPending, buildZone, setZoneKind, getZoneStats,
 } from './viewareas.js';
-import { updateHud, setClipSizeFromParent, getClipSize } from './ui.js';
+import { updateHud, setClipSizeFromParent, getClipSize, setPickerCenter } from './ui.js';
+import { rebuildBuildingSection, profileState, setEnabled as setProfileEnabled, setSectionLat } from './profile.js';
+// 建物を1棟ずつ編集する（クリック選択・透過・非表示・高さ変更）。
+// 読み込むだけで UI と操作を自前で組み立てる（tiles.js へはフックを差し込む方式）。
+import { editState as buildingEditState, resetAll as resetBuildingEdits, updateSelectionBox } from './buildingedit.js';
+// 街の屋根を1枚のスクリーンに見立てて文字を流す（読み込むだけでUIと配線を自前で持つ）。
+import { roofTextState, updateRoofText } from './rooftext.js';
+// PLATEAU の道路データ（tran / MVT）を地形に投影して光らせる。既定はOFF。
+import { roadsBusy, initRoadUi, refreshRoadRange } from './roads.js';
+// 足跡を道路に落として、その場に立って歩き回るモード（👣ボタン）。
+import { streetViewState, initStreetView, updateStreetView } from './streetview.js';
 import {
   mountainGroup, mountainState, buildMountains, updateMountainVisibility,
 } from './mountains.js';
@@ -110,6 +120,7 @@ setFrameScheduler(scheduleFrame);
 //   ここに挙げたものは「人が触っていなくても絵が変わり続ける」条件。
 //   どれにも当たらなければ、次の操作まで完全に止まってよい。
 function needsMoreFrames() {
+  if (roofTextState.enabled) return true;                // 屋根テキストが流れている（常に絵が変わる）
   if (isRenderHeld()) return true;                       // 直近の操作・到着からの余韻
   if (dirty.section || dirty.viewArea || dirty.viewLimit
       || dirty.userModel || dirty.mountains) return true; // 作り直し待ち（スロットル中を含む）
@@ -118,18 +129,26 @@ function needsMoreFrames() {
   if (getTerrainTiles() && !isTerrainReady()) return true; // 地形が十分細かくなるのを待っている
   if (isEvictBursting()) return true;                     // 古いタイルの掃き出し中
   if (tilesBusy()) return true;                           // 取得中・解析中のタイルがある
+  if (roadsBusy()) return true;                           // 道路モデルを取得中
+  if (streetViewState.active) return true;                // ストリートビューで歩いている
   return false;
 }
 
 function animate() {
   rafId = 0;
   if (!running) return;
-  controls.update();
+  // ⚠️ OrbitControls.update() は enabled=false でも【カメラの位置と向きを毎フレーム
+  //   上書きする】（注視点からの球座標で position を作り直し、lookAt を掛ける）。
+  //   enabled が止めるのは入力の受け付けだけ。ストリートビュー中はこちらがカメラを
+  //   持っているので、呼ぶと見回しも進行方向も毎フレーム打ち消されてしまう。
+  if (!streetViewState.active) controls.update();
   camera.updateMatrixWorld();
   updateFog();                              // 霧の距離を今のカメラ距離に合わせる
   updateLoadPhase();                        // 第1段（1枚だけ）が済んだら第2段（500m四方）へ
   updateLoadRegion();                       // 注目地点まわりだけ読み込むよう矩形を更新
   updateClipPlanes();                       // 中心の切り抜き（クリップ面・断面板の位置）
+  updateRoofText(performance.now());        // 屋根テキストの流れ（ONのときだけ動く）
+  updateStreetView(performance.now());      // ストリートビューの歩き（立っている間だけ動く）
   const terrainTiles = getTerrainTiles();
   if (terrainTiles) terrainTiles.update();  // 地形（建物より先に更新。距離制限なし）
   updateTerrainReady();                     // 地形が十分細かくなったら表示に切り替える
@@ -148,6 +167,19 @@ function animate() {
     } catch (err) {
       console.warn('断面の生成に失敗（次のフレームで再試行）:', err);
       markSectionDirty();
+    }
+    // 縦断図の建物断面も同じ登録簿（clipMeshes）から作っているので、建物タイルが
+    // 増減したこのタイミングで作り直す。dirty.section は箱庭断面の表示状態とは無関係に
+    // タイルの読込／破棄で立つので、「建物が変わった」の合図としてちょうどよい。
+    try {
+      rebuildBuildingSection();
+    } catch (err) {
+      console.warn('縦断図の建物断面の生成に失敗:', err);
+    }
+    // 選択中の建物の枠も、タイルが入れ替われば位置・大きさを測り直す
+    // （LOD が切り替わると同じ建物でも頂点が別物になるため）。
+    if (buildingEditState.selected) {
+      try { updateSelectionBox(); } catch (err) { console.warn('選択枠の更新に失敗:', err); }
     }
   }
   // 眺望空間保全地域の地形沿わせ。地形の高さグリッドを作り直すので断面より重い。
@@ -246,6 +278,11 @@ window.pauseEarthSimulator = function() {
 window.setEarthClipSize = (m) => setClipSizeFromParent(m);
 window.getEarthClipSize = () => getClipSize();
 
+// 親アプリ下部バーの「断面」ボタン（切り抜きスライダーの右）と双方向でつなぐ入口。
+//   30km の東西断面（縦断図）の表示・非表示は、左上パネルではなくこちらだけで操作する。
+window.setEarthProfileOn = (on) => setProfileEnabled(!!on);
+window.getEarthProfileOn = () => profileState.enabled;
+
 // ★ 親アプリが「ポータルに戻る」たびに呼ぶ入口。
 //   この画面は破棄せず隠して待機させているので、明示的に戻さないと
 //   次にポータルから単独起動したとき前回いじった視点のまま始まってしまう。
@@ -277,10 +314,23 @@ window.__dbg = {
   isTerrainReady, reloadAllTiles, tilesBusy, requestRender, needsMoreFrames,
   userModelState, userModelGroup, updateUserModel, resnapUserModel, markUserModelDirty,
   mountainGroup, mountainState, buildMountains, updateMountainVisibility, markMountainsDirty,
+  buildingEditState, resetBuildingEdits, updateSelectionBox,
   render: () => renderer.render(scene, camera),
 };
 window.__plateauWards = wardTiles;   // 互換用
 window.__plateauTiles = wardTiles[5];
+
+// 注目地点が動いたら、右下の地図の表示範囲と東西断面の緯度を追従させる。
+//   ★ 以前は断面線が原点の緯度に固定だったため、注目地点を動かすと「建物タイルは
+//     読み込まれているのに断面線とずれていて何も切れない」という食い違いが起きた。
+setFocusChangeHandler((latDeg, lonDeg) => {
+  setPickerCenter(latDeg, lonDeg);
+  setSectionLat(latDeg);
+  refreshRoadRange();   // 道路は注目地点まわりだけ読むので、移動先のぶんを取りに行かせる
+});
+
+initRoadUi();
+initStreetView();
 
 // モデルを受け取っていないとき（ポータルからの単独起動）は待たせる理由がないので即座に出す。
 // ★ここまで下げてあるのが要点：親は合図を受け取った折り返しで window.setEarthClipSize などを

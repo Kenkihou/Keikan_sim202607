@@ -1,15 +1,21 @@
 // =========================================================================
 // 設定
 // =========================================================================
-// PLATEAU の対象 tileset（京都市 全11区の建築物モデル）。区ごとに tileset があるので配列で持つ。
-// 3d-tiles-renderer は視錐台（フラストラム）外のタイルを読み込まないので、区ごとに
-// TilesRenderer を作れば「カメラが向いた区・タイルだけ順次ロード」が自動で実現する。
-// 起動時に読むのは各区の root tileset.json（小さい JSON）だけで、建物本体(b3dm)は
-// 視界に入って初めて DL される。
-//   ・LOD2 が配信されている9区は LOD2、未配信の2区(山科26110・西京26111)は LOD1 で補完。
-//   ・URL一覧の取得:
-//     LOD2: curl -s "https://api.plateauview.mlit.go.jp/datacatalog/3dtiles/26100-bldg-lod2-latest/tileset.json"
-//     LOD1: 上記の -lod2- を -lod1- に。（他都市は 26100 を対象都市の5桁コードに）
+// =========================================================================
+// 都市データ（PLATEAU配信サービスの都市を選んで描画できるようにする）
+//   ・?city=<id> で選ぶ。省略時は京都市。HUD の「都市」欄からも選べる（ui.js が
+//     選択時に location を書き換えてページを開き直す＝この config.js を含む全モジュールが
+//     選んだ都市の設定で再初期化される）。
+//   ・区ごとに tileset があるので配列(wards)で持つ。3d-tiles-renderer は視錐台外の
+//     タイルを読み込まないので、区ごとに TilesRenderer を作れば「カメラが向いた区・
+//     タイルだけ順次ロード」が自動で実現する。起動時に読むのは各区の root tileset.json
+//     （小さいJSON）だけで、建物本体(b3dm)は視界に入って初めて DL される。
+//   ・区ごとに LOD3 > LOD2 > LOD1 の順で一番詳しいものを使う（WARD_TILESETS）。
+//     LOD3 は一部の区にしか無い（京都市は先斗町=中京区・祇園新橋=東山区ほか、大阪市は
+//     北区・中央区）。
+//   ・URL一覧の取得: curl -s "https://api.plateauview.mlit.go.jp/datacatalog/3dtiles/
+//       <市区町村コード5桁>-bldg-lod2-latest/tileset.json"（LOD1/LOD3 は -lod2- を差し替え）。
+//     このAPIは区ごとの tileset.json URL（CMS上のランダムハッシュ付きパス）の一覧を返す。
 // 【2層構成】広域が現実的な時間で埋まるようにするための最重要設計。
 //   実測: LOD2の葉タイルは1枚5〜7MB と極端に重く、広域ビューでは必要タイル数が
 //   errorTarget をいくら上げても減らない（階層最上位まで粗くなりきっているため）。
@@ -17,44 +23,310 @@
 //     2.4〜3.6倍軽い（例: 6.88MB→2.88MB, 324KB→98KB）。
 //   そこで LOD1 を全域の常時ベースにし、LOD2 は注視点の近傍だけに限定する。
 const A = 'https://assets.cms.plateau.reearth.io/assets/';
-const P = '/26100_kyoto-shi_city_2025_citygml_1_op_bldg_3dtiles_';
 
-// ベース層: LOD1（全11区・距離制限なし）。軽いので広域でも徐々に埋まる。
-export const TILESET_URLS_LOD1 = [
-  A + 'e7/2aaaf0-1ab3-40e8-af5b-db3310fb4f15' + P + '26101_kita-ku_lod1/tileset.json',        // 北区
-  A + '7f/4d517a-10cc-4489-b1b2-5c754caa0561' + P + '26102_kamigyo-ku_lod1/tileset.json',     // 上京区
-  A + '95/ec9c15-9c08-4c97-b073-029636f84818' + P + '26103_sakyo-ku_lod1/tileset.json',       // 左京区
-  A + '65/c601e9-7ba9-42f2-8400-bd1ec5282421' + P + '26104_nakagyo-ku_lod1/tileset.json',     // 中京区
-  A + 'ce/6e26ee-9c98-4df7-bc06-4ea5049162c3' + P + '26105_higashiyama-ku_lod1/tileset.json', // 東山区
-  A + '64/f8be59-d43b-47fe-a7f0-ce936ae5bc8e' + P + '26106_shimogyo-ku_lod1/tileset.json',    // 下京区(京都駅)
-  A + 'af/70c122-184c-46e7-8200-056f326851a9' + P + '26107_minami-ku_lod1/tileset.json',      // 南区
-  A + '1c/369350-e66e-4526-bdb0-ff014a15460e' + P + '26108_ukyo-ku_lod1/tileset.json',        // 右京区
-  A + 'd2/d06236-cb09-4229-a086-469dac391966' + P + '26109_fushimi-ku_lod1/tileset.json',     // 伏見区
-  A + 'ac/8c8272-b229-42b9-8091-fcace8039948' + P + '26110_yamashina-ku_lod1/tileset.json',   // 山科区
-  A + 'e4/bab58f-04c7-4673-a6c0-e36f58f5237f' + P + '26111_nishikyo-ku_lod1/tileset.json',    // 西京区
+// ---- 京都市（26100・全11区）--------------------------------------------------
+const KYOTO_P = '/26100_kyoto-shi_city_2025_citygml_1_op_bldg_3dtiles_';
+const KYOTO_WARDS = [
+  { name: '北区',   lod1: A + 'e7/2aaaf0-1ab3-40e8-af5b-db3310fb4f15' + KYOTO_P + '26101_kita-ku_lod1/tileset.json',
+                     lod2: A + '7a/918715-89fb-4f45-a48a-a77ee6288577' + KYOTO_P + '26101_kita-ku_lod2/tileset.json' },
+  { name: '上京区', lod1: A + '7f/4d517a-10cc-4489-b1b2-5c754caa0561' + KYOTO_P + '26102_kamigyo-ku_lod1/tileset.json',
+                     lod2: A + '71/0af6ab-875e-4c69-bb5e-9e06096e6fcb' + KYOTO_P + '26102_kamigyo-ku_lod2/tileset.json' },
+  { name: '左京区', lod1: A + '95/ec9c15-9c08-4c97-b073-029636f84818' + KYOTO_P + '26103_sakyo-ku_lod1/tileset.json',
+                     lod2: A + '96/d17b9d-5527-4610-90c8-9e9c44d500c3' + KYOTO_P + '26103_sakyo-ku_lod2/tileset.json' },
+  { name: '中京区', lod1: A + '65/c601e9-7ba9-42f2-8400-bd1ec5282421' + KYOTO_P + '26104_nakagyo-ku_lod1/tileset.json',
+                     lod2: A + '04/eaac56-936e-49e2-a91b-0db31a6ed192' + KYOTO_P + '26104_nakagyo-ku_lod2/tileset.json',
+                     lod3: A + '3b/cc2d98-1c15-46ee-b026-f7dc851d884a' + KYOTO_P + '26104_nakagyo-ku_lod3/tileset.json' }, // 先斗町
+  { name: '東山区', lod1: A + 'ce/6e26ee-9c98-4df7-bc06-4ea5049162c3' + KYOTO_P + '26105_higashiyama-ku_lod1/tileset.json',
+                     lod2: A + '25/dd4c50-5342-4a0b-ac51-05ffb138b8b5' + KYOTO_P + '26105_higashiyama-ku_lod2/tileset.json',
+                     lod3: A + 'dd/3e0851-94fb-4fed-8e44-289d0e3fb41f' + KYOTO_P + '26105_higashiyama-ku_lod3/tileset.json' }, // 祇園新橋
+  { name: '下京区(京都駅)', lod1: A + '64/f8be59-d43b-47fe-a7f0-ce936ae5bc8e' + KYOTO_P + '26106_shimogyo-ku_lod1/tileset.json',
+                     lod2: A + 'f0/2ed501-5480-4ccb-8293-9469a3856f9a' + KYOTO_P + '26106_shimogyo-ku_lod2/tileset.json',
+                     lod3: A + 'd3/4c620c-1c8b-44fa-9168-b50ed86f27f1' + KYOTO_P + '26106_shimogyo-ku_lod3/tileset.json' },
+  { name: '南区',   lod1: A + 'af/70c122-184c-46e7-8200-056f326851a9' + KYOTO_P + '26107_minami-ku_lod1/tileset.json',
+                     lod2: A + '1c/596e87-af58-4394-a4e7-ef429ba5732c' + KYOTO_P + '26107_minami-ku_lod2/tileset.json' },
+  { name: '右京区', lod1: A + '1c/369350-e66e-4526-bdb0-ff014a15460e' + KYOTO_P + '26108_ukyo-ku_lod1/tileset.json',
+                     lod2: A + '64/cf6354-e5ff-4ee4-84d6-1751734da17c' + KYOTO_P + '26108_ukyo-ku_lod2/tileset.json' },
+  { name: '伏見区', lod1: A + 'd2/d06236-cb09-4229-a086-469dac391966' + KYOTO_P + '26109_fushimi-ku_lod1/tileset.json',
+                     lod2: A + '6c/10f912-836b-483d-a6b2-881e298d7006' + KYOTO_P + '26109_fushimi-ku_lod2/tileset.json' },
+  { name: '山科区', lod1: A + 'ac/8c8272-b229-42b9-8091-fcace8039948' + KYOTO_P + '26110_yamashina-ku_lod1/tileset.json',
+                     lod2: null }, // LOD2 未配信
+  { name: '西京区', lod1: A + 'e4/bab58f-04c7-4673-a6c0-e36f58f5237f' + KYOTO_P + '26111_nishikyo-ku_lod1/tileset.json',
+                     lod2: null }, // LOD2 未配信
 ];
 
-// LOD2 が配信されている9区（山科・西京は LOD2 が無い）。
-export const TILESET_URLS_LOD2 = [
-  A + '7a/918715-89fb-4f45-a48a-a77ee6288577' + P + '26101_kita-ku_lod2/tileset.json',        // 北区
-  A + '71/0af6ab-875e-4c69-bb5e-9e06096e6fcb' + P + '26102_kamigyo-ku_lod2/tileset.json',     // 上京区
-  A + '96/d17b9d-5527-4610-90c8-9e9c44d500c3' + P + '26103_sakyo-ku_lod2/tileset.json',       // 左京区
-  A + '04/eaac56-936e-49e2-a91b-0db31a6ed192' + P + '26104_nakagyo-ku_lod2/tileset.json',     // 中京区
-  A + '25/dd4c50-5342-4a0b-ac51-05ffb138b8b5' + P + '26105_higashiyama-ku_lod2/tileset.json', // 東山区
-  A + 'f0/2ed501-5480-4ccb-8293-9469a3856f9a' + P + '26106_shimogyo-ku_lod2/tileset.json',    // 下京区(京都駅)
-  A + '1c/596e87-af58-4394-a4e7-ef429ba5732c' + P + '26107_minami-ku_lod2/tileset.json',      // 南区
-  A + '64/cf6354-e5ff-4ee4-84d6-1751734da17c' + P + '26108_ukyo-ku_lod2/tileset.json',        // 右京区
-  A + '6c/10f912-836b-483d-a6b2-881e298d7006' + P + '26109_fushimi-ku_lod2/tileset.json',     // 伏見区
+// ---- 大阪市（27100・全24区）--------------------------------------------------
+const OSAKA_P = '/27100_osaka-shi_city_2025_citygml_1_op_bldg_3dtiles_';
+const OSAKA_WARDS = [
+  { name: '都島区',     lod1: A + 'ea/520f01-415e-424f-a973-6a35856e6430' + OSAKA_P + '27102_miyakojima-ku_lod1/tileset.json',
+                         lod2: A + 'f6/438555-e27f-4fb7-bce3-7a11906ce06a' + OSAKA_P + '27102_miyakojima-ku_lod2/tileset.json' },
+  { name: '福島区',     lod1: A + 'db/dadcf8-1214-4161-bf22-a60d9142cfc7' + OSAKA_P + '27103_fukushima-ku_lod1/tileset.json',
+                         lod2: A + '72/90e183-bf4b-463e-b8d9-11936f32d256' + OSAKA_P + '27103_fukushima-ku_lod2/tileset.json' },
+  { name: '此花区',     lod1: A + '4c/7f47b0-6ff9-41ce-92b4-b2dbeb3be119' + OSAKA_P + '27104_konohana-ku_lod1/tileset.json',
+                         lod2: A + '1b/2acef6-47d7-46b1-a391-050836fe0a96' + OSAKA_P + '27104_konohana-ku_lod2/tileset.json' },
+  { name: '西区',       lod1: A + '37/00bcbf-5b8c-49be-9c89-76a68507aa61' + OSAKA_P + '27106_nishi-ku_lod1/tileset.json',
+                         lod2: A + '32/6117a6-a930-4fe1-bce2-7cbdddc6c52f' + OSAKA_P + '27106_nishi-ku_lod2/tileset.json' },
+  { name: '港区',       lod1: A + '58/e2ff4e-4afe-40d9-97ff-f12371127bb9' + OSAKA_P + '27107_minato-ku_lod1/tileset.json',    lod2: null },
+  { name: '大正区',     lod1: A + '06/2458e8-5ace-4b51-9f99-c4a048852a11' + OSAKA_P + '27108_taisho-ku_lod1/tileset.json',    lod2: null },
+  { name: '天王寺区',   lod1: A + '84/435ce6-00dd-47fe-87db-19958af5a6ac' + OSAKA_P + '27109_tennoji-ku_lod1/tileset.json',   lod2: null },
+  { name: '浪速区',     lod1: A + '01/9e98f9-121f-4a18-80c8-32b2c3fc071c' + OSAKA_P + '27111_naniwa-ku_lod1/tileset.json',
+                         lod2: A + '32/d6ef51-5aac-4519-a690-aea78e8bd039' + OSAKA_P + '27111_naniwa-ku_lod2/tileset.json' },
+  { name: '西淀川区',   lod1: A + '87/d206f3-29c6-4b1e-8135-08f9a9a870a3' + OSAKA_P + '27113_nishiyodogawa-ku_lod1/tileset.json', lod2: null },
+  { name: '東淀川区',   lod1: A + 'ba/a16b05-652a-491b-9e0e-b3550398e65f' + OSAKA_P + '27114_higashiyodogawa-ku_lod1/tileset.json',
+                         lod2: A + 'e2/4e8207-5f8d-4d8e-8891-334c4b090eb2' + OSAKA_P + '27114_higashiyodogawa-ku_lod2/tileset.json' },
+  { name: '東成区',     lod1: A + '0e/c24fa1-af58-48c9-bf24-63bc58daaaf1' + OSAKA_P + '27115_higashinari-ku_lod1/tileset.json',
+                         lod2: A + '62/c35aea-229b-4345-9535-7d9f9146d433' + OSAKA_P + '27115_higashinari-ku_lod2/tileset.json' },
+  { name: '生野区',     lod1: A + '4a/9f6675-d430-4170-8a40-df8308ee9984' + OSAKA_P + '27116_ikuno-ku_lod1/tileset.json',     lod2: null },
+  { name: '旭区',       lod1: A + '25/e6ec51-85da-4133-b595-91a1dca16fea' + OSAKA_P + '27117_asahi-ku_lod1/tileset.json',     lod2: null },
+  { name: '城東区',     lod1: A + 'bb/0993c8-e192-458b-8c87-bd507f7d811a' + OSAKA_P + '27118_joto-ku_lod1/tileset.json',
+                         lod2: A + '02/821890-fea9-4a5b-b480-6e14102b6eb0' + OSAKA_P + '27118_joto-ku_lod2/tileset.json' },
+  { name: '阿倍野区',   lod1: A + '43/2982ec-f91c-4d81-a70f-d13c997f520a' + OSAKA_P + '27119_abeno-ku_lod1/tileset.json',     lod2: null },
+  { name: '住吉区',     lod1: A + '48/116eb6-d434-4920-9de1-5951e53b099e' + OSAKA_P + '27120_sumiyoshi-ku_lod1/tileset.json', lod2: null },
+  { name: '東住吉区',   lod1: A + 'e6/22e19a-e2d1-4334-8b5c-85eb5401c0ce' + OSAKA_P + '27121_higashisumiyoshi-ku_lod1/tileset.json', lod2: null },
+  { name: '西成区',     lod1: A + '33/62510b-6c6f-4937-94d4-777874906ac8' + OSAKA_P + '27122_nishinari-ku_lod1/tileset.json', lod2: null },
+  { name: '淀川区',     lod1: A + 'da/6340ff-d3c4-4e15-8577-975d0ba44446' + OSAKA_P + '27123_yodogawa-ku_lod1/tileset.json',
+                         lod2: A + '54/260d5c-b57b-4882-92c6-b2cb20f65198' + OSAKA_P + '27123_yodogawa-ku_lod2/tileset.json' },
+  { name: '鶴見区',     lod1: A + '2c/2d107b-375a-49c9-8877-106ed53db820' + OSAKA_P + '27124_tsurumi-ku_lod1/tileset.json',   lod2: null },
+  { name: '住之江区',   lod1: A + '74/4f2272-b0ef-4742-bb22-f9f97ef662cf' + OSAKA_P + '27125_suminoe-ku_lod1/tileset.json',   lod2: null },
+  { name: '平野区',     lod1: A + 'de/f68892-cd4e-476e-899e-7a9818f41fee' + OSAKA_P + '27126_hirano-ku_lod1/tileset.json',    lod2: null },
+  { name: '北区(大阪駅)', lod1: A + '73/bc9017-e521-43f2-8777-2837eefd9795' + OSAKA_P + '27127_kita-ku_lod1/tileset.json',
+                         lod2: A + '92/1459fa-4102-4cfe-a56f-6fe5c7764178' + OSAKA_P + '27127_kita-ku_lod2/tileset.json',
+                         lod3: A + 'cf/c419c0-bee1-4810-b9ae-529bafd07124' + OSAKA_P + '27127_kita-ku_lod3/tileset.json' },
+  { name: '中央区',     lod1: A + '6e/cc10bb-07ec-4f6c-949d-aaace115b581' + OSAKA_P + '27128_chuo-ku_lod1/tileset.json',
+                         lod2: A + '6b/bea10b-2d85-46e6-8786-4ef504aeeb28' + OSAKA_P + '27128_chuo-ku_lod2/tileset.json',
+                         lod3: A + '8b/99ba46-8479-4392-aecb-bf5e98e23987' + OSAKA_P + '27128_chuo-ku_lod3/tileset.json' },
 ];
+
+// ---- 都市レジストリ ------------------------------------------------------------
+//   origin は各都市の主要駅（局所ENU座標系の原点）。height は楕円体高[m]、elevation は
+//   標高[m]（国土地理院の標高API + ジオイド高計算サービスから算出。下記 ORIGIN_HEIGHT の
+//   解説を参照）。hasRegulationLayers は「景観・眺望規制」（京都市固有の都市計画データ）を
+//   読み込むかどうか。他都市は別データが必要になるため、無ければ false にして丸ごと無効化する。
+//   bbox は【その都市の建物データが存在する範囲】[度]。sessionStorage に残っている
+//   「前回の注目地点」が別の都市のものだったときに弾くために使う（usermodel.js）。
+//   ⚠️ これが無いと、京都で開いた後に大阪へ切り替えたとき前回の京都の地点が復元され、
+//     大阪の tileset が覆わない場所を注視して【建物が1枚も出ない】（実際に発生した）。
+//   求め方: 上記カタログAPI の tileset.json を再帰し boundingVolume.region[0..3] の
+//     min/max を取る（ラジアン→度）。LOD1・LOD2 の両方を合わせた範囲。
+const CITY_REGISTRY = {
+  kyoto: {
+    label: '京都市', wardLabel: '京都市 全11区', wards: KYOTO_WARDS,
+    origin: { lat: 34.985849, lon: 135.758766, height: 64, elevation: 28.3 }, // 京都駅
+    // 東西断面（30km）の初期の緯度。★ 3D側の原点（=京都駅）とは別の値にできる。
+    // 京都駅付近は駅ビル・線路で断面が単調になりやすいので、初期表示は市街地らしい
+    // 京都市役所付近（中京区）に変えている。省略時は origin.lat を使う。
+    profileInitialLat: 35.011564,
+    bbox: { west: 135.5590, south: 34.8749, east: 135.8784, north: 35.3212 },
+    boundaryUrl: 'boundary-kyoto.json',
+    roadsUrl: 'roads-kyoto.json',
+    // 道路データ（PLATEAU tran）の MVT（2Dベクタータイル）。詳しくは下の ROAD_MVT を参照。
+    roadMvt: {
+      areaCode: '26100',
+      fallbackYear: 2025,
+      fallbackUrl: 'https://assets.cms.plateau.reearth.io/assets/89/762da6-8d40-490a-b9a9-20decdab2486/'
+                 + '26100_kyoto-shi_city_2025_citygml_1_op_tran_mvt_lod1/{z}/{x}/{y}.mvt',
+      fallbackLevels: 16, // 実測: z16まで配信・z17は404
+    },
+    wardBoundaryUrl: 'wards-kyoto.json',
+    templesUrl: 'temples-kyoto.json',
+    hasRegulationLayers: true,
+  },
+  osaka: {
+    label: '大阪市', wardLabel: '大阪市 全24区', wards: OSAKA_WARDS,
+    origin: { lat: 34.7025087, lon: 135.4961773, height: 37.9, elevation: 0.3 }, // 大阪駅
+    bbox: { west: 135.3435, south: 34.5868, east: 135.5993, north: 34.7688 },
+    boundaryUrl: 'boundary-osaka.json',
+    roadsUrl: 'roads-osaka.json',
+    roadMvt: {
+      areaCode: '27100',
+      fallbackYear: 2025,
+      fallbackUrl: 'https://assets.cms.plateau.reearth.io/assets/fe/3d70cc-81df-4e38-becf-cf937a117095/'
+                 + '27100_osaka-shi_city_2025_citygml_1_op_tran_mvt_lod1/{z}/{x}/{y}.mvt',
+      fallbackLevels: 16,
+    },
+    wardBoundaryUrl: 'wards-osaka.json',
+    templesUrl: 'temples-osaka.json',
+    hasRegulationLayers: false,
+  },
+};
+export const CITIES = Object.entries(CITY_REGISTRY).map(([id, c]) => ({ id, label: c.label }));
+
+// URL の ?city=<id> で選ぶ（省略・不正値は京都市）。HUD の都市セレクタが変更時に
+// location を書き換えて開き直すので、以降の全モジュールはこの都市の設定で初期化される。
+export const CITY_ID = (() => {
+  const id = new URLSearchParams(location.search).get('city');
+  return Object.prototype.hasOwnProperty.call(CITY_REGISTRY, id) ? id : 'kyoto';
+})();
+const CITY = CITY_REGISTRY[CITY_ID];
+export const CITY_LABEL = CITY.label;
+export const CITY_WARD_LABEL = CITY.wardLabel;
+export const CITY_BBOX = CITY.bbox;
+// 市域の境界（右下の地図で市域だけを見せる「くりぬき」に使う）。
+//   OpenStreetMap の行政界（boundary=administrative）を Nominatim から取り出し、
+//   Douglas-Peucker で 5m 間引きしたもの。京都市 2,728点/61KB・大阪市 745点/17KB。
+//   ※ 出典表示が要る（ODbL）。地図の出典行に併記している。
+export const CITY_BOUNDARY_URL = CITY.boundaryUrl || null;
+// くりぬきの外側にかける覆いの濃さ（0=覆わない〜1=真っ黒）と、市域の輪郭線。
+export const BOUNDARY_DIM = 0.72;
+export const BOUNDARY_LINE_COLOR = 'rgba(255,255,255,0.55)';
+
+// 通り名（東西断面に重ねるラベル用）。OpenStreetMap の Overpass API から
+//   highway=motorway/trunk/primary/secondary/tertiary（名前ありのみ）を取得し、
+//   Douglas-Peucker で 15m 間引きしたもの（京都市 595KB・5,262本／大阪市 555KB・5,542本）。
+//   ライブでの取得はしない（Overpass公開APIはフェアユース前提でレート制限があり、
+//   断面線を動かすたびに数百KB〜1MBを毎回叩くのは適さない。既存の mountain.geojson /
+//   boundary-*.json と同じく「開発時に一度取得してコミットする」方式にした）。
+export const CITY_ROADS_URL = CITY.roadsUrl || null;
+
+// ---- 道路データ（PLATEAU tran）の MVT（2Dベクタータイル）--------------------
+//   ⚠️ 上の CITY_ROADS_URL とは別物。あちらは断面図に通り名を出すための OSM の線データ。
+//     こちらは PLATEAU 配信サービスが出している【道路の面データ】。
+//
+//   PLATEAU の道路（tran）を 3D Tiles で配信しているのは LOD3 だけで、対象は建物LOD3と
+//   同じくごく一部の地区（京都市では先斗町・木屋町の約380m×310mのみ）。
+//   一方 LOD1 は市域全体をカバーしているが、配信形式が MVT（2Dベクタータイル）しかない。
+//   → 「市内全域でどこが道路か分かる」ことを優先し、地形（Quantized Mesh、既に高低差を
+//     持つ）の上に MVT の道路ポリゴンを投影（ドレープ）する方式にした。3d-tiles-renderer に
+//     この用途そのものの MVTOverlay プラグインがあり、航空写真／地図と全く同じ
+//     ImageOverlayPlugin の仕組みで動く（tiles.js の createTerrainTiles 参照）。
+//
+//   最新版の解決:
+//     起動時に PLATEAU のデータカタログ（GraphQL）へ問い合わせて、その時点で最新の
+//     .mvt URL テンプレートを引き直す（roads.js の resolveRoadMvt）。
+//     年度が更新されて CMS のハッシュ付きURLが変わっても追随できる。
+//     通信に失敗したときは下の fallbackUrl（2025年版）をそのまま使う。
+export const ROAD_MVT = CITY.roadMvt || null;
+// データカタログの GraphQL 入口（CORS は `access-control-allow-origin: *` で開いている）。
+export const PLATEAU_CATALOG_GRAPHQL = 'https://api.plateauview.mlit.go.jp/datacatalog/graphql';
+// カタログ問い合わせの打ち切り時間。これを過ぎたら fallbackUrl で進む。
+export const ROAD_CATALOG_TIMEOUT_MS = 6000;
+// 道路の見せ方は場面で2通り。切り替えは roads.js の setRoadHighlightStrength。
+//   ⚠️ 塗りの色に透明度を混ぜてよいのは、その画素の不透明度で道路かどうかを判定している
+//     roads.js の isRoadAt のしきい値（8/255）より十分濃いときだけ。
+//     下の 0.5 なら 128 なので余裕がある。真に薄く見せたいときはマテリアル側の
+//     opacity を下げること（判定と見た目を別物として保つ）。
+
+// ---- 着地点をさがしている間 … 全面を濃い黄色で塗り、降りられる場所をはっきり見せる
+export const ROAD_HIGHLIGHT_FILL = '#ffd23c';
+export const ROAD_HIGHLIGHT_STROKE = 'transparent';
+export const ROAD_HIGHLIGHT_STROKE_WIDTH = 0;
+export const ROAD_HIGHLIGHT_OPACITY_PICKING = 0.85;
+
+// ---- 歩いている間 … 中は薄くして航空写真を透かし、境界だけ濃い黄色の線で示す
+export const ROAD_WALK_FILL = 'rgba(255,226,150,0.3)';
+export const ROAD_WALK_STROKE = '#c8960a';
+export const ROAD_WALK_STROKE_WIDTH = 1.6;
+export const ROAD_HIGHLIGHT_OPACITY = 0.95;
+// 道路を読み込む範囲［m］。注目地点を中心とした正方形の全幅。
+//   ⚠️ これが無いと市内全域を読み込む。道路オーバーレイは【地形タイル】に貼るので、
+//     何も絞らないと「地形が読まれた範囲すべて」でMVTを取りに行く。地形は建物と違って
+//     距離制限なしで広く読むため、遠方の粗い地形タイルのために低ズーム（z9・z10）の
+//     MVTが要求される。低ズームのタイルは市域全体が1枚に入っていて非常に重く、
+//     実測で初期表示だけで 32枚・2.42MB、うち z9/z10 の2種で 0.92MB を占めていた。
+//   建物（LOCAL_WIDTH_EW/NS = 500m）より少しだけ広い 800m。
+//   ⚠️ 広げるほど素直に重くなる。PLATEAU の道路MVTはズームを上げても間引きされないため、
+//     「面積あたりのバイト数」がほぼ一定で、ズーム選択では減らせない（実測：z15は1枚約1MB、
+//     z16は1枚269KBだが同じ面積に4枚要るので結局同じ）。効くのは読む面積を絞ることだけ。
+export const ROAD_LOAD_WIDTH = 800;
+// 道路を貼る地形タイルの粗さの上限［m］。これより広い範囲を1枚で受け持つ地形タイルには貼らない。
+//   ⚠️ 上の矩形判定だけでは足りない。地形タイルは階層構造で、注目地点を含む【祖先タイル】が
+//     各レベルに存在する（実測で 幅16,000km〜501m の16段）。親は子を内包するので、
+//     矩形交差では全段が通ってしまい、粗い段のために低ズームの重いMVT（市域全体が1枚に
+//     入ったもの。z9=0.46MB・z10=0.34MB）を取りに行っていた。
+//   幅32kmのタイルに道路を描いてもテクスチャ上では潰れて見えないので、意味が出る細かさ
+//   （実測で幅1,002m・501mの段）だけに貼る。ここを緩めると広い段が通り、その1枚が
+//   受け持つ面積ぶんのMVTを取るので一気に重くなる。
+export const ROAD_MAX_TILE_SPAN = 1200;
+// 道路をラスタライズするテクスチャの一辺［px］。
+//   これが大きいほどライブラリは「より高いズームのMVT」を選ぶ（実測: 256→z14 / 512→z15 /
+//   1024→z16）。通信量を減らせないか一通り試したが、
+//     z15: 4枚 4.13MB ／ z16: 16枚 4.30MB
+//   とほぼ横並びで、【ズーム選択では減らない】ことが実測で確認できた。PLATEAU の道路MVTは
+//   ズームを上げても間引きされないため、面積あたりのバイト数が一定なのが理由。
+//   減らせるのは「読む面積」だけ（ROAD_LOAD_WIDTH / ROAD_MAX_TILE_SPAN）。
+//   そのため解像度はキャンバスのメモリが小さい既定値のままにしておく（1枚 256²×4byte）。
+export const ROAD_RASTER_RESOLUTION = 256;
+
+// 行政区の境界（断面の距離軸に「どの区を通っているか」の色帯を出すのに使う）。
+//   OpenStreetMap の行政界(admin_level=8)を Overpass から取得し、relation の way断片
+//   （role=outer）を端点で繋いで閉じたリングに組み立てた上で 5m 間引きしたもの。
+//   ⚠️ bbox で単純に取得すると隣接市の同名区が混入する（実測: 大阪の bbox に
+//     堺市の「堺区」「北区」「西区」が入ってきた）。config.js の wards 配列にある
+//     正式な区名と突き合わせて除外済み（京都11区・大阪24区、要求どおりの件数を確認）。
+export const CITY_WARD_BOUNDARY_URL = CITY.wardBoundaryUrl || null;
+// 帯の配色（区名のハッシュで固定の色を割り当てる＝断面線を動かしても同じ区は同じ色になる）。
+export const PROFILE_WARD_PALETTE = [
+  '#3b6ea5', '#4a8f6b', '#a56b3b', '#7a5ba5', '#a53b6e', '#3ba59e', '#8a9e3b',
+];
+export const PROFILE_WARD_BAND_OPACITY = 0.55;
+// 市域の外の区間に出すラベルと色。断面は 30km あって市域の東西幅を超えるので、
+// 「区の帯が無い＝データ欠損？」と紛らわしくならないよう明示する。
+// 色は区の配色から浮かないよう、彩度を落とした灰青にする。
+export const PROFILE_WARD_OUTSIDE_LABEL = `${CITY.label}外`;
+export const PROFILE_WARD_OUTSIDE_COLOR = '#54606e';
+
+// 主要な寺院・神社（断面線付近にあれば山名と同じ要領でマーカー表示する）。
+//   OpenStreetMap の amenity=place_of_worship のうち Wikidata タグ付き（＝一定の知名度が
+//   ある証拠）だけに絞ったもの。素の place_of_worship は京都市内だけで950件あり近所の祠まで
+//   含んでしまうため、絞り込み無しでは使えない（実測。Wikidataタグ付きは京都197件・大阪72件）。
+export const CITY_TEMPLES_URL = CITY.templesUrl || null;
+export const PROFILE_TEMPLE_BAND_M = 1200;   // 山名と同じ許容半幅[m]
+export const PROFILE_TEMPLE_COLOR = '#e0b64a';
+
+// --- 断面パネルに重ねる山名・通り名のラベル -----------------------------------
+//   どちらも「断面線との交点」にティック＋回転文字で示す（配置ロジックは profile.js）。
+// 山名: 断面線からこの半幅[m]以内にある山頂だけを対象にする（線からズレていても近ければ拾う）。
+//   実測（京都駅の緯度・±1km で試した範囲）: 8件がヒットし密集しすぎない量だった。
+export const PROFILE_MOUNTAIN_BAND_M = 1200;
+export const PROFILE_MOUNTAIN_COLOR = '#8fd99a';
+// 通り名: 同じ名前の交点が近接する（交差点や蛇行）場合は1つにまとめる、その許容距離[m]。
+export const PROFILE_ROAD_MERGE_M = 80;
+// ラベルどうしが重ならないよう、画面上でこの間隔[px]未満なら間引く（密集地区向け）。
+export const PROFILE_LABEL_MIN_GAP_PX = 26;
+export const PROFILE_ROAD_COLOR = '#cbd5e1';
+// 京都市固有の「景観・眺望規制」レイヤー・山名ラベルを有効にするか（他都市は対象データが無い）。
+export const HAS_REGULATION_LAYERS = CITY.hasRegulationLayers;
+
+// ベース層: LOD1（全区・距離制限なし）。軽いので広域でも徐々に埋まる。
+export const TILESET_URLS_LOD1 = CITY.wards.map((w) => w.lod1);
+// LOD2 が配信されている区だけ（残りは LOD1 で補完）。
+export const TILESET_URLS_LOD2 = CITY.wards.filter((w) => w.lod2).map((w) => w.lod2);
+// LOD3 が配信されている区だけ。
+export const TILESET_URLS_LOD3 = CITY.wards.filter((w) => w.lod3).map((w) => w.lod3);
+// 全区ぶんの TilesRenderer に渡す実際の tileset。区ごとに【LOD3 > LOD2 > LOD1】の順で
+// 一番詳しいものを1つだけ選ぶ。
+//   ★ 重ねてはいけない。LOD3 の tileset は「その区の建物すべて」を含み、LOD3 がある建物
+//     だけが詳細ジオメトリに差し替わったもの（＝LOD2 の上位互換）なので、両方を読むと
+//     同じ建物が二重に描かれて Z ファイトになる。1区につき1つ選ぶのが正しい。
+//   実測（中京区）: LOD2 は 70タイル / LOD3 は 2,852タイルと細かく刻まれており、
+//     先斗町のタイルは 1.0MB、二条城付近でも 104〜142KB の実データがある
+//     （＝LOD3 データセットは先斗町だけでなく区全体を覆う完全な置き換え）。
+//   ※ 大阪市の LOD3 は実測では LOD2 とタイル数・各タイルのバイト列まで一致していた
+//     （＝現時点では中身が同じ）。将来 PLATEAU 側が差し替えたときに自動で効くので
+//     指定はそのまま残してある。
+export const WARD_TILESETS = CITY.wards.map((w) => w.lod3 || w.lod2 || w.lod1);
+
+// HUD の出典表記に出す「実際に使っている LOD の内訳」（例: LOD3・LOD2・一部LOD1）。
+//   区ごとの採用状況から組み立てるので、上の表に LOD3 を足せば表記も自動で追従する。
+export const CITY_LOD_LABEL = (() => {
+  const used = { lod3: 0, lod2: 0, lod1: 0 };
+  for (const w of CITY.wards) used[w.lod3 ? 'lod3' : w.lod2 ? 'lod2' : 'lod1']++;
+  const parts = [];
+  if (used.lod3) parts.push('一部LOD3');
+  if (used.lod2) parts.push('LOD2');
+  if (used.lod1) parts.push('一部LOD1');
+  return parts.join('・');
+})();
 
 // この緯度経度を原点(0,0,0)・上方向を +Y に据える。
 // → 自作の Three.js モデルは、この地点を基準に「メートル単位」で配置できる。
 export const DEG2RAD = Math.PI / 180;
-export const ORIGIN_LAT = 34.985849 * DEG2RAD;   // 京都駅
-export const ORIGIN_LON = 135.758766 * DEG2RAD;
+export const ORIGIN_LAT = CITY.origin.lat * DEG2RAD;
+export const ORIGIN_LON = CITY.origin.lon * DEG2RAD;
+// 東西断面の初期の緯度[度]。都市ごとに専用の値が無ければ、3D側の原点と同じ緯度にする。
+export const PROFILE_INITIAL_LAT_DEG = CITY.profileInitialLat ?? CITY.origin.lat;
 // 原点(Y=0)に据える「楕円体高[m]」。この地点の地盤の楕円体高を入れると、地表が Y=0 になり
-// 自作モデルを Y=0 基準で地面に置けるようになる（京都駅周辺の実測値。下部の解説参照）。
-export const ORIGIN_HEIGHT = 64;
+// 自作モデルを Y=0 基準で地面に置けるようになる（各都市の駅周辺の実測値。下部の解説参照）。
+export const ORIGIN_HEIGHT = CITY.origin.height;
 
 // 原点の「標高[m]」（＝国土地理院の言う標高。楕円体高とは別物なので注意）。
 //   ORIGIN_HEIGHT は楕円体高（GRS80楕円体基準）、標高はジオイド（ほぼ平均海水面）基準。
@@ -62,7 +334,9 @@ export const ORIGIN_HEIGHT = 64;
 //   （実測: 国土地理院の標高API で 28.3m。京都駅は実際に標高20m台）。
 //   土の断面を「標高0m（海水準）まで」描くための基準として使う。
 //   求め方: curl "https://cyberjapandata2.gsi.go.jp/general/dem/scripts/getelevation.php?lon=経度&lat=緯度&outtype=JSON"
-export const ORIGIN_ELEVATION = 28.3;
+//     （楕円体高はこれにジオイド高を足す。ジオイド高は
+//     curl "https://vldb.gsi.go.jp/sokuchi/surveycalc/geoid/calcgh/cgi/geoidcalc.pl?outputType=json&latitude=緯度&longitude=経度"）
+export const ORIGIN_ELEVATION = CITY.origin.elevation;
 // 標高0m（海水準）に相当するローカルY座標（原点の地表=Y0 からこの分だけ下）。
 export const SEA_LEVEL_Y = -ORIGIN_ELEVATION;
 
@@ -118,11 +392,52 @@ export const FOG_FAR_RATIO = 4.5;
 export const FOG_MIN_NEAR = 6000;    // 上限4000m時代の 4000×1.5（近景の見え方を据え置く）
 export const FOG_MIN_FAR = 18000;    // 同じく 4000×4.5
 
+// --- 東西の地形断面（縦断図パネル）-------------------------------------------
+// 箱庭の断面（一辺 最大500m）とは別に、市域スケールで地形を東西に切った縦断図を描く。
+//
+// ★ 高さの取得元は【国土地理院の標高タイル(DEM)】。読み込み済みの PLATEAU 地形タイルは
+//   使わない。理由は2つ:
+//     1) 遠方の地形タイルはカメラの向き・寄り具合で LOD がまるで変わるので、
+//        断面の形が【カメラを動かすたびに変わる】。section.js が SOIL_MIN_SAMPLES_ACROSS
+//        で「粗すぎる地形では描かない」と拒否しているのと同じ問題が、この距離では常態になる。
+//     2) DEM タイルは注目地点にもカメラにも依存せず、いつでも同じ正確な断面が得られる。
+//   実測（京都駅を通る東西20km・旧設定時）: z14 で 7.83m 間隔・2,816サンプル・欠測ゼロ、
+//   標高 19.8〜476.0m（西山〜京都盆地〜東山）。必要タイルは11枚・約400KB と軽い。
+//   ※ CORS は Access-Control-Allow-Origin: * が返るので canvas から画素を読める。
+//
+// ★ 全長 30km にしているのは、京都市の境界(boundary-kyoto.json)を実測した結果
+//   東西の最大幅が 29.13km あったため（京都駅の緯度だけなら19.21kmで足りるが、
+//   断面線は南北にドラッグして動かせるので、どの緯度でも市域を切り抜けるよう
+//   最大幅に余裕を持たせた）。
+//
+// ※ 建物の断面は今回は描かない。断面線に沿った 30m 幅の回廊でも、PLATEAU の建物タイルは
+//   1枚が約500m×330mの塊なので【20kmで62枚・157MB】必要だった（LOD1に落としても148MB）。
+//   全長を伸ばすほど比例して増えるので、地形だけなら数百KBで済むのとはますます桁が違う。
+//   将来やるなら「タイルを1枚ずつ読んで断面だけ抜き出したら即捨てる」方式になる。
+export const PROFILE_LENGTH = 30000;            // 断面の全長[m]（東西）
+export const PROFILE_DEM_ZOOM = 14;             // 標高タイルのズーム（z14 ≒ 7.8m/px・1枚2km）
+export const PROFILE_DEM_URL = 'https://cyberjapandata.gsi.go.jp/xyz/dem_png/{z}/{x}/{y}.png';
+// 標本数。7.83m/px の DEM 分解能に合わせて、全長を伸ばしても間隔がおおむね同じ(≒12.5m)に
+//   なるよう PROFILE_LENGTH に比例させてある（20km:1600 → 30km:2400）。
+export const PROFILE_SAMPLES = 2400;            // 断面に沿って取る標本数
+// 鉛直方向の強調倍率。★ 全長30kmに対して起伏はたかだか数百m ＝ 実スケールでは50倍前後にも
+//   なるほど極端に平たいので、1倍のままだと盆地の起伏が読めない。
+//   かといって常に誇張すると実際の地形の印象を誤る。
+//   → HUD で切り替えられるようにして、既定は起伏が読める5倍にする。
+// 鉛直強調の選択肢。10倍まで用意していたが、断面パネルが画面を占めすぎるので 5倍 止まり。
+export const PROFILE_EXAGGERATIONS = [1, 2, 5];
+export const PROFILE_DEFAULT_EXAGGERATION = 5;
+export const PROFILE_SOIL_COLOR = '#9c6b3e';    // 土（箱庭の断面と同じ色）
+export const PROFILE_LINE_COLOR = '#1a3cd8';    // 地盤ライン（箱庭の断面と同じ色）
+export const PROFILE_SEA_COLOR = '#3aa0c8';     // 標高0m（海水準）の線
+
 // 眺望空間保全地域（京都市の眺望景観保全地域。五山送り火などの眺めを守る区域）。
 //   元データは 眺望shapeデータ/眺望空間保全地域.shp（EPSG:2448＝平面直角座標系第VI系）。
 //   scratchpad の shp2json.py で WGS84 経緯度の JSON に変換したものを読む
 //   （ブラウザに shp パーサと投影変換を持ち込まずに済む）。
-export const VIEW_AREA_URL = '眺望空間保全地域.json';
+// ★ 京都市固有のデータなので、他都市では読み込まない（null にすると viewareas.js 側が
+//   fetch も HUD の「景観・眺望規制」項目自体もスキップする）。
+export const VIEW_AREA_URL = HAS_REGULATION_LAYERS ? '眺望空間保全地域.json' : null;
 export const VIEW_AREA_FILL_COLOR = 0x18c8a8;
 export const VIEW_AREA_FILL_OPACITY = 0.3;
 export const VIEW_AREA_LINE_COLOR = 0x0affd8;
@@ -182,7 +497,7 @@ export const VIEW_AREA_LIFT = 0.3;
 // 面は 規制値等高線.shp（公式）から contour2surface.py で経緯度の規則格子に変換してある:
 //   python contour2surface.py 眺望shapeデータ 眺望規制面.json
 // 検算: 書き出した格子を元の等高線と照合して 中央0.18m / p90 1.08m / 89%が1m以内。
-export const VIEW_LIMIT_URL = '眺望規制面.json';
+export const VIEW_LIMIT_URL = HAS_REGULATION_LAYERS ? '眺望規制面.json' : null;
 export const VIEW_LIMIT_COLOR = 0xff9a3c;
 export const VIEW_LIMIT_OPACITY = 0.28;
 // ★ 距離による絞り込みはしない（12地域すべてを常に描く）。標高面は【格子JSONだけ】から
@@ -274,7 +589,9 @@ export const ZONE_STACK_GAP = 0.06;
 //       地形に貼り付いた模様にしたいならワールド座標基準にもできるが、
 //       広域では縞が細かくなりすぎてモアレになるので採らない。
 //   ※ 配列の【後ろのレイヤーほど手前】に描く（ZONE_STACK_GAP ぶん持ち上がる）。
-export const ZONE_LAYERS = [
+// ★ 京都市固有のデータなので、他都市では空配列にする（zoneLayers の生成・HUD項目・
+//   fetch がすべて自動的に何もしなくなる。viewareas.js / ui.js の変更は不要）。
+export const ZONE_LAYERS = !HAS_REGULATION_LAYERS ? [] : [
   {
     id: 'fuchi', uiOrder: 3, label: '風致地区', url: '風致地区.json',
     group: '風致地区',
@@ -466,7 +783,7 @@ export const ELEVATION_TINT_LINE_STRENGTH = 0.55;
 // 高さは【データの ele をそのまま使う】のが基本。PLATEAU の地形は山頂を丸めるので、
 // 実際の山頂標高を持っているこのデータの方が「頂上」に合う。
 // ele が無い19地点だけは、読み込み済みの地形から高さを拾って補う（拾えるまで保留）。
-export const MOUNTAIN_URL = 'mountain.geojson';
+export const MOUNTAIN_URL = HAS_REGULATION_LAYERS ? 'mountain.geojson' : null; // 京都市内の山頂のみ
 export const MOUNTAIN_LABEL_LIFT = 30;      // 山頂から浮かせる高さ[m]（地形にめり込ませない）
 export const MOUNTAIN_LABEL_SCREEN = 0.05;  // ラベルの高さ（画面の高さに対する割合）
 export const MOUNTAIN_MAX_DIST = 30000;     // ラベルを用意しておく範囲（注目地点から）[m]
@@ -482,6 +799,24 @@ export const MOUNTAIN_GRID_MARGIN = 4000;   // 表示距離＋この余裕まで
 // ★ 粗い地形から拾った高さは当てにならない（盆地と山をまたぐ三角形が混ざる）。
 //   標高データがある山では、拾った値がこの範囲を超えて食い違ったら データの標高を採る。
 export const MOUNTAIN_TERRAIN_TOL = 150;    // 許容するズレ[m]
+
+// --- 屋根テキスト（街の屋根を1枚のスクリーンに見立てて文字を流す）---------------
+//   仕組みと「屋根の見分け方」の根拠は js/rooftext.js の冒頭を参照。
+export const ROOF_TEXT_SIZE = 500;        // 1枚のキャンバスに見立てる範囲[m]（注目地点中心の正方形）
+export const ROOF_TEXT_ROWS = 2;          // 何行に組むか（2行建て）
+// 文字の大きさ。1行ぶんの帯（＝ SIZE / ROWS = 250m）の何割を文字の高さにするか。
+//   ★ 文の長さでサイズを変えない（＝長い文でも文字は小さくならず、そのぶん長く流れる）。
+//     屋根は建物ごとにバラバラで間に道路の「穴」が入るため、小さいと細切れで読めない。
+export const ROOF_TEXT_HEIGHT_RATIO = 0.62;
+// 流れる速さ[画面幅/秒]。1周は「帯の長さ（最低4画面）÷ この値」秒かかる。
+//   短い文でも1周4画面ぶん動く（＝2画面ぶん見えて、2画面ぶん休む）ので、
+//   遅すぎると何も出ていない時間が長く感じる。
+export const ROOF_TEXT_SPEED = 0.22;
+// 「上を向いている面＝屋根」とみなす法線Yのしきい値。
+//   実測の法線Yヒストグラムが -1.0/0.0/+0.7〜1.0 に三峰分離しており、
+//   0.7 なら勾配屋根を拾いつつ壁（0.0付近）を確実に外せる。
+export const ROOF_TEXT_NORMAL_MIN = 0.7;
+export const ROOF_TEXT_DEFAULT = '京都';
 
 // --- 自作モデル（01_building-builder から受け取る建物）-------------------------
 // 親アプリが GLB の blob URL を sessionStorage に入れて渡す（同一オリジン配信が前提）。

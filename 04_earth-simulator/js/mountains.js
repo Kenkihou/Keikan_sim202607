@@ -107,6 +107,7 @@ function makeLabelSprite(peak) {
 // 読み込み
 // =========================================================================
 async function loadMountains() {
+  if (!MOUNTAIN_URL) return; // 京都市以外は対象データが無い
   try {
     const res = await fetch(MOUNTAIN_URL);
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
@@ -233,6 +234,12 @@ function updateMountainVisibility() {
 (function setupMountainUI() {
   const cb = el('mountainOn');
   if (!cb) return;
+  if (!MOUNTAIN_URL) { // 京都市以外は対象データが無いので行ごと隠す
+    mountainState.enabled = false;
+    const label = cb.closest('label');
+    if (label) label.style.display = 'none';
+    return;
+  }
   cb.checked = mountainState.enabled;
   cb.addEventListener('change', () => {
     mountainState.enabled = cb.checked;

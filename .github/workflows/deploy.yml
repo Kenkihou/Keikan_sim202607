@@ -67,7 +67,7 @@ jobs:
           [ -d 04_earth-simulator/js ] && cp -r 04_earth-simulator/js combined_dist/earth-api/
 
           # データファイルの個別にコピー
-          for file in mountain.geojson 建造物修景地区.json 自然風景保全地区.json 眺望規制面.json 眺望空間保全地域.json 伝統的建造物群保存地区.json 美観地区.json 風致地区.json 風致地区特別修景地域.json 歴史的風土特別保存地区.json 歴史的風土保存区域.json; do
+          for file in mountain.geojson boundary-kyoto.json boundary-osaka.json roads-kyoto.json roads-osaka.json wards-kyoto.json wards-osaka.json temples-kyoto.json temples-osaka.json 建造物修景地区.json 自然風景保全地区.json 眺望規制面.json 眺望空間保全地域.json 伝統的建造物群保存地区.json 美観地区.json 風致地区.json 風致地区特別修景地域.json 歴史的風土特別保存地区.json 歴史的風土保存区域.json; do
             if [ -f "04_earth-simulator/$file" ]; then
               cp "04_earth-simulator/$file" combined_dist/earth-api/
             fi
@@ -80,7 +80,7 @@ jobs:
       - name: Verify earth-api files
         run: |
           missing=0
-          for file in index.html js mountain.geojson 建造物修景地区.json 自然風景保全地区.json 眺望規制面.json 眺望空間保全地域.json 伝統的建造物群保存地区.json 美観地区.json 風致地区.json 風致地区特別修景地域.json 歴史的風土特別保存地区.json 歴史的風土保存区域.json; do
+          for file in index.html js mountain.geojson boundary-kyoto.json boundary-osaka.json roads-kyoto.json roads-osaka.json wards-kyoto.json wards-osaka.json temples-kyoto.json temples-osaka.json 建造物修景地区.json 自然風景保全地区.json 眺望規制面.json 眺望空間保全地域.json 伝統的建造物群保存地区.json 美観地区.json 風致地区.json 風致地区特別修景地域.json 歴史的風土特別保存地区.json 歴史的風土保存区域.json; do
             if [ ! -e "combined_dist/earth-api/$file" ]; then
               echo "::error::地球シミュレーターに必須のファイルが見つかりません: $file"
               missing=1

@@ -10,13 +10,13 @@
 //     置き直す（断面や眺望ポリゴンと同じ作法）。
 // =============================================================================
 import {
-  THREE, scene, el, focusLocal, EARTH_R, markUserModelDirty,
+  THREE, scene, el, focusLocal, EARTH_R, markUserModelDirty, markSectionDirty,
   camera, controls, renderer, hideLoading, requestRender, resetCamera,
 } from './core.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import {
-  DEG2RAD, ORIGIN_LAT, ORIGIN_LON, SEA_LEVEL_Y,
+  DEG2RAD, ORIGIN_LAT, ORIGIN_LON, SEA_LEVEL_Y, CITY_BBOX,
   USER_MODEL_GLB_KEY, USER_MODEL_HEADING_KEY, USER_MODEL_OFFSET_KEY, USER_MODEL_FOCUS_KEY,
   USER_MODEL_CAMERA_KEY,
   USER_MODEL_SCALE, USER_MODEL_YAW_BASE, USER_MODEL_SNAP_RADIUS, USER_MODEL_SNAP_CELL,
@@ -25,6 +25,12 @@ import {
 import { buildTerrainHeightGrid, sampleGrid } from './viewareas.js';
 import { setFocusLatLon, isTerrainReady } from './tiles.js';
 import { setPickerCenter } from './ui.js';
+// 断面（箱庭・東西30km）に自作モデルも切られるようにする。
+//   ★ registerClipMeshes に渡す tile は null にする。PLATEAU タイルの LOD階層とは
+//     無関係なので、keepFinestLod の「粗い祖先を除外する」判定に巻き込まれたくない
+//     （null なら常に残る）。__clipRoot には userModelGroup を渡し、複数メッシュに
+//     分かれていても【1棟としてまとめて断面を作る】キーに使う（profile.js 側）。
+import { registerClipMeshes, unregisterClipMeshes } from './section.js';
 
 const RAD2DEG = 180 / Math.PI;
 
@@ -84,10 +90,17 @@ function saveBackToSession() {
 
 // 親アプリが覚えている「前回置いた場所」から始める。
 //   注目地点だけ動かすと右下の地図の十字とずれるので、地図の中心も合わせる。
+//   ★ ただし【今の都市のデータ範囲の外なら復元しない】。この値は都市を跨いで1つしか
+//     持たない（親アプリのセーブデータに入る lastPlacedLocation）ので、京都で使った後に
+//     大阪へ切り替えると京都の地点が復元され、大阪の tileset が覆わない場所を注視して
+//     【建物が1枚も出ない・右下の地図も京都のまま】になる（実際に発生した）。
+//     範囲外なら何もしない＝その都市の原点（主要駅）から始まる。
 function restoreInitialFocus() {
   let loc = null;
   try { loc = JSON.parse(readSession(USER_MODEL_FOCUS_KEY) || 'null'); } catch { /* 無視 */ }
   if (!loc || !Number.isFinite(loc.lat) || !Number.isFinite(loc.lng)) return;
+  const b = CITY_BBOX;
+  if (loc.lat < b.south || loc.lat > b.north || loc.lng < b.west || loc.lng > b.east) return;
   setFocusLatLon(loc.lat * DEG2RAD, loc.lng * DEG2RAD, true);
   setPickerCenter(loc.lat, loc.lng);
 }
@@ -122,6 +135,11 @@ function loadUserModel() {
       for (const m of mats) m.side = THREE.DoubleSide;
     });
     userModelGroup.add(root);
+    // 断面の切り抜き対象に登録し、地形断面（30km）・箱庭断面の両方で自作モデルも
+    // 切れるようにする。色分けのため、あとで profile.js が拾えるよう印を付けておく。
+    registerClipMeshes(userModelGroup, false, null, userModelGroup);
+    userModelGroup.traverse((c) => { if (c.isMesh) c.__clipIsUserModel = true; });
+    markSectionDirty();
     userModelState.loaded = true;
     // ★ 街並みや地形の到着を待たない。モデリング画面から持ってきた建物を先に出して、
     //   地盤・PLATEAU建物はその周りに後から埋まっていく形にする（切り替えの地続き感）。
@@ -422,6 +440,8 @@ function buildUserModelUi() {
 //     そのため「開き直し」＝ページの再読み込みではなく、ここでモデルだけ入れ替える。
 // =========================================================================
 function disposeUserModel() {
+  unregisterClipMeshes(userModelGroup);   // 断面の対象からも外す
+  markSectionDirty();
   for (const child of [...userModelGroup.children]) {
     userModelGroup.remove(child);
     child.traverse((o) => {

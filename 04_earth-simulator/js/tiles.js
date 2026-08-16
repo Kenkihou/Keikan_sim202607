@@ -18,7 +18,7 @@ import {
   markMountainsDirty,
 } from './core.js';
 import {
-  TILESET_URLS_LOD1, TILESET_URLS_LOD2,
+  WARD_TILESETS,
   ORIGIN_LAT, ORIGIN_LON, ORIGIN_HEIGHT,
   LOCAL_WIDTH_EW, LOCAL_WIDTH_NS, LOCAL_HEIGHT,
   SEED_WIDTH, SEED_IDLE_MS, SEED_TIMEOUT_MS,
@@ -108,6 +108,27 @@ function styleBuildingModel(modelScene) {
     }
   });
 }
+
+// ---- 建物の個別編集（buildingedit.js）のフック --------------------------------
+//   タイルは読み込み・破棄・LOD切替を繰り返すので、編集（透過・非表示・高さ変更）は
+//   「タイルが届くたびに当て直す」必要がある。ここで buildingedit.js に処理を渡す。
+//   ★ 直接 import すると tiles ↔ buildingedit で循環参照になる（buildingedit は
+//     レイキャストのために wardTiles を使う）。関数を差し込む形にして向きを一方向に保つ。
+let buildingEditHook = null;
+function setBuildingEditHook(fn) { buildingEditHook = fn; }
+
+// ---- 注目地点が動いたときの通知先 --------------------------------------------
+//   右下の地図の表示範囲と、東西断面の緯度を注目地点に追従させるために使う。
+//   ★ ここも直接 import せず差し込みにする（ui.js は tiles.js を import しているので
+//     逆向きに import すると循環参照になる）。
+let focusChangeHandler = null;
+function setFocusChangeHandler(fn) { focusChangeHandler = fn; }
+
+// ---- 屋根テキスト（rooftext.js）のフック ------------------------------------
+//   屋根面にテキストを投影するシェーダは、建物マテリアルへ後から差し込む方式なので、
+//   タイルが届くたびに当て直す必要がある（建物編集フックと同じ理由）。
+let roofTextHook = null;
+function setRoofTextHook(fn) { roofTextHook = fn; }
 
 // ---- 建物の見せ方（テクスチャ／高さ色分け／白モデル）--------------------------
 // 白モデルの色。真っ白(0xffffff)だと陰影が飛んで形が読めないので、ごく僅かに落とす。
@@ -368,6 +389,16 @@ function makeWardTiles(url) {
     // ⚠️ 着色は registerClipMeshes の後。高さの算出にワールド行列が要り、
     //   その復元に __clipRoot / __clipGroup（登録時に付与）を使うため。
     if (buildingColorState.mode !== 'default') applyBuildingColorMode(modelScene);
+    // 個別編集（透過・非表示・高さ）を当て直す。タイルは何度も出入りするので毎回必要。
+    if (buildingEditHook) {
+      try { buildingEditHook(modelScene); }
+      catch (err) { console.warn('建物編集の再適用に失敗:', err); }
+    }
+    // 屋根テキストの投影シェーダも同様に当て直す。
+    if (roofTextHook) {
+      try { roofTextHook(modelScene); }
+      catch (err) { console.warn('屋根テキストの再適用に失敗:', err); }
+    }
     markSectionDirty();   // 建物が増えたので断面を作り直す
     hideLoading();
   });
@@ -393,14 +424,10 @@ function makeWardTiles(url) {
   return t;
 }
 
-// 全11区の TilesRenderer。LOD2 がある9区は LOD2、無い2区(山科・西京)は LOD1 で補完。
+// 全区の TilesRenderer。区ごとに LOD2 があれば LOD2、無ければ LOD1 で補完（config.js の
+// WARD_TILESETS。都市によって区の数・LOD2配信区が異なるので、組み立ては config.js 側で行う）。
 // どこに注目地点を移してもその区の建物が出るよう全区ぶん用意するが、focusRegion により
 // 実際に読むのは注目地点を含む区の近傍タイルだけ（起動時は各 root JSON のみ）。
-const WARD_TILESETS = [
-  ...TILESET_URLS_LOD2,          // 9区 LOD2
-  TILESET_URLS_LOD1[9],          // 山科区 LOD1
-  TILESET_URLS_LOD1[10],         // 西京区 LOD1
-];
 const wardTiles = WARD_TILESETS.map(makeWardTiles);
 
 // キャッシュとキューを「全区で共有」して、全体を1つのシステムとして管理する。
@@ -665,6 +692,15 @@ function setTerrainTintStep(step) {
 let onImageryChange = () => {};
 const setImageryChangeHandler = (fn) => { onImageryChange = fn; };
 
+// --- 道路オーバーレイ（roads.js）の差し込み ------------------------------------
+//   overlayPlugin は地形と一緒に作り直される（reloadAllTiles）ので、作り直すたびに
+//   roads.js へ新しいインスタンスを渡し直す必要がある。建物編集・屋根テキストと同じ
+//   フック方式（循環参照を避けるため直接 import しない）。
+//   ⚠️ 道路オーバーレイは overlayPlugin.addOverlay(overlay, 1) で order=1 固定にすること
+//     （0は航空写真／地図。setImagery 側もそちらを参照）。
+let roadOverlayHook = null;
+function setRoadOverlayHook(fn) { roadOverlayHook = fn; }
+
 function setImagery(key) {
   if (!IMAGERY[key]) return;
   currentImageryKey = key;
@@ -680,7 +716,10 @@ function setImagery(key) {
     const def = IMAGERY[key];
     if (def.url) {
       currentOverlay = new XYZTilesOverlay({ url: def.url, levels: def.levels ?? 18 });
-      overlayPlugin.addOverlay(currentOverlay);
+      // order=0固定（航空写真／地図は最下層）。道路オーバーレイ（roads.js）は order=1 で
+      // 常にその上に乗る。addOverlay の order 省略時の自動採番に任せると、切替の順序次第で
+      // 道路が下に潜ることがあるため固定する。
+      overlayPlugin.addOverlay(currentOverlay, 0);
     }
   }
   // ボタンの見た目を更新
@@ -787,6 +826,9 @@ function createTerrainTiles() {
   window.__plateauTerrain = terrainTiles; // デバッグ用
 
   setImagery(currentImageryKey);   // 選ばれている画（既定は航空写真）を貼り直す
+  if (roadOverlayHook) {
+    try { roadOverlayHook(overlayPlugin); } catch (err) { console.warn('道路オーバーレイの差し込みに失敗:', err); }
+  }
 }
 
 // 地形レイヤーを丸ごと捨てる（再読み込み用）。dispose() は配下タイルを破棄するので
@@ -801,6 +843,9 @@ function disposeTerrainTiles() {
   terrainWrapGroup = null;
   overlayPlugin = null;
   currentOverlay = null;
+  if (roadOverlayHook) {
+    try { roadOverlayHook(null); } catch (err) { console.warn('道路オーバーレイの破棄通知に失敗:', err); }
+  }
 }
 
 if (SHOW_TERRAIN) {
@@ -978,6 +1023,11 @@ function setFocusLatLon(latRad, lonRad, moveCamera = true) {
   markUserModelDirty();    // 自作モデルは注目地点に追従して置き直す
   markMountainsDirty();    // 山名の表示範囲は注目地点からの距離で決まる
   // ※ 標高面（viewLimit）は格子JSONだけから作れて注目地点に依存しないので作り直さない。
+  // 右下の地図と東西断面の緯度を、新しい注目地点に合わせる。
+  if (focusChangeHandler) {
+    try { focusChangeHandler(latRad * (180 / Math.PI), lonRad * (180 / Math.PI)); }
+    catch (err) { console.warn('注目地点の追従処理に失敗:', err); }
+  }
 }
 
 // 注目地点まわりだけ読み込むよう、矩形(OBB)の位置をワールド座標から ECEF へ変換して更新する。
@@ -994,7 +1044,8 @@ export {
   setLoadPhase, updateLoadPhase, resetWardTiles, makeWardTiles,
   sharedCache, downscaleTexture, dracoLoader,
   setFocusLatLon, runEvictBurst, updateTerrainReady,
-  setBuildingColorMode, buildingColorState,
+  setBuildingColorMode, buildingColorState, setBuildingEditHook, setFocusChangeHandler,
+  setRoofTextHook, setRoadOverlayHook,
   reloadAllTiles, tilesBusy,
   terrainTintState, setTerrainTintStep, setImageryChangeHandler,
 };
@@ -1002,3 +1053,7 @@ export const isEvictBursting = () => evictBurstFrames > 0;
 export const isTerrainReady = () => terrainReady;
 export const getLoadPhase = () => loadPhase;
 export const getTerrainTiles = () => terrainTiles;
+// ★ createTerrainTiles() はモジュール読込直後（top-level）に一度走るため、その時点では
+//   roads.js の setRoadOverlayHook がまだ登録されていない（import順の都合）。
+//   なので roads.js 側は初回だけこのgetterで「今の overlayPlugin」を直接取りに来る。
+export const getOverlayPlugin = () => overlayPlugin;

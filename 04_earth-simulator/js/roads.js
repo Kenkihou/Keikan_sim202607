@@ -29,9 +29,8 @@ import { MVTOverlay } from '3d-tiles-renderer/plugins';
 import { el, requestRender, focusLocal, EARTH_R } from './core.js';
 import {
   ROAD_MVT, PLATEAU_CATALOG_GRAPHQL, ROAD_CATALOG_TIMEOUT_MS,
-  ROAD_HIGHLIGHT_FILL, ROAD_HIGHLIGHT_STROKE, ROAD_HIGHLIGHT_OPACITY,
-  ROAD_HIGHLIGHT_STROKE_WIDTH, ROAD_HIGHLIGHT_OPACITY_PICKING,
-  ROAD_WALK_FILL, ROAD_WALK_STROKE, ROAD_WALK_STROKE_WIDTH,
+  ROAD_HIGHLIGHT_FILL, ROAD_HIGHLIGHT_OPACITY, ROAD_HIGHLIGHT_OPACITY_PICKING,
+  ROAD_WALK_FILL,
   ROAD_LOAD_WIDTH, ROAD_MAX_TILE_SPAN, ROAD_RASTER_RESOLUTION, ORIGIN_LAT, ORIGIN_LON,
 } from './config.js';
 import { setRoadOverlayHook, getOverlayPlugin } from './tiles.js';
@@ -94,8 +93,13 @@ async function resolveRoadMvt(cfg) {
 // 道路の見せ方（黄色っぽく光らせる）。
 //   layer 名は実測で 'Road'（ポリゴン＝道路面）のみを確認済み。それ以外は無視する。
 // -----------------------------------------------------------------------------
-// 道路の見せ方。'picking'＝着地点をさがしている（全面を濃く）／'walking'＝歩いている
-// （中は薄く、境界だけ濃い線）。既定は地球モードで眺めているときの見え方。
+// 道路の見せ方。'picking'＝着地点をさがしている（濃く）／'walking'＝歩いている（薄く）。
+// 既定は地球モードで眺めているときの見え方。
+//
+// ★ 縁の線（stroke）は描かない。道路面の塗りだけで示す。
+//   ポリゴンの縁を線で強調すると、隣り合う道路面の継ぎ目や、同じ道路が複数の
+//   ポリゴンに分かれている箇所でも線が引かれてしまい、実際の道路の形とは違う
+//   格子状の模様が浮いて見える。塗りだけなら面の広がりがそのまま出る。
 let roadStyleMode = 'walking';
 
 function getStyle(layerName, properties) {
@@ -103,14 +107,7 @@ function getStyle(layerName, properties) {
   if (properties === null) return { order: 0 }; // レイヤー順を聞かれただけの呼び出し
   // 見せ方は場面で切り替わる（roadStyleMode）。塗りは canvas に焼くので、
   // 変えたあとは overlay.redraw() で描き直しが要る。
-  if (roadStyleMode === 'walking') {
-    return { fill: ROAD_WALK_FILL, stroke: ROAD_WALK_STROKE, strokeWidth: ROAD_WALK_STROKE_WIDTH };
-  }
-  return {
-    fill: ROAD_HIGHLIGHT_FILL,
-    stroke: ROAD_HIGHLIGHT_STROKE,
-    strokeWidth: ROAD_HIGHLIGHT_STROKE_WIDTH,
-  };
+  return { fill: roadStyleMode === 'walking' ? ROAD_WALK_FILL : ROAD_HIGHLIGHT_FILL };
 }
 
 // ⚠️ 市域の外側のタイルは 404（XMLのエラーボディ）が返る。PLATEAU のMVTは市域ぶんしか

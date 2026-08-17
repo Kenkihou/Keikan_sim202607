@@ -5,21 +5,21 @@
 //     ① 足跡ボタン（👣）を押す … 「着地点をさがす」状態に入る。
 //        道路が消えていると降りる場所が分からないので、ここで道路の表示を自動で点ける。
 //     ② 地面の上でポインタを動かす … 足跡マークが地面に貼り付いて追いかけてくる。
-//        道路の上なら緑、それ以外なら赤（＝降りられない）。
-//     ③ 道路の上で離す（クリック） … そこへ人の目の高さで降りる。
+//        建物の中でなければ緑、建物の中なら赤（＝降りられない）。
+//     ③ 地面の上で離す（クリック） … そこへ人の目の高さで降りる。
 //     ④ 左下のスティックで前後左右へ歩く。画面をドラッグすると見回せる。
 //     ⑤ ✕ で元の視点へ戻る（入る前のカメラをそのまま復元する）。
 //
-//   【道路かどうかの判定】
-//     roads.js の isRoadAt に任せている。あちらは「実際に描かれた絵（MVTを焼いた canvas）」の
-//     不透明度を読むので、画面で黄色く光って見えている場所とズレようがない。
-//
 //   【歩ける範囲】
-//     降りるときも歩くときも道路の上だけ。判定は canBeAt() 1か所に閉じ込めてあるので、
-//     「降りられたのに歩けない」というような食い違いが起きない。
+//     ★地形の上ならどこでも歩ける。道路の内側に閉じ込めるのはやめた。
+//       道路の判定は「MVTを焼いた canvas の画素」を読む方式で、歩いている間も細かい
+//       タイルが届くたびに縁が少しずれる。そのため道路の上に降りたのに縁の外へ
+//       取り残される、という事故が起きていた（救済のための例外処理も要っていた）。
+//     ふさぐのは【建物】だけ。判定は canBeAt()（地形があるか）と
+//     blockedByBuilding()（進む先に建物の壁があるか）の2つに閉じ込めてある。
 //
 //   【01（モデリング）へ移すときの想定】
-//     道路の概念が無いので、canBeAt() を「地盤面ならどこでも true」に差し替えるだけでよい。
+//     canBeAt() が地形の有無しか見ていないので、そのまま持って行ける。
 // =============================================================================
 import {
   THREE, scene, camera, controls, renderer, el, requestRender,
@@ -27,8 +27,8 @@ import {
 } from './core.js';
 import { ORIGIN_LAT, ORIGIN_LON, ORIGIN_ELEVATION } from './config.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { getTerrainTiles } from './tiles.js';
-import { isRoadAt, setRoadHighlightStrength } from './roads.js';
+import { getTerrainTiles, wardTiles } from './tiles.js';
+import { setRoadHighlightStrength } from './roads.js';
 
 const DEG = 180 / Math.PI;
 
@@ -147,27 +147,98 @@ function groundYAt(x, z, near = null) {
   return best;
 }
 
-/* ★そこに居てよいか（降りる先・歩く先の両方でこれを使う）。
-   降りられる場所と歩ける場所を必ず一致させたいので、判定はこの1か所だけに置く。
-   01（モデリング）へ移すときは、ここを「地盤面ならどこでも true」に差し替えるだけでよい。 */
-function canBeAt(x, z) {
-  const { lat, lon } = worldToLonLat(x, z);
-  return isRoadAt(lat, lon);
+// -----------------------------------------------------------------------------
+// 建物との当たり判定
+//
+//   ★ 歩ける範囲は【地形の上ならどこでも】。道路の内側に閉じ込めるのはやめた。
+//     代わりに建物へは入れないようにする。判定はキャラクターの当たり半径
+//     （glb の実寸から測る）を持たせた「進行方向への線」で行う。
+//
+//   ⚠️ 「その足元が建物の footprint の中か」を毎フレーム点で調べる作りにはしない。
+//     走りは 13.5m/s あり、dt が 0.1s まで伸びると1フレームで 1.35m 進む。点で見ると
+//     薄い壁をまたいで内側へ抜けてしまう（すり抜け）。始点から終点までを線で見れば
+//     途中の壁を必ず捉えられる。
+//
+//   ⚠️ 地形と同じく、見えているメッシュだけを見ること（粗い段のタイルも読み込んだまま
+//     グループに残っていて、Raycaster は visible を見ない）。
+// -----------------------------------------------------------------------------
+// 当たり判定に使う高さ[m]（足元から）。腰と胸の2段で見る。
+//   足元ちょうどで見ると、縁石や地形にわずかに埋まった壁の底に引っかかって進めなくなる。
+const HIT_HEIGHTS = [0.5, 1.2];
+// キャラクターの当たり半径[m]。glb の実寸が測れるまでの控えの値。
+const DEFAULT_RADIUS = 0.5;
+// 実寸に掛ける余裕。壁の手前で早めに止めて、めり込んで出られなくなるのを防ぐ。
+const COLLISION_MARGIN = 1.4;
+const MIN_RADIUS = 0.4;
+const MAX_RADIUS = 0.9;
+
+const _bldgMeshes = [];
+function visibleBuildingMeshes() {
+  _bldgMeshes.length = 0;
+  for (const t of wardTiles) {
+    const root = t.group;
+    if (!root) continue;
+    root.traverse((o) => {
+      if (!o.isMesh || !o.visible) return;
+      for (let p = o.parent; p; p = p.parent) if (!p.visible) return;
+      _bldgMeshes.push(o);
+    });
+  }
+  return _bldgMeshes;
 }
 
-/* 道路の中心寄りへ少しだけ寄せる。
-   道路の縁ぎりぎりに降りると、あとから細かいタイルが届いて縁がずれたときに
-   外側へ取り残されやすい。渦巻き状に探して、いちばん近い道路上の点へ置き直す。 */
-function snapOntoRoad(x, z, maxR = 4) {
-  if (canBeAt(x, z)) return { x, z };
-  for (let r = 0.5; r <= maxR; r += 0.5) {
-    for (let a = 0; a < 16; a++) {
-      const th = (a / 16) * Math.PI * 2;
-      const nx = x + Math.cos(th) * r, nz = z + Math.sin(th) * r;
-      if (canBeAt(nx, nz)) return { x: nx, z: nz };
-    }
+/* (fromX,fromZ) から (toX,toZ) へ進む途中で建物にぶつかるか。 */
+const _from = new THREE.Vector3();
+const _dir = new THREE.Vector3();
+function blockedByBuilding(fromX, fromZ, toX, toZ, footY) {
+  const dx = toX - fromX, dz = toZ - fromZ;
+  const dist = Math.hypot(dx, dz);
+  if (dist < 1e-6) return false;
+  const meshes = visibleBuildingMeshes();
+  if (!meshes.length) return false;
+  _dir.set(dx / dist, 0, dz / dist);
+  // 進む距離＋体の半径ぶん先まで見る（壁にめり込む前に止める）
+  const far = dist + (chara.radius || DEFAULT_RADIUS);
+  for (const h of HIT_HEIGHTS) {
+    _rc.set(_from.set(fromX, footY + h, fromZ), _dir);
+    _rc.far = far;
+    const hits = _rc.intersectObjects(meshes, false);
+    _rc.far = Infinity;   // 他の用途（地形）へ持ち越さないこと
+    if (hits.length) return true;
   }
-  return { x, z };
+  return false;
+}
+
+/* ★そこに居てよいか（降りる先・歩く先の両方でこれを使う）。
+   降りられる場所と歩ける場所を必ず一致させたいので、判定はこの1か所だけに置く。
+   道路の上かどうかは【問わない】。地形が測れる場所ならどこでもよい。 */
+function canBeAt(x, z) {
+  return groundYAt(x, z) !== null;
+}
+
+// 建物の面がこの高さ[m]（足元から）より下に来ていたら「体がぶつかる高さに躯体がある」
+// ＝その場に立てないと見なす。歩行側の HIT_HEIGHTS より少し高く取っている。
+const SOLID_BELOW = 2.5;
+
+/* 降りる先に立てるか（建物の中なら false）。着地のときだけ使う。
+   ⚠️ 「真上に建物があるか」で判定してはいけない。それだと駅の高架屋根やアーケード、
+     ビルの庇の下がすべて「建物の中」になる。実測で、腰(0.5m)・胸(1.2m)には壁が無く
+     3.0m にだけ面がある地点（＝屋根の下の通路）が「中」と出て、歩いては入れるのに
+     降りられないという食い違いになっていた。
+   ★ 見るのは【いちばん下にある建物の面の高さ】。真上から撃つと当たりは高い順に並ぶので
+     最後の1つがそれ。躯体の中なら床（または壁の下端）が足元近くに来るので低く出る。
+     庇や高架の下なら、いちばん下の面はずっと頭上にある。 */
+const _upOrigin = new THREE.Vector3();
+function insideBuilding(x, z) {
+  const meshes = visibleBuildingMeshes();
+  if (!meshes.length) return false;
+  _rc.set(_upOrigin.set(x, 4000, z), _down);
+  const hits = _rc.intersectObjects(meshes, false);
+  if (!hits.length) return false;          // 真上に何も無い＝間違いなく外
+  const g = groundYAt(x, z);
+  if (g === null) return false;
+  const lowest = hits[hits.length - 1].point.y;
+  return lowest - g < SOLID_BELOW;
 }
 
 // -----------------------------------------------------------------------------
@@ -216,6 +287,8 @@ const chara = {
   current: null,
   facing: 0,           // 今向いている方位[rad]（進行方向へ滑らかに追従させる）
   loading: null,
+  // 当たり判定用の寸法。glb の実寸（バウンディングボックス）から測って入れる。
+  radius: DEFAULT_RADIUS,   // 水平方向の当たり半径[m]
 };
 
 function loadCharacter() {
@@ -231,6 +304,19 @@ function loadCharacter() {
       model.scale.setScalar(s);
       // 足元が原点に来るように下げる
       model.position.y = -box.min.y * s;
+
+      // ★バウンディングボックスから当たり判定の寸法を決める。
+      //   幅と奥行きの【大きいほう】を採り、さらに余裕を足して大きめに見積もる。
+      //   ⚠️ 小さく取ると壁の直前まで進めてしまい、その1フレームで壁の内側へ
+      //     わずかに入り込む。いったん入ると壁は内側からも塞ぐので出られなくなる。
+      //     手前で止まるほうが安全なので、体の実寸より太らせておく。
+      const bw = (box.max.x - box.min.x) * s;
+      const bd = (box.max.z - box.min.z) * s;
+      const r = (Math.max(bw, bd) / 2) * COLLISION_MARGIN;
+      // 上限は路地や門をくぐれる範囲に収める（太らせすぎると通れない道が出る）
+      chara.radius = Number.isFinite(r) && r > 0.05
+        ? Math.min(Math.max(r, MIN_RADIUS), MAX_RADIUS)
+        : DEFAULT_RADIUS;
 
       const root = new THREE.Group();
       root.add(model);
@@ -595,12 +681,12 @@ function startPlacing() {
   streetViewState.placing = true;
   ui.enter.classList.add('armed');
   renderer.domElement.style.cursor = 'crosshair';
-  // 道路が消えていると降りる場所が分からないので点けておく
+  // 道路は「どこが道か」の目印として点けておく（降りられる場所の条件ではない）
   const cb = el('roadOn');
   if (cb && !cb.checked) { cb.checked = true; cb.dispatchEvent(new Event('change', { bubbles: true })); }
-  setRoadHighlightStrength('picking');   // 降りられる場所をはっきり見せる
+  setRoadHighlightStrength('picking');
   loadCharacter();                       // 4MB あるので、選んでいる間に裏で読み始める
-  setHint('道路（黄色）の上でクリックすると、そこに降ります　／　Esc で中止');
+  setHint('地面をクリックすると、そこに降ります　／　Esc で中止');
   requestRender();
 }
 
@@ -619,7 +705,7 @@ function onPlacingMove(e) {
   if (!streetViewState.placing) return;
   const p = pickGround(e.clientX, e.clientY);
   if (!p) { hideMarker(); requestRender(); return; }
-  showMarker(p, canBeAt(p.x, p.z));
+  showMarker(p, !insideBuilding(p.x, p.z));
   requestRender();
 }
 
@@ -627,7 +713,11 @@ function onPlacingClick(e) {
   if (!streetViewState.placing) return;
   const p = pickGround(e.clientX, e.clientY);
   if (!p) return;
-  if (!canBeAt(p.x, p.z)) { setHint('そこは道路ではありません。黄色い道路の上を選んでください'); return; }
+  // 地形の上ならどこでも降りられる。建物の中（真上に建物がある場所）だけは断る。
+  if (insideBuilding(p.x, p.z)) {
+    setHint('そこは建物の中です。建物のない場所を選んでください');
+    return;
+  }
   enterStreetView(p);
 }
 
@@ -862,21 +952,23 @@ function updateStreetView(nowMs) {
     const dx = (_fwd.x * -uy + _right.x * ux) * step;
     const dz = (_fwd.z * -uy + _right.z * ux) * step;
     if (running !== wasRunning) { wasRunning = running; updateStickLook(running); }
-    // ★歩けるのは道路の上だけ。
-    //   両方向だめでも軸ごとに試すのは、道路の縁に斜めに突き当たったときに
-    //   ピタッと止まらず縁に沿って滑れるようにするため（当たらない方向だけ進む）。
-    //
-    //   ⚠️ ただし【今いる場所が道路の外なら、どこへでも動けるようにする】。
-    //     道路タイルは歩いている間もさらに細かいものが届き、そのたびに判定の基準にする
-    //     1枚が入れ替わって道路の縁が少しずれる。そのため、降りた直後は道路の上でも、
-    //     あとから縁の外側に取り残されることがある（実測で発生）。
-    //     そのとき全方向を塞ぐと二度と動けなくなるので、外に居る間は素通しにして
-    //     道路へ歩いて戻れるようにしておく。
-    const stuckOutside = !canBeAt(x, z);
-    const ok = (px, pz) => stuckOutside || canBeAt(px, pz);
+    // ★歩けるのは地形の上ならどこでも。ふさぐのは建物だけ。
+    //   両方向だめでも軸ごとに試すのは、壁に斜めに突き当たったときにピタッと
+    //   止まらず壁に沿って滑れるようにするため（当たらない方向だけ進む）。
+    const ok = (px, pz) => canBeAt(px, pz) && !blockedByBuilding(x, z, px, pz, groundY);
     if (ok(x + dx, z + dz)) { x += dx; z += dz; }
     else if (ok(x + dx, z)) { x += dx; }
     else if (ok(x, z + dz)) { z += dz; }
+    // ★どの向きにも進めなかったとき、それが【建物にはまり込んでいるせい】なら
+    //   塞ぐのをやめて出られるようにする。
+    //   ⚠️ この救済が無いと詰む。壁は内側からも当たるので、何かの拍子に躯体の中へ
+    //     入ってしまうと全方向が塞がれ、モードを抜ける以外に手が無くなる。
+    //     判定は重いので、三方向すべて塞がれた稀なときだけ調べる。
+    else if (insideBuilding(x, z)) {
+      if (canBeAt(x + dx, z + dz)) { x += dx; z += dz; }
+      else if (canBeAt(x + dx, z)) { x += dx; }
+      else if (canBeAt(x, z + dz)) { z += dz; }
+    }
     moved = (x !== stand.x || z !== stand.z);
     // 進んだ向きへ体を向ける（急に振り向かないよう、少しずつ回す）
     if (moved) {
@@ -890,9 +982,6 @@ function updateStreetView(nowMs) {
 
   // ★止まっていても毎フレーム地面を測り直す。地形は歩いている間も細かい段が届き続けるので、
   //   降りた瞬間の高さのまま固定すると、地面に埋まったり浮いたりする。
-  // 縁の外へ取り残されていたら、道路へ引き戻す（上の stuckOutside と対になる救済）
-  if (!walking && !canBeAt(x, z)) { const s = snapOntoRoad(x, z); x = s.x; z = s.z; }
-
   const gy = groundYAt(x, z, groundY);
   if (gy !== null) groundY = gy;
   stand.set(x, groundY, z);

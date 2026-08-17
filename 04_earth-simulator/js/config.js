@@ -205,16 +205,16 @@ export const ROAD_CATALOG_TIMEOUT_MS = 6000;
 //     下の 0.5 なら 128 なので余裕がある。真に薄く見せたいときはマテリアル側の
 //     opacity を下げること（判定と見た目を別物として保つ）。
 
-// ---- 着地点をさがしている間 … 全面を濃い黄色で塗り、降りられる場所をはっきり見せる
+// ★ どちらの場面でも【縁の線は引かない】。塗りだけで道路面を示す。
+//   縁を線で強調すると、隣り合う道路面の継ぎ目や1本の道路が複数ポリゴンに
+//   分かれている箇所にも線が乗り、道路の形とは違う格子模様が浮いて見える。
+
+// ---- 着地点をさがしている間 … 全面を濃い黄色で塗り、道路の位置をはっきり見せる
 export const ROAD_HIGHLIGHT_FILL = '#ffd23c';
-export const ROAD_HIGHLIGHT_STROKE = 'transparent';
-export const ROAD_HIGHLIGHT_STROKE_WIDTH = 0;
 export const ROAD_HIGHLIGHT_OPACITY_PICKING = 0.85;
 
-// ---- 歩いている間 … 中は薄くして航空写真を透かし、境界だけ濃い黄色の線で示す
+// ---- 歩いている間 … 薄くして航空写真を透かす
 export const ROAD_WALK_FILL = 'rgba(255,226,150,0.3)';
-export const ROAD_WALK_STROKE = '#c8960a';
-export const ROAD_WALK_STROKE_WIDTH = 1.6;
 export const ROAD_HIGHLIGHT_OPACITY = 0.95;
 // 道路を読み込む範囲［m］。注目地点を中心とした正方形の全幅。
 //   ⚠️ これが無いと市内全域を読み込む。道路オーバーレイは【地形タイル】に貼るので、

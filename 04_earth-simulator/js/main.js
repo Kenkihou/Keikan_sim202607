@@ -41,6 +41,9 @@ import { rebuildBuildingSection, profileState, setEnabled as setProfileEnabled, 
 // 建物を1棟ずつ編集する（クリック選択・透過・非表示・高さ変更）。
 // 読み込むだけで UI と操作を自前で組み立てる（tiles.js へはフックを差し込む方式）。
 import { editState as buildingEditState, resetAll as resetBuildingEdits, updateSelectionBox } from './buildingedit.js';
+// 建物を「後退面より外側だけ」削る（壁面後退）。読み込むだけでタイルへのフックを張る。
+// 段階1のため操作UIはまだ無く、公開関数をスクリプトから呼んで使う。
+import { updateSetbackGuide } from './buildingsetback.js';
 // 街の屋根を1枚のスクリーンに見立てて文字を流す（読み込むだけでUIと配線を自前で持つ）。
 import { roofTextState, updateRoofText } from './rooftext.js';
 // PLATEAU の道路データ（tran / MVT）を地形に投影して光らせる。既定はOFF。
@@ -149,6 +152,7 @@ function animate() {
   updateClipPlanes();                       // 中心の切り抜き（クリップ面・断面板の位置）
   updateRoofText(performance.now());        // 屋根テキストの流れ（ONのときだけ動く）
   updateStreetView(performance.now());      // ストリートビューの歩き（立っている間だけ動く）
+  updateSetbackGuide();                     // 壁面後退の面ガイド（選択が変わったときだけ描き直す）
   const terrainTiles = getTerrainTiles();
   if (terrainTiles) terrainTiles.update();  // 地形（建物より先に更新。距離制限なし）
   updateTerrainReady();                     // 地形が十分細かくなったら表示に切り替える

@@ -1584,4 +1584,10 @@ function setEditEnabled(on) {
 export {
   editState, edits, setEditEnabled, resetSelected, resetAll,
   applyEditsToModel, updateSelectionBox,
+  // ★ 壁面後退（buildingsetback.js）へ貸し出す道具。
+  //   あちらは「gml_id → batchid」と「その建物の階高」を必要とするが、どちらも
+  //   決め方（索引の作り方／属性が欠けたときの代替）をこちらが持っているので、
+  //   作り直させずに共有する。同じ建物に対して両者が違う階高を出すと、
+  //   高さ変更と壁面後退で床面積の根拠が食い違ってしまう。
+  gmlIndexOf, floorHeightOf,
 };

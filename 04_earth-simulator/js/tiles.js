@@ -117,6 +117,15 @@ function styleBuildingModel(modelScene) {
 let buildingEditHook = null;
 function setBuildingEditHook(fn) { buildingEditHook = fn; }
 
+// ---- 壁面後退（buildingsetback.js）のフック ----------------------------------
+//   ★ buildingEditHook とは別枠にする。1つの差し込み口を共用させると、後から
+//     設定した側が前を上書きしてしまう（どちらも「読み込むだけで自分を登録する」
+//     作りなので、import の順番しだいで片方が黙って効かなくなる）。
+//   こちらは「対象の建物だけを平面より外側で削る」ための頂点属性とシェーダを
+//   当て直すのに使う。タイルは読み込み・破棄を繰り返すので、届くたびに必要。
+let buildingSetbackHook = null;
+function setBuildingSetbackHook(fn) { buildingSetbackHook = fn; }
+
 // ---- 注目地点が動いたときの通知先 --------------------------------------------
 //   右下の地図の表示範囲と、東西断面の緯度を注目地点に追従させるために使う。
 //   ★ ここも直接 import せず差し込みにする（ui.js は tiles.js を import しているので
@@ -393,6 +402,13 @@ function makeWardTiles(url) {
     if (buildingEditHook) {
       try { buildingEditHook(modelScene); }
       catch (err) { console.warn('建物編集の再適用に失敗:', err); }
+    }
+    // 壁面後退（削り）も当て直す。
+    //   ⚠️ buildingEditHook の後で呼ぶこと。あちらは元の座標から作り直すので、
+    //     順番が逆だと後退で書いた頂点属性の前提（頂点の並び）がずれる。
+    if (buildingSetbackHook) {
+      try { buildingSetbackHook(modelScene); }
+      catch (err) { console.warn('壁面後退の再適用に失敗:', err); }
     }
     // 屋根テキストの投影シェーダも同様に当て直す。
     if (roofTextHook) {
@@ -1044,7 +1060,8 @@ export {
   setLoadPhase, updateLoadPhase, resetWardTiles, makeWardTiles,
   sharedCache, downscaleTexture, dracoLoader,
   setFocusLatLon, runEvictBurst, updateTerrainReady,
-  setBuildingColorMode, buildingColorState, setBuildingEditHook, setFocusChangeHandler,
+  setBuildingColorMode, buildingColorState, setBuildingEditHook, setBuildingSetbackHook,
+  setFocusChangeHandler,
   setRoofTextHook, setRoadOverlayHook,
   reloadAllTiles, tilesBusy,
   terrainTintState, setTerrainTintStep, setImageryChangeHandler,

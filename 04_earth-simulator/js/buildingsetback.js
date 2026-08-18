@@ -1,9 +1,16 @@
 // =============================================================================
-// buildingsetback — 選んだ建物を「後退面」より外側だけ削る（壁面後退）。
+// buildingsetback — 選んだ建物を、引いた鉛直面で切る。切り方は2通り。
 //
 //   高さの上げ下げ（buildingedit.js）に対して、こちらは水平方向の操作。
-//   ユーザーが決めた鉛直な平面より道路側にはみ出している部分を削り取り、
-//   削れた体積に相当する床面積を出す。
+//   ユーザーが地面を2点クリックして決めた鉛直面を基準に、
+//
+//     ① 壁面後退 … 面より外側（道路側）を【削り落とす】。
+//        削れた体積に相当する床面積を出す。
+//     ② 分割     … 面の【両側とも残し】、側ごとに違う絶対高さへ揃える。
+//        こちらは削らないので床面積の増減は buildingedit 側の集計に乗る。
+//
+//   どちらも同じ面・同じ対象の仕組みを共有しており、排他に切り替わる
+//   （同じ建物に両方かけると二重に描かれるため）。
 //
 //   【なぜ頂点を動かさないのか — 前回の失敗から】
 //     以前「線の片側だけ高さを変える」機能を、対象建物の三角形を独立メッシュへ
@@ -315,6 +322,15 @@ function setSetbackLine(ax, az, bx, bz) {
   syncPlaneUniform();
 }
 
+/* いま適用中のもの（削る／分割）を、対象を選び直さずに作り直す。
+   ★ 面を引き直した・後退量を変えた・削る側を反転した、のいずれでも呼ぶ。
+     どれも「対象は同じまま、面だけが変わった」場面なので、
+     建物を選び直させる必要がない。 */
+function reapplyCurrent() {
+  if (splitState.active) applySplit({ keepTargets: true });
+  else if (setbackState.active) applySetback({ keepTargets: true });
+}
+
 /* 線からずらす量[m]。正で削る側が広がる。 */
 function setSetbackOffset(m) {
   setbackState.offset = Number(m) || 0;
@@ -328,9 +344,16 @@ function flipSetbackSide() {
 }
 
 /* いま選択中の建物を対象にして、削りを有効にする。 */
-function applySetback() {
-  targets.clear();
-  for (const gmlId of editState.selection.keys()) targets.add(gmlId);
+/* keepTargets … true なら【いま適用中の対象をそのまま使う】。
+   ★ 後退量や切断面を調整するときに使う。適用したあと建物の選択を外していても、
+     対象は targets に控えてあるので選び直さずに済む。
+     ⚠️ 選択から作り直してしまうと、選択が空の瞬間に対象がゼロになって
+       それまでの削り・分割が消える（実際そうなっていた）。 */
+function applySetback({ keepTargets = false } = {}) {
+  if (!keepTargets) {
+    targets.clear();
+    for (const gmlId of editState.selection.keys()) targets.add(gmlId);
+  }
   if (!targets.size) return { ok: false, reason: '建物が選ばれていません' };
   if (!setbackState.line) return { ok: false, reason: '後退面が決まっていません' };
   // 分割とは併用しない（同じ建物に両方かけると二重に描かれる）
@@ -484,10 +507,13 @@ function forEachTargetTriangle(fn) {
   for (const t of wardTiles) {
     t.forEachLoadedModel((modelScene) => {
       const index = gmlIndexOf(modelScene);
-      const wanted = new Set();
+      // ★ batchId -> gmlId の対応も持たせる（Set ではなく Map）。
+      //   分割で「棟ごと」に三角形を仕分けるために、どの棟の三角形かを
+      //   呼び出し側へ返す必要がある。
+      const wanted = new Map();
       for (const gmlId of targets) {
         const b = index.get(gmlId);
-        if (b !== undefined) wanted.add(b);
+        if (b !== undefined) wanted.set(b, gmlId);
       }
       if (!wanted.size) return;
       modelScene.traverse((mesh) => {
@@ -512,8 +538,9 @@ function forEachTargetTriangle(fn) {
       const i0 = idx ? idx[f * 3] : f * 3;
       const i1 = idx ? idx[f * 3 + 1] : f * 3 + 1;
       const i2 = idx ? idx[f * 3 + 2] : f * 3 + 2;
-      if (!cand.wanted.has(bid.getX(i0))) continue;
-      fn(cand, i0, i1, i2, wx, wy, wz);
+      const gmlId = cand.wanted.get(bid.getX(i0));
+      if (gmlId === undefined) continue;
+      fn(cand, i0, i1, i2, wx, wy, wz, gmlId);
     }
   }
 }
@@ -554,9 +581,17 @@ function buildCapVerts(plane) {
      照明で暗く落ち、平らな断面に黒い三角形が浮いて見える（実測でこれが起きた）。
      断面は平らなので向きは1つで足り、DoubleSide なので裏から見たときは
      three が法線を反転してくれる。 */
-function makeCapGeometry(verts, plane) {
+function makeCapGeometry(verts, plane, offset = 0) {
   const geom = new THREE.BufferGeometry();
-  geom.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  // ★ offset は面の法線方向へずらす量[m]。両側の断面がまったく同じ平面に
+  //   重なるのを避けるために使う（詳しくは呼び出し側の注記）。
+  const pos = new Float32Array(verts.length);
+  for (let i = 0; i < verts.length; i += 3) {
+    pos[i] = verts[i] + plane.nx * offset;
+    pos[i + 1] = verts[i + 1];
+    pos[i + 2] = verts[i + 2] + plane.nz * offset;
+  }
+  geom.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   const nrm = new Float32Array(verts.length);
   for (let i = 0; i < nrm.length; i += 3) { nrm[i] = plane.nx; nrm[i + 2] = plane.nz; }
   geom.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
@@ -575,6 +610,187 @@ function rebuildCap() {
   if (!verts.length) { requestRender(); return; }
   capGroup.add(new THREE.Mesh(makeCapGeometry(verts, plane), capMat));
   requestRender();
+}
+
+// -----------------------------------------------------------------------------
+// 嵩上げの柱（分割で片側を持ち上げたときに下にできる隙間を埋める）
+//
+//   buildingedit.js の「1棟ずつ編集」で嵩上げしたときの赤い柱と同じ見た目にする。
+//   ★ 柱の平面図形は【底面の輪郭を切断面で片側だけに切ったもの】。
+//     切断面で新しくできる辺（柱の切り口）は、輪郭が切断面と交わる点どうしを
+//     つないで別途張る。この考え方は以前作った「片側だけ高さを変える」機能
+//     （buildingsplit.js。座標を潰す設計が原因で取り下げた）から、柱の輪郭の
+//     取り方だけを引き継いでいる。座標を潰す部分は引き継いでいない。
+// -----------------------------------------------------------------------------
+const COLUMN_BASE_EPS = 0.05;   // 底面の判定に使う許容誤差[m]
+const columnMat = new THREE.MeshStandardMaterial({
+  color: 0xd8402f, roughness: 0.85, metalness: 0.0, side: THREE.DoubleSide,
+  clippingPlanes: buildingClipPlanes,
+  // 柱の側面は、持ち上げた建物の壁と【同じ鉛直面】に並ぶ（同じ輪郭から立ち上がるため）。
+  // 高さの範囲は接するだけで重ならないが、境界の1本だけは深度が拮抗しうるので少し手前へ。
+  polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
+});
+
+/* 底面の輪郭（棟ごと）を集める。
+   ① 壁の下端の辺（三角形の3頂点のうち2つが底にある）を優先する。
+   ② 無ければ、床面キャップ（3頂点とも底）の外周（1回しか現れない辺）で代用する。
+     PLATEAU の建物には壁が底まで届かないものが実在するため（実測で確認済み）。
+   ★ タイルの走査は1回にまとめ、棟ごとに仕分ける。 */
+function buildBaseOutlinesPerBuilding(heightRange) {
+  const wallEdgesByBuilding = new Map();    // gmlId -> [[ax,az,bx,bz], ...]
+  const floorTrisByBuilding = new Map();    // gmlId -> [[x0,z0,x1,z1,x2,z2], ...]
+  forEachTargetTriangle((cand, i0, i1, i2, wx, wy, wz, gmlId) => {
+    const hr = heightRange.get(gmlId);
+    if (!hr) return;
+    const baseY = hr.min;
+    const px = [wx(i0), wx(i1), wx(i2)];
+    const py = [wy(i0), wy(i1), wy(i2)];
+    const pz = [wz(i0), wz(i1), wz(i2)];
+    const atBase = [py[0] <= baseY + COLUMN_BASE_EPS, py[1] <= baseY + COLUMN_BASE_EPS,
+      py[2] <= baseY + COLUMN_BASE_EPS];
+    const n = (atBase[0] ? 1 : 0) + (atBase[1] ? 1 : 0) + (atBase[2] ? 1 : 0);
+    if (n === 3) {
+      let arr = floorTrisByBuilding.get(gmlId);
+      if (!arr) { arr = []; floorTrisByBuilding.set(gmlId, arr); }
+      arr.push([px[0], pz[0], px[1], pz[1], px[2], pz[2]]);
+    } else if (n === 2) {
+      let arr = wallEdgesByBuilding.get(gmlId);
+      if (!arr) { arr = []; wallEdgesByBuilding.set(gmlId, arr); }
+      for (let e = 0; e < 3; e++) {
+        const a = e, b = (e + 1) % 3;
+        if (!atBase[a] || !atBase[b]) continue;
+        arr.push([px[a], pz[a], px[b], pz[b]]);
+      }
+    }
+  });
+  const out = new Map();
+  const allGml = new Set([...wallEdgesByBuilding.keys(), ...floorTrisByBuilding.keys()]);
+  for (const gmlId of allGml) {
+    const wallEdges = wallEdgesByBuilding.get(gmlId);
+    if (wallEdges && wallEdges.length) { out.set(gmlId, wallEdges); continue; }
+    const floorTris = floorTrisByBuilding.get(gmlId) || [];
+    const key = (x, z) => `${Math.round(x * 1000)},${Math.round(z * 1000)}`;
+    const count = new Map();
+    for (const t of floorTris) {
+      for (let e = 0; e < 3; e++) {
+        const ax = t[e * 2], az = t[e * 2 + 1];
+        const b = (e + 1) % 3;
+        const bx = t[b * 2], bz = t[b * 2 + 1];
+        const ka = key(ax, az), kb = key(bx, bz);
+        const k = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+        const rec = count.get(k);
+        if (rec) rec.n++; else count.set(k, { n: 1, e: [ax, az, bx, bz] });
+      }
+    }
+    const edges = [];
+    for (const rec of count.values()) if (rec.n === 1) edges.push(rec.e);
+    out.set(gmlId, edges);
+  }
+  return out;
+}
+
+/* 線分 (x0,z0)→(x1,z1) を、面の「残す側」だけに切り取る。
+   plane={nx,nz,c}、keepPositive なら nx*x+nz*z+c>=0 の側を残す。 */
+function clipSegmentToPlaneSide(x0, z0, x1, z1, plane, keepPositive) {
+  const side = (x, z) => plane.nx * x + plane.nz * z + plane.c;
+  let s0 = side(x0, z0), s1 = side(x1, z1);
+  if (!keepPositive) { s0 = -s0; s1 = -s1; }
+  const in0 = s0 > 0, in1 = s1 > 0;
+  if (in0 && in1) return { seg: [x0, z0, x1, z1], cross: null };
+  if (!in0 && !in1) return { seg: null, cross: null };
+  const t = s0 / (s0 - s1);
+  const cx = x0 + (x1 - x0) * t, cz = z0 + (z1 - z0) * t;
+  return in0 ? { seg: [x0, z0, cx, cz], cross: [cx, cz] } : { seg: [cx, cz, x1, z1], cross: [cx, cz] };
+}
+
+/* 1棟ぶんの柱ジオメトリ。dy<=0（上げていない）か輪郭が無ければ null。
+   ★ 法線は【押し出した辺ごとに、その面の向きで固定する】。
+     ⚠️ computeVertexNormals は三角形の巻き順から法線を出すが、底面の輪郭を
+       集めた時点で辺の向きは揃っていない（特に床面キャップの外周から拾った場合）。
+       すると隣り合う面どうしで法線が表裏バラバラになり、DoubleSide で描かれても
+       明暗だけが交互に変わって【縞模様】に見える。断面で同じ症状に当たったのと同じ理屈。
+       押し出した面の法線は「辺に垂直な水平向き」と分かっているので、計算させずに与える。 */
+function buildColumnGeometry(edges, baseY, dy, plane, keepPositive) {
+  if (dy <= 0 || !edges || !edges.length) return null;
+  const out = [];
+  const nrm = [];
+  const crossings = [];
+  /* 辺 (x0,z0)→(x1,z1) を baseY から baseY+dy まで鉛直に押し出す。 */
+  const pushWall = (x0, z0, x1, z1) => {
+    let nx = -(z1 - z0), nz = (x1 - x0);      // 辺に垂直な水平ベクトル
+    const len = Math.hypot(nx, nz);
+    if (len < 1e-9) return;                    // 長さゼロの辺は面にならない
+    nx /= len; nz /= len;
+    out.push(x0, baseY, z0, x1, baseY, z1, x1, baseY + dy, z1);
+    out.push(x0, baseY, z0, x1, baseY + dy, z1, x0, baseY + dy, z0);
+    for (let k = 0; k < 6; k++) nrm.push(nx, 0, nz);
+  };
+  for (const [ax, az, bx, bz] of edges) {
+    const c = clipSegmentToPlaneSide(ax, az, bx, bz, plane, keepPositive);
+    if (c.cross) crossings.push(c.cross);
+    if (!c.seg) continue;
+    pushWall(c.seg[0], c.seg[1], c.seg[2], c.seg[3]);
+  }
+  // 切断面で新しくできる辺（柱の切り口）。交点を線に沿って並べ、隣り合う2点ずつを辺にする。
+  if (crossings.length >= 2) {
+    const L = setbackState.line;
+    let ux = L.bx - L.ax, uz = L.bz - L.az;
+    const ulen = Math.hypot(ux, uz) || 1; ux /= ulen; uz /= ulen;
+    const uniq = [];
+    for (const [cx, cz] of crossings) {
+      const t = cx * ux + cz * uz;
+      if (!uniq.some((u) => Math.abs(u.t - t) < 0.01)) uniq.push({ t, x: cx, z: cz });
+    }
+    uniq.sort((p, q) => p.t - q.t);
+    for (let i = 0; i + 1 < uniq.length; i += 2) {
+      pushWall(uniq[i].x, uniq[i].z, uniq[i + 1].x, uniq[i + 1].z);
+    }
+  }
+  if (out.length < 9) return null;
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(out, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+  g.computeBoundingBox();
+  g.computeBoundingSphere();
+  return g;
+}
+
+/* 断面の頂点を【棟ごと】に作る。分割では棟ごとに高さを別々に動かすので、
+   断面も棟ごとに独立していないと、1棟だけ動かしたときに他の棟の断面まで
+   一緒に動いてしまう。
+   ★ タイルの走査は1回にまとめる（棟数ぶんの繰り返しにしない）。 */
+function buildCapVertsPerBuilding(plane) {
+  const L = setbackState.line;
+  let ux = L.bx - L.ax, uz = L.bz - L.az;
+  const ulen = Math.hypot(ux, uz) || 1; ux /= ulen; uz /= ulen;
+
+  const segsByBuilding = new Map();   // gmlId -> segs[]
+  forEachTargetTriangle((cand, i0, i1, i2, wx, wy, wz, gmlId) => {
+    let segs = segsByBuilding.get(gmlId);
+    if (!segs) { segs = []; segsByBuilding.set(gmlId, segs); }
+    triCutSegment(wx(i0), wy(i0), wz(i0), wx(i1), wy(i1), wz(i1),
+      wx(i2), wy(i2), wz(i2), plane, ux, uz, segs);
+  });
+
+  const px = -plane.nx * plane.c, pz = -plane.nz * plane.c;
+  const baseU = px * ux + pz * uz;
+  const out = new Map();   // gmlId -> verts[]
+  let totalSegs = 0, totalTris = 0;
+  for (const [gmlId, segs] of segsByBuilding) {
+    totalSegs += segs.length / 4;
+    if (!segs.length) { out.set(gmlId, []); continue; }
+    const sv = fillByScanline(segs);
+    const verts = [];
+    for (let i = 0; i < sv.length; i += 2) {
+      const uu = sv[i] - baseU;
+      verts.push(px + ux * uu, sv[i + 1], pz + uz * uu);
+    }
+    totalTris += verts.length / 9;
+    out.set(gmlId, verts);
+  }
+  capStats.segs = totalSegs;
+  capStats.tris = totalTris;
+  return out;
 }
 
 // =============================================================================
@@ -599,36 +815,71 @@ function rebuildCap() {
 //     シェーダの仕事に任せる。
 // =============================================================================
 // 分割の状態。sides[0] が面の正側、sides[1] が負側。
+//   targetH … その側を揃える【絶対高さ】[m]。NaN のうちは「まだ触っていない」で、
+//     各棟は元の高さのまま（棟ごとの group.position.y = 0）。
 const splitState = {
   active: false,
   sides: [
-    { dy: 0, group: null, cap: null },
-    { dy: 0, group: null, cap: null },
+    { targetH: NaN, group: null, cap: null },
+    { targetH: NaN, group: null, cap: null },
   ],
 };
 
-/* 対象建物の三角形を、マテリアルごとに独立ジオメトリへ抜き出す。
+// 分割中の棟ごとの情報（gmlId -> {baseH, baseY, edges}）。
+//   ★ rebuildSplit で1回だけ集めて使い回す。柱はスライダーを動かすたびに
+//     高さが変わって作り直しが要るが、その都度タイルを走査し直す必要はない
+//     （底面の輪郭・元の高さは dy に関係なく不変なため）。
+let buildingInfoCache = new Map();
+
+/* 対象建物の三角形を、【棟ごと・マテリアルごと】に独立ジオメトリへ抜き出す。
    ⚠️ 1棟の建物はマテリアルごとに複数メッシュへ分かれていることがある
      （LOD2 はテクスチャが複数枚）。ひとまとめにすると見た目が壊れるので、
-     元のマテリアルごとに分けて作る。 */
+     元のマテリアルごとに分けて作る。
+   ⚠️ 棟ごとに分けるのは、複数棟を選んだときに「奥側を8mに揃える」のような
+     【絶対高さ指定】をするため。棟によって元の高さが違うので、同じ絶対高さに
+     揃えるには棟ごとに違う移動量（絶対高さ − その棟の元の高さ）が要る。
+     ついでにワールドYの範囲も棟ごとに集計しておく（次の baseHeightFor で使う。
+     属性 bldg:measuredHeight が無い棟の高さをここから代用する）。 */
 function extractBuildingMeshes() {
-  const byMat = new Map();   // 元マテリアル -> { pos:[], uv:[], hasUV:bool }
-  forEachTargetTriangle((cand, i0, i1, i2, wx, wy, wz) => {
+  const byBuilding = new Map();     // gmlId -> Map(元マテリアル -> {pos,uv,hasUV})
+  const heightRange = new Map();    // gmlId -> { min, max }（ワールドY）
+  forEachTargetTriangle((cand, i0, i1, i2, wx, wy, wz, gmlId) => {
     const mesh = cand.mesh;
     const mat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
     if (!mat) return;
-    let rec = byMat.get(mat);
-    if (!rec) { rec = { pos: [], uv: [], hasUV: true }; byMat.set(mat, rec); }
+    let matMap = byBuilding.get(gmlId);
+    if (!matMap) { matMap = new Map(); byBuilding.set(gmlId, matMap); }
+    let rec = matMap.get(mat);
+    if (!rec) { rec = { pos: [], uv: [], hasUV: true }; matMap.set(mat, rec); }
+    let hr = heightRange.get(gmlId);
+    if (!hr) { hr = { min: Infinity, max: -Infinity }; heightRange.set(gmlId, hr); }
     const uvAttr = mesh.geometry.attributes.uv;
     for (const i of [i0, i1, i2]) {
-      rec.pos.push(wx(i), wy(i), wz(i));
+      const y = wy(i);
+      rec.pos.push(wx(i), y, wz(i));
       // ⚠️ UV は【必ず頂点数ぶん詰める】こと。無い頂点を飛ばすと配列の長さが
       //   位置とずれ、テクスチャが全く別の場所を指してしまう。
       rec.uv.push(uvAttr ? uvAttr.getX(i) : 0, uvAttr ? uvAttr.getY(i) : 0);
       if (!uvAttr) rec.hasUV = false;
+      if (y < hr.min) hr.min = y;
+      if (y > hr.max) hr.max = y;
     }
   });
-  return byMat;
+  return { byBuilding, heightRange };
+}
+
+/* その棟の元の高さ[m]。
+   ① 属性 bldg:measuredHeight（選択時に控えてある info.height）
+   ② 無ければ、いま抜き出した三角形のワールドY範囲（min〜max）から実測
+   両方とも駄目なら NaN（このときは絶対高さの計算を諦め、常に dy=0 にする）。
+   ★ buildingedit.js の baseHeightOf と同じ考え方（属性 → 実測の順）。 */
+function baseHeightFor(gmlId, heightRange) {
+  const info = editState.selection.get(gmlId);
+  const attrH = info ? Number(info.height) : NaN;
+  if (Number.isFinite(attrH) && attrH > 0) return attrH;
+  const hr = heightRange.get(gmlId);
+  if (hr && Number.isFinite(hr.min) && Number.isFinite(hr.max)) return hr.max - hr.min;
+  return NaN;
 }
 
 /* 側ごとの平面（THREE.Plane）。keepPositive なら面の正側だけを残す。 */
@@ -638,20 +889,39 @@ function makeSidePlane(plane, keepPositive) {
   return keepPositive ? new THREE.Plane(n, c) : new THREE.Plane(n.negate(), -c);
 }
 
+/* ⚠️ side.group の直下は【棟ごとの sub（Group）】と【柱（Mesh）】が混在する
+   （sub は building.js の位置合わせ、柱は setSideHeight のたびに直下へ足し引きする）。
+   直下だけを見て m.geometry を呼ぶと、sub（Group には geometry が無い）で例外になる。
+   traverse で実際の Mesh だけを拾うこと。 */
 function disposeSide(side) {
   if (side.group) {
-    for (const m of side.group.children) {
-      m.geometry.dispose();
-      if (m.material) m.material.dispose();
-    }
+    side.group.traverse((o) => {
+      if (!o.isMesh) return;
+      o.geometry.dispose();
+      if (o.material) o.material.dispose();
+    });
     scene.remove(side.group);
     side.group = null;
   }
   if (side.cap) {
-    for (const m of side.cap.children) { m.geometry.dispose(); m.material.dispose(); }
+    side.cap.traverse((o) => {
+      if (!o.isMesh) return;
+      o.geometry.dispose();
+      if (o.material) o.material.dispose();
+    });
     scene.remove(side.cap);
     side.cap = null;
   }
+}
+
+/* 側の中に棟ごとの小グループを1つ作る（メッシュ本体・断面のどちらも同じ形）。
+   userData に gmlId と baseH（その棟の元の高さ）を持たせておき、
+   setSideHeight はこれを見て「絶対高さ − baseH」を position.y に入れる。 */
+function makeBuildingSubGroup(gmlId, baseH, targetH) {
+  const g = new THREE.Group();
+  g.userData = { gmlId, baseH };
+  g.position.y = Number.isFinite(targetH) && Number.isFinite(baseH) ? targetH - baseH : 0;
+  return g;
 }
 
 /* 分割を作り直す。 */
@@ -660,84 +930,182 @@ function rebuildSplit() {
   const plane = computePlane();
   if (!splitState.active || !plane || !targets.size) { requestRender(); return; }
 
-  const byMat = extractBuildingMeshes();
-  if (!byMat.size) { requestRender(); return; }
-
-  // 断面の形（両側で同じ。位置だけ側ごとに動かす）
-  const capVerts = buildCapVerts(plane);
+  const { byBuilding, heightRange } = extractBuildingMeshes();
+  if (!byBuilding.size) { requestRender(); return; }
+  const capVertsByBuilding = buildCapVertsPerBuilding(plane);
+  // 柱の輪郭は側に依存しない（底面の形そのもの）ので、side のループの外で1回だけ集める。
+  const outlinesByBuilding = buildBaseOutlinesPerBuilding(heightRange);
 
   for (let si = 0; si < 2; si++) {
     const side = splitState.sides[si];
     const clip = makeSidePlane(plane, si === 0);
     const group = new THREE.Group();
-    for (const [srcMat, rec] of byMat) {
-      const g = new THREE.BufferGeometry();
-      g.setAttribute('position', new THREE.Float32BufferAttribute(rec.pos, 3));
-      g.setAttribute('uv', new THREE.Float32BufferAttribute(rec.uv, 2));
-      // 元の建物と同じ見た目にするため、_setback は全部 0（＝消さない）で持たせる。
-      //   ⚠️ 属性が無いと、元マテリアル由来のシェーダが参照する attribute が
-      //     欠けた状態になる。値が 0 なら「対象でない」と読まれるので安全。
-      g.setAttribute('_setback', new THREE.BufferAttribute(
-        new Float32Array(rec.pos.length / 3), 1));
-      g.computeVertexNormals();
-      g.computeBoundingBox();
-      g.computeBoundingSphere();
-      // ★ 元のマテリアルは【clone しない】。テクスチャだけ借りて新しく作る。
-      //   ⚠️ タイルの建物マテリアルには、フェード（3d-tiles-renderer）・裏面の灰色
-      //     （makeInteriorCap）・屋根テキスト・壁面後退と、何段もの onBeforeCompile が
-      //     積み重なっている。clone するとそれらを丸ごと引き継ぐが、フェードは
-      //     タイルごとの状態を uniform で持つため、切り離した途端に「完全に透明」の
-      //     ままになる。実測で、位置も形も正しいのに1画素も描かれなかった。
-      //   素のマテリアルなら余計な状態を持たないので、確実に見える。
-      const m = new THREE.MeshStandardMaterial({
-        // UV が取れなかったときはテクスチャを外す（UV 無しで map を残すと全頂点が
-        // 同じ画素を引いて真っ黒になる）
-        map: rec.hasUV ? srcMat.map || null : null,
-        color: srcMat.color ? srcMat.color.clone() : new THREE.Color(0xffffff),
-        metalness: 0.0, roughness: 0.85,
-        side: THREE.DoubleSide,
-        // ⚠️ 箱庭の面（buildingClipPlanes）は毎フレーム動かされるので、
-        //   要素の参照を保ったまま側の面を足すこと（配列だけ新しくする）。
-        clippingPlanes: [...buildingClipPlanes, clip],
-      });
-      m.clipShadows = false;
-      group.add(new THREE.Mesh(g, m));
+    const capGrpAll = new THREE.Group();
+
+    for (const [gmlId, matMap] of byBuilding) {
+      const baseH = baseHeightFor(gmlId, heightRange);
+      const sub = makeBuildingSubGroup(gmlId, baseH, side.targetH);
+      for (const [srcMat, rec] of matMap) {
+        const g = new THREE.BufferGeometry();
+        g.setAttribute('position', new THREE.Float32BufferAttribute(rec.pos, 3));
+        g.setAttribute('uv', new THREE.Float32BufferAttribute(rec.uv, 2));
+        // 元の建物と同じ見た目にするため、_setback は全部 0（＝消さない）で持たせる。
+        //   ⚠️ 属性が無いと、元マテリアル由来のシェーダが参照する attribute が
+        //     欠けた状態になる。値が 0 なら「対象でない」と読まれるので安全。
+        g.setAttribute('_setback', new THREE.BufferAttribute(
+          new Float32Array(rec.pos.length / 3), 1));
+        g.computeVertexNormals();
+        g.computeBoundingBox();
+        g.computeBoundingSphere();
+        // ★ 元のマテリアルは【clone しない】。テクスチャだけ借りて新しく作る。
+        //   ⚠️ タイルの建物マテリアルには、フェード（3d-tiles-renderer）・裏面の灰色
+        //     （makeInteriorCap）・屋根テキスト・壁面後退と、何段もの onBeforeCompile が
+        //     積み重なっている。clone するとそれらを丸ごと引き継ぐが、フェードは
+        //     タイルごとの状態を uniform で持つため、切り離した途端に「完全に透明」の
+        //     ままになる。実測で、位置も形も正しいのに1画素も描かれなかった。
+        //   素のマテリアルなら余計な状態を持たないので、確実に見える。
+        const m = new THREE.MeshStandardMaterial({
+          // UV が取れなかったときはテクスチャを外す（UV 無しで map を残すと全頂点が
+          // 同じ画素を引いて真っ黒になる）
+          map: rec.hasUV ? srcMat.map || null : null,
+          color: srcMat.color ? srcMat.color.clone() : new THREE.Color(0xffffff),
+          metalness: 0.0, roughness: 0.85,
+          side: THREE.DoubleSide,
+          // ⚠️ 箱庭の面（buildingClipPlanes）は毎フレーム動かされるので、
+          //   要素の参照を保ったまま側の面を足すこと（配列だけ新しくする）。
+          clippingPlanes: [...buildingClipPlanes, clip],
+        });
+        m.clipShadows = false;
+        sub.add(new THREE.Mesh(g, m));
+      }
+      group.add(sub);
+
+      // 断面（棟ごとに1枚）。高さは同じ棟の本体と一緒に動く。
+      //   ★ 断面は【側ごとに向きを変えた同じ面】なので、両側に持たせると
+      //     まったく同じ平面に2枚が重なる。深度が拮抗して視点しだいで勝敗が
+      //     入れ替わり、縞模様になる（polygonOffset を側ごとにずらしても、
+      //     同一平面である以上は完全には避けられない）。
+      //   ⚠️ だから断面は【この側のぶんだけ】を持つ。切り口は本来1枚で足りる。
+      //     side.targetH が側ごとに違えば断面も別の高さへ動くので、
+      //     「片側だけ下げたのに断面が動かない」ということも起きない。
+      const capVerts = capVertsByBuilding.get(gmlId) || [];
+      if (capVerts.length) {
+        // ★ 断面は【側ごとに、その側の建物のほうへ僅かにずらして】置く。
+        //   ⚠️ 両側の断面はまったく同じ平面に重なるので、そのままだと深度が拮抗し、
+        //     視点しだいで勝敗が入れ替わって縞模様になる。polygonOffset は
+        //     深度値を動かすだけなので、同一平面では完全には避けられない。
+        //     ジオメトリ自体を離してしまえば確実に決着がつく。
+        //     ずらす量は 1cm。建物の縮尺では見えないが、深度としては十分に離れる。
+        //   ⚠️ 裏面を描かない（FrontSide）方式も試したが、断面がカメラ側を向かない
+        //     角度で【丸ごと消えて穴が開いた】ので採らない。両面のまま離すのが確実。
+        const cg = makeCapGeometry(capVerts, plane, (si === 0 ? 1 : -1) * 0.01);
+        const cm = capMat.clone();
+        // ⚠️ 側のクリップ平面は【付けない】。断面はその平面の【ちょうど上】にあるので、
+        //   dot(n,p)+c が 0 近傍になり、通るか切られるかが浮動小数の誤差で決まる。
+        //   これが縞模様のもう一つの原因だった。断面はすでにその側の形に作ってあり、
+        //   クリップで削る必要がそもそもない。
+        cm.clippingPlanes = buildingClipPlanes;
+        const capSub = makeBuildingSubGroup(gmlId, baseH, side.targetH);
+        capSub.add(new THREE.Mesh(cg, cm));
+        capGrpAll.add(capSub);
+      }
     }
-    group.position.y = side.dy;
     scene.add(group);
     side.group = group;
-
-    // 断面（側ごとに1枚）。高さは建物と一緒に動く。
-    if (capVerts.length) {
-      const cg = makeCapGeometry(capVerts, plane);
-      const cm = capMat.clone();
-      cm.clippingPlanes = [...buildingClipPlanes, clip];
-      const capGrp = new THREE.Group();
-      capGrp.add(new THREE.Mesh(cg, cm));
-      capGrp.position.y = side.dy;
-      scene.add(capGrp);
-      side.cap = capGrp;
-    }
+    scene.add(capGrpAll);
+    side.cap = capGrpAll;
   }
+
+  // 柱は側ごとに作り直す（高さがまだ NaN＝未設定のうちは1本も出ない）。
+  buildingInfoCache = new Map();
+  for (const gmlId of byBuilding.keys()) {
+    buildingInfoCache.set(gmlId, {
+      baseH: baseHeightFor(gmlId, heightRange),
+      baseY: heightRange.get(gmlId)?.min,
+      edges: outlinesByBuilding.get(gmlId),
+    });
+  }
+  rebuildColumnsForSide(0);
+  rebuildColumnsForSide(1);
+
   markSectionDirty();
   requestRender();
 }
 
-/* 片側の高さを設定する（負で下げる）。 */
-function setSideHeight(index, dy) {
+/* 側の柱を作り直す。buildingInfoCache（底面の輪郭・元の高さ）はタイル走査済みの
+   ものを使い回すので、スライダーを動かすたびにここを呼んでも軽い。
+   ⚠️ side.group の直下には棟ごとの sub（Group）と柱（Mesh）が混在するので、
+     柱だけを見分けて先に取り除いてから作り直す（sub は setSideHeight が
+     別に動かすので、ここでは触らない）。 */
+function rebuildColumnsForSide(index) {
+  const side = splitState.sides[index];
+  if (!side || !side.group) return;
+  const plane = computePlane();
+  for (const child of [...side.group.children]) {
+    if (!child.isMesh) continue;   // Mesh＝柱、Group＝棟の sub（残す）
+    side.group.remove(child);
+    child.geometry.dispose();
+    child.material.dispose();
+  }
+  if (!plane) return;
+  const keepPositive = index === 0;
+  const clip = makeSidePlane(plane, keepPositive);
+  for (const [gmlId, info] of buildingInfoCache) {
+    const dy = Number.isFinite(side.targetH) && Number.isFinite(info.baseH)
+      ? side.targetH - info.baseH : 0;
+    if (dy <= 0 || !Number.isFinite(info.baseY)) continue;
+    const colGeo = buildColumnGeometry(info.edges, info.baseY, dy, plane, keepPositive);
+    if (!colGeo) continue;
+    const cmat = columnMat.clone();
+    cmat.clippingPlanes = [...buildingClipPlanes, clip];
+    side.group.add(new THREE.Mesh(colGeo, cmat));
+  }
+}
+
+/* 片側を【絶対高さ】targetH[m] に揃える。
+   ★ 複数棟を選んでいても、それぞれの元の高さ（baseH）が違えば動く量は棟ごとに
+     変わる。「奥側を8mに」なら、20m の棟は -12m、5m の棟は +3m 動く、という具合。
+   targetH が NaN なら「まだ触っていない」＝全棟とも動かさない（position.y=0）。 */
+function setSideHeight(index, targetH) {
   const side = splitState.sides[index];
   if (!side) return;
-  side.dy = Number(dy) || 0;
-  if (side.group) side.group.position.y = side.dy;
-  if (side.cap) side.cap.position.y = side.dy;
+  side.targetH = Number.isFinite(targetH) ? Number(targetH) : NaN;
+  const apply = (grp) => {
+    if (!grp) return;
+    for (const sub of grp.children) {
+      if (!sub.isGroup) continue;   // 柱（Mesh）はここでは動かさない。下で作り直す。
+      const baseH = sub.userData.baseH;
+      sub.position.y = Number.isFinite(side.targetH) && Number.isFinite(baseH)
+        ? side.targetH - baseH : 0;
+    }
+  };
+  apply(side.group);
+  apply(side.cap);
+  // 柱は高さそのもの（ジオメトリ）が変わるので、動かすのではなく作り直す。
+  //   ⚠️ buildingInfoCache（底面の輪郭・元の高さ）はタイルを走査し直さず使い回すので、
+  //     スライダーをドラッグするたびに呼んでも重くならない。
+  rebuildColumnsForSide(index);
   markSectionDirty();
   requestRender();
+}
+
+/* 選択中の建物の代表的な「元の高さ」。UI のスライダーを最初にどこへ置くかの
+   目安に使う（実際に動かす量は棟ごとに baseHeightFor で別々に決まる）。 */
+function representativeBaseHeight() {
+  const info = editState.primary;
+  if (!info) return NaN;
+  const h = Number(info.height);
+  if (Number.isFinite(h) && h > 0) return h;
+  return Number.isFinite(info.measuredHeight) ? info.measuredHeight : NaN;
 }
 
 /* 両側を残して切る。選択中の建物が対象。 */
-function applySplit() {
-  targets.clear();
-  for (const gmlId of editState.selection.keys()) targets.add(gmlId);
+/* keepTargets … applySetback と同じ意味（対象を選び直さずに作り直す）。 */
+function applySplit({ keepTargets = false } = {}) {
+  if (!keepTargets) {
+    targets.clear();
+    for (const gmlId of editState.selection.keys()) targets.add(gmlId);
+  }
   if (!targets.size) return { ok: false, reason: '建物が選ばれていません' };
   if (!setbackState.line) return { ok: false, reason: '切断面が決まっていません' };
   // 「削る」とは併用しない（同じ建物に両方かけると二重になる）
@@ -753,8 +1121,8 @@ function applySplit() {
 /* 分割を解除して元に戻す。 */
 function clearSplit() {
   splitState.active = false;
-  splitState.sides[0].dy = 0;
-  splitState.sides[1].dy = 0;
+  splitState.sides[0].targetH = NaN;
+  splitState.sides[1].targetH = NaN;
   targets.clear();
   markAll();
   rebuildSplit();
@@ -836,7 +1204,13 @@ function ensureGuide() {
 function guideVisible() {
   if (!setbackState.line || !pickState.showGuide) return false;
   if (!editState.enabled) return false;
-  if (setbackState.active) return true;
+  // ★ 適用中（削る／分割）は実際の切り口メッシュが同じ平面に出ているので、
+  //   プレビュー用の半透明の板は消す。
+  //   ⚠️ 消し忘れると、実際の断面と全く同じ平面に半透明の板が重なり、
+  //     深度精度の限界でZファイトを起こして縞模様になる（実測でこれが起きた）。
+  //     プレビューの役目は「切る前にどこで切れるかを見せる」ことなので、
+  //     切ったあとは要らない。
+  if (setbackState.active || splitState.active) return false;
   return editState.selection.size > 0 || pickState.picking;
 }
 
@@ -905,6 +1279,8 @@ function onPickDown(ev) {
   pickState.showGuide = true;
   renderer.domElement.style.cursor = '';
   controls.enabled = true;
+  // ★ すでに適用中なら、新しい面で作り直す。建物は選び直さなくてよい。
+  reapplyCurrent();
   updateGuide();
   syncSetbackUI();
 }
@@ -938,9 +1314,12 @@ function syncSetbackUI() {
   if (!setbackState.line) {
     lines.push('「面を引く」で地面を2点クリックしてください');
   } else if (splitState.active) {
-    const a = splitState.sides[0].dy, b = splitState.sides[1].dy;
+    const a = splitState.sides[0].targetH, b = splitState.sides[1].targetH;
     lines.push(`${targets.size} 棟を両側に分割中`);
-    if (a || b) lines.push(`手前 ${a.toFixed(1)}m ／ 奥 ${b.toFixed(1)}m`);
+    const fmtH = (v) => (Number.isFinite(v) ? `${v.toFixed(1)}m` : '未設定');
+    if (Number.isFinite(a) || Number.isFinite(b)) {
+      lines.push(`手前 ${fmtH(a)} ／ 奥 ${fmtH(b)}（絶対高さ・棟ごとに揃える）`);
+    }
   } else if (setbackState.active) {
     const fa = measureCutFloorArea();
     const n = targets.size;
@@ -961,16 +1340,18 @@ function syncSetbackUI() {
     info: el('setbackInfo'), offset: el('setbackOffset'),
   };
   pick.addEventListener('click', startPicking);
+  // 削る側の反転・後退量の変更・面の引き直しは、いずれも【対象を選び直さない】。
+  //   適用したあとで建物の選択を外していても、そのまま調整を続けられる。
   el('setbackFlip').addEventListener('click', () => {
     flipSetbackSide();
     updateGuide();
-    if (setbackState.active) applySetback();   // 適用中なら削り直す
+    reapplyCurrent();
     syncSetbackUI();
   });
   sbUi.offset.addEventListener('input', () => {
     setSetbackOffset(sbUi.offset.value);
     updateGuide();
-    if (setbackState.active) applySetback();
+    reapplyCurrent();
     syncSetbackUI();
   });
   el('setbackApply').addEventListener('click', () => {
@@ -989,11 +1370,19 @@ function syncSetbackUI() {
   el('splitApply').addEventListener('click', () => {
     const r = applySplit();
     if (!r.ok) { setInfo(r.reason); return; }
-    sbUi.dyA.value = '0'; sbUi.dyB.value = '0';
-    sbUi.dyAVal.textContent = '0 m'; sbUi.dyBVal.textContent = '0 m';
+    // ★ スライダーの初期位置は「代表の棟の元の高さ」に合わせるだけの見た目調整。
+    //   実際にはまだ setSideHeight を呼ばない（targetH は NaN のまま）ので、
+    //   ボタンを押した直後は【どの棟も動かない】。触って初めて絶対高さが効く。
+    const h = representativeBaseHeight();
+    const initial = Number.isFinite(h) ? Math.min(100, Math.max(0, h)) : 0;
+    sbUi.dyA.value = String(initial); sbUi.dyB.value = String(initial);
+    sbUi.dyAVal.textContent = `${initial.toFixed(1)} m`;
+    sbUi.dyBVal.textContent = `${initial.toFixed(1)} m`;
     syncSetbackUI();
   });
   el('splitClear').addEventListener('click', () => { clearSplit(); syncSetbackUI(); });
+  // スライダーの値は【絶対高さ】。棟ごとの実際の移動量は setSideHeight が
+  // 棟ごとの元の高さを見て別々に計算する（複数棟を選んでいても同じ絶対高さに揃う）。
   const bindDy = (input, label, index) => input.addEventListener('input', () => {
     const v = Number(input.value);
     setSideHeight(index, v);
@@ -1025,6 +1414,6 @@ export {
   setbackState, targets,
   setSetbackLine, setSetbackOffset, flipSetbackSide,
   applySetback, clearSetback, updateSetbackGuide, capStats,
-  splitState, applySplit, clearSplit, setSideHeight,
+  splitState, applySplit, clearSplit, setSideHeight, representativeBaseHeight,
   measureCutArea, measureCutFloorArea,
 };

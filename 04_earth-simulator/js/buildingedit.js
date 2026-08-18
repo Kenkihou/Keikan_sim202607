@@ -1277,7 +1277,8 @@ function syncUI() {
   // ★ 選択が無くても呼ぶ。集計の対象は選択ではなく【編集済みの全棟】なので、
   //   選択を外した瞬間にパネルが消えてしまってはいけない。
   syncFloorArea();
-  ui.panel.style.display = editState.enabled ? '' : 'none';
+  // パネルは編集モードのときだけ出す（.on で表示を切り替える）
+  ui.panel.classList.toggle('on', editState.enabled);
   if (!n) {
     ui.info.textContent = editState.enabled
       ? '建物をダブルクリックで選択／Shift＋ドラッグで矩形選択（Alt併用で追加）'
@@ -1539,7 +1540,7 @@ function setEditEnabled(on) {
   const onCb = el('buildingEditOn');
   if (!onCb) return;   // この画面に編集UIが無い構成でも動くように
   ui = {
-    panel: el('buildingEditPanel'),
+    panel: el('editPanel'),
     info: el('buildingEditInfo'),
     id: el('buildingEditId'),
     controls: el('buildingEditControls'),
@@ -1571,6 +1572,20 @@ function setEditEnabled(on) {
   ui.setTo.addEventListener('click', () => setSelectedHeight(Number(ui.setToHeight.value)));
   el('buildingEditReset').addEventListener('click', resetSelected);
   el('buildingEditResetAll').addEventListener('click', resetAll);
+
+  // 「高さの変更」／「壁面後退」の切り替え。
+  //   ★ 同時に使うものではないので排他にする（壁面後退の途中で高さのスライダーを
+  //     触ってしまう、といった取り違えを防ぐ）。中身は消さずに表示だけ切り替えるので、
+  //     行き来しても入力値は保たれる。
+  const tabs = [...document.querySelectorAll('.ep-tab')];
+  const pages = [...document.querySelectorAll('.ep-page')];
+  for (const tab of tabs) {
+    tab.addEventListener('click', () => {
+      const want = tab.dataset.epTab;
+      for (const t of tabs) t.classList.toggle('active', t === tab);
+      for (const p of pages) p.style.display = (p.dataset.epPage === want) ? '' : 'none';
+    });
+  }
 
   const dom = renderer.domElement;
   dom.addEventListener('pointerdown', onPointerDown);

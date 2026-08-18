@@ -81,6 +81,60 @@
     body.embedded #tileLoading { bottom: 104px; }
     /* ※ 「モデリング画面に戻る」ボタンは廃止した。
          親アプリ下部の切り抜きスライダーを 0（地球なし）に戻せば帰れるので不要。 */
+    /* 浮いているパネルの見出しは「つまんで動かせる」ことが分かるようにする。
+       ドラッグ中に文字が選択されると引っかかるので選択も切る。panelmove.js が付ける。 */
+    .panel-drag-handle { cursor: move; user-select: none; }
+
+    /* ---------- 建物編集の操作パネル（画面右・フローティング）---------- */
+    /*  ⚠️ 床面積パネル(#floorAreaPanel)も画面右上に出るので、そちらの下に置く。
+        高さは中身しだいなので、重ならないよう top を大きめに取り、
+        入りきらないときはパネル内でスクロールさせる。 */
+    #editPanel {
+      position: fixed; top: 210px; right: 12px; z-index: 12; display: none;
+      box-sizing: border-box; width: 320px; max-height: calc(100vh - 240px);
+      overflow-y: auto; overscroll-behavior: contain;
+      padding: 10px 12px; border-radius: 10px;
+      color: #e8eef7; background: rgba(15, 23, 42, 0.82);
+      backdrop-filter: blur(6px);
+      border: 1px solid rgba(148, 163, 184, 0.28);
+      box-shadow: 0 4px 20px rgba(0,0,0,0.35);
+      font-size: 12px; line-height: 1.5;
+      scrollbar-width: thin; scrollbar-color: rgba(148,163,184,0.5) transparent;
+    }
+    #editPanel.on { display: block; }
+    #editPanel::-webkit-scrollbar { width: 8px; }
+    #editPanel::-webkit-scrollbar-track { background: transparent; }
+    #editPanel::-webkit-scrollbar-thumb { background: rgba(148,163,184,0.45); border-radius: 4px; }
+    #editPanel h2 {
+      margin: 0 0 6px; font-size: 12px; font-weight: 700; color: #dbe9fb;
+      padding-bottom: 5px; border-bottom: 1px solid rgba(148,163,184,0.25);
+    }
+    #editPanel label { display: block; }
+    #editPanel .muted { color: #9fb0c7; }
+    #editPanel input[type=number] {
+      font: inherit; font-size: 12px; color: #e8eef7;
+      background: rgba(148,163,184,0.14); border: 1px solid rgba(148,163,184,0.3);
+      border-radius: 4px; padding: 1px 4px;
+    }
+    #editPanel button {
+      font: inherit; font-size: 11px; color: #cdd8e6; cursor: pointer;
+      background: rgba(148,163,184,0.14); border: 1px solid rgba(148,163,184,0.3);
+      border-radius: 6px; padding: 3px 9px; transition: background .15s, border-color .15s;
+    }
+    #editPanel button:hover { background: rgba(148,163,184,0.28); }
+    #editPanel input[type=range] { accent-color: #cc2222; }
+    /* 「高さの変更」／「壁面後退」の切り替え。同時には使わないので排他にする。 */
+    .ep-tabs { display: flex; gap: 4px; margin: 6px 0; }
+    .ep-tab {
+      flex: 1; text-align: center;
+      background: rgba(148,163,184,0.10) !important;
+      border-color: rgba(148,163,184,0.22) !important;
+    }
+    .ep-tab.active {
+      background: #2b6cb0 !important; border-color: #63b3ed !important; color: #fff !important;
+    }
+    body.embedded #editPanel { top: 210px; max-height: calc(100vh - 240px - 104px); }
+
     /* ---------- 床面積の増減（右上）---------- */
     /*  ⚠️ ストリートビューの読み取りパネル(#svReadout)も右上に出るが、
         あちらに入ると建物編集はできないので、場所が重なっても両方は出ない。 */
@@ -438,81 +492,8 @@
              編集内容は gml_id をキーに保持していて、タイルが入れ替わっても消えない。 -->
         <div class="sub-title" style="margin-top:8px">1棟ずつ編集</div>
         <label><input type="checkbox" id="buildingEditOn" /> 建物を選択して編集する</label>
-        <div id="buildingEditPanel" style="display:none">
-          <div class="stats-line" id="buildingEditInfo"></div>
-          <div class="stats-line" id="buildingEditId" style="font-variant-numeric:tabular-nums"></div>
-          <div id="buildingEditControls" style="display:none">
-            <label style="display:flex; align-items:center; gap:6px">
-              透過度 <input type="range" id="buildingEditOpacity" min="0" max="100" step="5" style="flex:1" />
-              <span id="buildingEditOpacityVal" style="min-width:3.5em; text-align:right"></span>
-            </label>
-            <label><input type="checkbox" id="buildingEditHidden" /> 非表示にする</label>
-            <label style="display:flex; align-items:center; gap:6px">
-              高さ <input type="range" id="buildingEditDy" min="0" max="100" step="0.5" style="flex:1" />
-              <span id="buildingEditDyVal" style="min-width:7em; text-align:right"></span>
-            </label>
-            <!-- まとめ操作。相対（同じ量だけ上げ下げ）と絶対（全部同じ高さに揃える）の2通り。 -->
-            <div style="display:flex; align-items:center; gap:6px; margin-top:6px">
-              <input type="number" id="buildingEditBumpAmount" value="10" step="1" style="width:5em" /> m
-              <button type="button" id="buildingEditBumpUp">まとめて上げる</button>
-              <button type="button" id="buildingEditBumpDown">下げる</button>
-            </div>
-            <div style="display:flex; align-items:center; gap:6px; margin-top:4px">
-              <input type="number" id="buildingEditSetHeight" value="40" step="1" style="width:5em" /> m
-              <button type="button" id="buildingEditSetTo">全部この高さに揃える</button>
-            </div>
-            <div class="muted" style="font-size:11px">
-              選択中の建物の上で上下にドラッグしても高さを変えられます（上＝嵩上げ／下＝地面にめり込ませる）。
-              複数選択中は全棟が同じ量だけ動きます。嵩上げした部分は赤で表示します。<br />
-              選択: ダブルクリック＝1棟／Shift＋ドラッグ＝矩形選択（Alt併用で追加）／
-              Shift＋ダブルクリック＝1棟ずつ追加・除外／ほかの場所をクリック＝解除。
-            </div>
-            <div style="display:flex; gap:6px; margin-top:6px">
-              <button type="button" id="buildingEditReset">この建物を戻す</button>
-              <button type="button" id="buildingEditResetAll">すべて戻す</button>
-            </div>
-
-            <!-- 壁面後退。buildingsetback.js が受け持つ。
-                 選択中の建物を、引いた面より外側だけ削る。頂点は動かさず、
-                 断片シェーダで面の外側を描かないことで実現している（詳しくは
-                 js/buildingsetback.js の冒頭）。 -->
-            <div class="sub-title" style="margin-top:10px">壁面後退</div>
-            <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap">
-              <button type="button" id="setbackPick">面を引く</button>
-              <button type="button" id="setbackFlip">削る側 ⇄</button>
-            </div>
-            <div style="display:flex; align-items:center; gap:6px; margin-top:4px">
-              後退
-              <input type="number" id="setbackOffset" value="0" step="0.5" style="width:4.5em" /> m
-            </div>
-            <div style="display:flex; gap:6px; margin-top:4px">
-              <button type="button" id="setbackApply">後退を実行</button>
-              <button type="button" id="setbackClear">削りを戻す</button>
-            </div>
-
-            <!-- 両側を残して切り、片側ずつ高さを下げる。
-                 元の建物はシェーダで丸ごと消し、側ごとの独立メッシュで描き直している。 -->
-            <div style="display:flex; gap:6px; margin-top:6px">
-              <button type="button" id="splitApply">両側を残して切る</button>
-              <button type="button" id="splitClear">分割を戻す</button>
-            </div>
-            <div id="splitHeights" style="display:none; margin-top:4px">
-              <label style="display:flex; align-items:center; gap:6px">
-                手前側 <input type="range" id="splitDyA" min="-60" max="0" step="0.5" value="0" style="flex:1" />
-                <span id="splitDyAVal" style="min-width:4em; text-align:right">0 m</span>
-              </label>
-              <label style="display:flex; align-items:center; gap:6px; margin-top:2px">
-                奥側 <input type="range" id="splitDyB" min="-60" max="0" step="0.5" value="0" style="flex:1" />
-                <span id="splitDyBVal" style="min-width:4em; text-align:right">0 m</span>
-              </label>
-            </div>
-            <div class="stats-line" id="setbackInfo" style="white-space:pre-line"></div>
-            <div class="muted" style="font-size:11px">
-              「面を引く」を押して地面を2点クリックすると、その2点を通る鉛直面ができます。
-              後退の数値だけ平行移動した面（赤）が実際の切断位置です。
-            </div>
-          </div>
-          <div class="stats-line" id="buildingEditCount"></div>
+        <div class="muted" style="font-size:11px">
+          ONにすると、操作パネルが画面右に出ます。
         </div>
       </div>
 
@@ -602,6 +583,101 @@
        ・地価換算は、国交省「不動産情報ライブラリ」の地価公示データが入るまでの間、
          単価を手入力できる欄だけ用意してある（APIキーの審査待ち。データが入り次第、
          最寄りの地価公示地点から自動で単価を引く形に差し替える）。 -->
+  <!-- ============ 建物編集の操作パネル（画面右・フローティング）============
+       左上のHUDには「建物を選択して編集する」のチェックだけを置き、実際の操作は
+       ここで行う。編集モードがONのときだけ出る。
+       ⚠️ 中身の要素IDは左上に置いていたときのまま。buildingedit.js / buildingsetback.js は
+         ID で要素を引いているので、置き場所を変えても配線は触らなくてよい。 -->
+  <div id="editPanel">
+    <h2>建物の編集</h2>
+    <div class="stats-line" id="buildingEditInfo"></div>
+    <div class="stats-line" id="buildingEditId" style="font-variant-numeric:tabular-nums"></div>
+
+    <!-- 「高さの変更」と「壁面後退」は同時に使うものではないので、タブで排他にする -->
+    <div class="ep-tabs">
+      <button type="button" class="ep-tab active" data-ep-tab="height">高さの変更</button>
+      <button type="button" class="ep-tab" data-ep-tab="setback">壁面後退</button>
+    </div>
+
+    <div id="buildingEditControls" style="display:none">
+      <!-- ---- 高さの変更 ---- -->
+      <div class="ep-page" data-ep-page="height">
+        <label style="display:flex; align-items:center; gap:6px">
+          透過度 <input type="range" id="buildingEditOpacity" min="0" max="100" step="5" style="flex:1" />
+          <span id="buildingEditOpacityVal" style="min-width:3.5em; text-align:right"></span>
+        </label>
+        <label><input type="checkbox" id="buildingEditHidden" /> 非表示にする</label>
+        <label style="display:flex; align-items:center; gap:6px">
+          高さ <input type="range" id="buildingEditDy" min="0" max="100" step="0.5" style="flex:1" />
+          <span id="buildingEditDyVal" style="min-width:7em; text-align:right"></span>
+        </label>
+        <!-- まとめ操作。相対（同じ量だけ上げ下げ）と絶対（全部同じ高さに揃える）の2通り。 -->
+        <div style="display:flex; align-items:center; gap:6px; margin-top:6px">
+          <input type="number" id="buildingEditBumpAmount" value="10" step="1" style="width:5em" /> m
+          <button type="button" id="buildingEditBumpUp">まとめて上げる</button>
+          <button type="button" id="buildingEditBumpDown">下げる</button>
+        </div>
+        <div style="display:flex; align-items:center; gap:6px; margin-top:4px">
+          <input type="number" id="buildingEditSetHeight" value="40" step="1" style="width:5em" /> m
+          <button type="button" id="buildingEditSetTo">全部この高さに揃える</button>
+        </div>
+        <div class="muted" style="font-size:11px">
+          選択中の建物の上で上下にドラッグしても高さを変えられます（上＝嵩上げ／下＝地面にめり込ませる）。
+          複数選択中は全棟が同じ量だけ動きます。嵩上げした部分は赤で表示します。<br />
+          選択: ダブルクリック＝1棟／Shift＋ドラッグ＝矩形選択（Alt併用で追加）／
+          Shift＋ダブルクリック＝1棟ずつ追加・除外／ほかの場所をクリック＝解除。
+        </div>
+        <div style="display:flex; gap:6px; margin-top:6px">
+          <button type="button" id="buildingEditReset">この建物を戻す</button>
+          <button type="button" id="buildingEditResetAll">すべて戻す</button>
+        </div>
+      </div>
+
+      <!-- ---- 壁面後退 ----
+           選択中の建物を、引いた面より外側だけ削る。頂点は動かさず、断片シェーダで
+           面の外側を描かないことで実現している（詳しくは js/buildingsetback.js の冒頭）。 -->
+      <div class="ep-page" data-ep-page="setback" style="display:none">
+        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap">
+          <button type="button" id="setbackPick">面を引く</button>
+          <button type="button" id="setbackFlip">削る側 ⇄</button>
+        </div>
+        <div style="display:flex; align-items:center; gap:6px; margin-top:4px">
+          後退
+          <input type="number" id="setbackOffset" value="0" step="0.5" style="width:4.5em" /> m
+        </div>
+        <div style="display:flex; gap:6px; margin-top:4px">
+          <button type="button" id="setbackApply">後退を実行</button>
+          <button type="button" id="setbackClear">削りを戻す</button>
+        </div>
+
+        <!-- 両側を残して切り、片側ずつ【絶対高さ】を指定できる。
+             複数棟を選んでいても、それぞれの元の高さに関わらず同じ高さに揃う
+             （棟ごとに必要な移動量を内部で計算する）。 -->
+        <div style="display:flex; gap:6px; margin-top:6px">
+          <button type="button" id="splitApply">両側を残して切る</button>
+          <button type="button" id="splitClear">分割を戻す</button>
+        </div>
+        <div id="splitHeights" style="display:none; margin-top:4px">
+          <label style="display:flex; align-items:center; gap:6px">
+            手前側 <input type="range" id="splitDyA" min="0" max="100" step="0.5" value="0" style="flex:1" />
+            <span id="splitDyAVal" style="min-width:4em; text-align:right">0 m</span>
+          </label>
+          <label style="display:flex; align-items:center; gap:6px; margin-top:2px">
+            奥側 <input type="range" id="splitDyB" min="0" max="100" step="0.5" value="0" style="flex:1" />
+            <span id="splitDyBVal" style="min-width:4em; text-align:right">0 m</span>
+          </label>
+        </div>
+        <div class="stats-line" id="setbackInfo" style="white-space:pre-line"></div>
+        <div class="muted" style="font-size:11px">
+          「面を引く」を押して地面を2点クリックすると、その2点を通る鉛直面ができます。
+          後退の数値だけ平行移動した面（赤）が実際の切断位置です。<br />
+          一度実行したあとは、建物を選び直さなくても面の引き直し・後退量の変更ができます。
+        </div>
+      </div>
+    </div>
+    <div class="stats-line" id="buildingEditCount"></div>
+  </div>
+
   <div id="floorAreaPanel">
     <h2>床面積の増減（概算）</h2>
     <div id="floorAreaBody"></div>

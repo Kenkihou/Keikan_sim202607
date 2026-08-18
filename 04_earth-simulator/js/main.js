@@ -41,9 +41,12 @@ import { rebuildBuildingSection, profileState, setEnabled as setProfileEnabled, 
 // 建物を1棟ずつ編集する（クリック選択・透過・非表示・高さ変更）。
 // 読み込むだけで UI と操作を自前で組み立てる（tiles.js へはフックを差し込む方式）。
 import { editState as buildingEditState, resetAll as resetBuildingEdits, updateSelectionBox } from './buildingedit.js';
-// 建物を「後退面より外側だけ」削る（壁面後退）。読み込むだけでタイルへのフックを張る。
-// 段階1のため操作UIはまだ無く、公開関数をスクリプトから呼んで使う。
+// 建物を「後退面より外側だけ」削る／「両側を残して切って片側ずつ高さを変える」。
+// 読み込むだけで UI と、タイルへのフックを自前で組み立てる。
 import { updateSetbackGuide } from './buildingsetback.js';
+// 画面に浮いているパネル（建物の編集・床面積）を見出しのドラッグで動かせるようにする。
+// 読み込むだけで対象パネルへ自分で取り付く。
+import './panelmove.js';
 // 街の屋根を1枚のスクリーンに見立てて文字を流す（読み込むだけでUIと配線を自前で持つ）。
 import { roofTextState, updateRoofText } from './rooftext.js';
 // PLATEAU の道路データ（tran / MVT）を地形に投影して光らせる。既定はOFF。

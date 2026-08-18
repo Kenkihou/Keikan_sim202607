@@ -81,6 +81,65 @@
     body.embedded #tileLoading { bottom: 104px; }
     /* ※ 「モデリング画面に戻る」ボタンは廃止した。
          親アプリ下部の切り抜きスライダーを 0（地球なし）に戻せば帰れるので不要。 */
+    /* ---------- 床面積の増減（右上）---------- */
+    /*  ⚠️ ストリートビューの読み取りパネル(#svReadout)も右上に出るが、
+        あちらに入ると建物編集はできないので、場所が重なっても両方は出ない。 */
+    #floorAreaPanel {
+      position: fixed; top: 12px; right: 12px; z-index: 12; display: none;
+      box-sizing: border-box; min-width: 232px; max-width: 300px;
+      padding: 10px 12px; border-radius: 10px;
+      color: #e8eef7; background: rgba(15, 23, 42, 0.82);
+      backdrop-filter: blur(6px);
+      border: 1px solid rgba(148, 163, 184, 0.28);
+      box-shadow: 0 4px 20px rgba(0,0,0,0.35);
+      font-size: 12px; line-height: 1.5;
+      font-variant-numeric: tabular-nums;
+    }
+    #floorAreaPanel.on { display: block; }
+    #floorAreaPanel h2 {
+      margin: 0 0 6px; font-size: 12px; font-weight: 700; color: #dbe9fb;
+      padding-bottom: 5px; border-bottom: 1px solid rgba(148,163,184,0.25);
+    }
+    /* 3列（見出し／棟数／面積）。面積は右揃えで桁を縦に揃える。 */
+    .fa-row { display: flex; align-items: baseline; gap: 8px; margin-top: 3px; }
+    .fa-row .fa-label { flex: 0 0 2.6em; }
+    .fa-row .fa-n { flex: 1; color: #9fb0c7; font-size: 11px; }
+    .fa-row .fa-v { margin-left: auto; font-variant-numeric: tabular-nums; }
+    .fa-up .fa-label, .fa-up .fa-v { color: #ff9d8a; }   /* 増＝嵩上げの赤に寄せる */
+    .fa-dn .fa-label, .fa-dn .fa-v { color: #7fb8f5; }   /* 減＝矢印の青に寄せる */
+    .fa-total { margin-top: 5px; padding-top: 5px; border-top: 1px solid rgba(148,163,184,0.25); }
+    .fa-total .fa-label, .fa-total .fa-v { font-weight: 700; color: #7ee0c0; }
+    .fa-note { margin-top: 5px; color: #9fb0c7; font-size: 11px; line-height: 1.4; }
+    /* 埋め込み時は親アプリのボタンと重ならないよう下げる（#hud と同じ考え） */
+    body.embedded #floorAreaPanel { top: 74px; }
+
+    /* 地価換算（単価は暫定・手入力。地価公示データが入るまでの仮のUI） */
+    #landPriceRow {
+      margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(148,163,184,0.25);
+    }
+    .lp-inputs { display: flex; flex-direction: column; gap: 4px; }
+    #landPriceRow label {
+      display: flex; align-items: center; gap: 6px; font-size: 12px; color: #c7d2e0;
+    }
+    .lp-tsubo { color: #9fb0c7; }   /* 坪単価は換算値の位置づけなので少し控えめに */
+    #landPricePerM2, #landPricePerTsubo {
+      width: 5.5em; font: inherit; font-size: 12px; color: #e8eef7;
+      background: rgba(148,163,184,0.14); border: 1px solid rgba(148,163,184,0.3);
+      border-radius: 4px; padding: 2px 5px;
+    }
+    #landPriceBody .fa-row { margin-top: 4px; }
+    #landPriceBody .fa-total .fa-label, #landPriceBody .fa-total .fa-v { color: #f4c542; }
+
+    /* 計算根拠（折りたたみ） */
+    #faBasisToggle {
+      margin-top: 8px; width: 100%; text-align: left;
+      font: inherit; font-size: 11px; color: #9fd0ff; cursor: pointer;
+      background: transparent; border: none; padding: 2px 0;
+    }
+    #faBasisToggle:hover { color: #c7e4ff; }
+    #faBasisBody { line-height: 1.6; }
+    #faBasisBody b { color: #c7d2e0; }
+
     /* 読み込み中の小さな表示（左下）。全画面の #loading と違い、操作の邪魔をしない。 */
     #tileLoading {
       position: fixed; left: 12px; bottom: 12px; z-index: 45; display: none;
@@ -496,6 +555,38 @@
 
   <!-- 地盤・建物がまだ届いていないことを示す小さな表示（全画面の覆いとは別物）。
        表示の切り替えは ui.js の updateHud が毎フレーム行う。 -->
+  <!-- 建物の高さを変えた結果、延床面積がどれだけ増減したかの概算（画面右上）。
+       buildingedit.js が中身を組み立てる。編集が1棟も無いときは自動で隠れる。
+       ・階高は「属性の高さ ÷ 属性の階数」。階数が無い建物は 3m と仮定する。
+       ・底面積は属性ではなく必ず建物の形から測る（属性の延床面積は欠損が多いため）。
+       ・地価換算は、国交省「不動産情報ライブラリ」の地価公示データが入るまでの間、
+         単価を手入力できる欄だけ用意してある（APIキーの審査待ち。データが入り次第、
+         最寄りの地価公示地点から自動で単価を引く形に差し替える）。 -->
+  <div id="floorAreaPanel">
+    <h2>床面積の増減（概算）</h2>
+    <div id="floorAreaBody"></div>
+
+    <!-- 地価単価は「万円/㎡」「万円/坪」のどちらでも入力できる。
+         片方に入れるともう片方へ自動換算する（1坪 = 400/121 ㎡）。 -->
+    <div id="landPriceRow">
+      <div class="lp-inputs">
+        <label>単価
+          <input type="number" id="landPricePerM2" min="0" step="1" placeholder="未設定" />
+          万円/㎡
+        </label>
+        <label class="lp-tsubo">
+          <input type="number" id="landPricePerTsubo" min="0" step="1" placeholder="未設定" />
+          万円/坪
+        </label>
+      </div>
+      <div id="landPriceNote" class="fa-note"></div>
+      <div id="landPriceBody"></div>
+    </div>
+
+    <button type="button" id="faBasisToggle" aria-expanded="false">計算根拠を見る ▾</button>
+    <div id="faBasisBody" class="fa-note" style="display:none"></div>
+  </div>
+
   <div id="tileLoading"><span class="spinner"></span><span>読み込み中…</span></div>
 
   <div id="loading">

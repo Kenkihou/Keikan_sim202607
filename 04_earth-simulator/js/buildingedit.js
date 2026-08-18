@@ -49,7 +49,13 @@ const SELECT_COLOR = new THREE.Color(0x4ea1ff);
 //   hidden  … true で非表示
 //   dy      … 高さの変更量[m]。正=嵩上げ、負=めり込み
 const edits = new Map();
-const defaultEdit = () => ({ opacity: 1, hidden: false, dy: 0 });
+//   ★ 床面積の集計に使う値（階数・高さ・底面積）も一緒に控える。
+//     これらは選択したときにしか測れないが、集計は【選択を解除したあとの編集済み全棟】を
+//     対象にしたい。選択情報の側に置いたままだと、選択を外した瞬間に集計から消える。
+const defaultEdit = () => ({
+  opacity: 1, hidden: false, dy: 0,
+  storeys: null, height: null, measuredHeight: NaN, footprint: NaN,
+});
 const isPristine = (e) => e.opacity === 1 && !e.hidden && e.dy === 0;
 
 const editState = {
@@ -324,6 +330,114 @@ function rebuildColumn(gmlId, parts, dy) {
   columns.set(gmlId, mesh);
 }
 
+// ---- めり込みの矢印 ------------------------------------------------------
+//   高さを下げた建物は「低くなった」ことが空からは分かりにくい（元の高さが
+//   もう画面に無いため）。元の屋根の高さから、今の屋根まで下向きの矢印を立てて
+//   「ここからここまで下げた」を空間で示す。
+//
+//   ★ 柱（嵩上げ）と対になる表現なので、寿命の管理も柱と同じ仕組みに乗せる
+//     （edits を正として作り直し、タイルの入れ替えでも消えない）。
+//   ★ 矢印は【板1枚の2D】で描き、常にカメラの方へ向ける（ビルボード）。
+//     立体の矢印にすると、見る向きによって奥行き方向に潰れて何の形か分からなくなるうえ、
+//     太さを建物の大きさに合わせる必要があって調整が難しい（実際、京都駅のような
+//     大きな建物では円錐が「長さ10m・直径14m」になり矢印に見えなかった）。
+//     板なら常に同じ形で読める。
+const arrowMat = new THREE.MeshBasicMaterial({
+  color: 0x2f7dd8,          // 嵩上げの赤と対にした青。下げたとひと目で分かるように
+  side: THREE.DoubleSide,   // 裏返っても見えるように（向きは毎フレーム直すが保険）
+  clippingPlanes: buildingClipPlanes,   // 箱庭表示のとき建物と同じ箱で切る
+});
+const arrows = new Map();   // gmlId -> THREE.Mesh
+
+// 矢印の寸法[m]は【一定】。竿の長さだけが下げた量に応じて変わる。
+//   ★ 太さまで下げた量に比例させると、街ぜんたいを俯瞰したときに矢印の大きさが
+//     まちまちになり、街並みそのものが見えなくなる（251棟を編集した実測で確認）。
+//     大きさが揃っていれば「どこを下げたか」を数として読み取れる。
+const ARROW_SHAFT_HW = 1.5;   // 竿の幅の半分
+const ARROW_HEAD_HW = 3.6;    // 矢羽根の幅の半分
+const ARROW_HEAD_LEN = 6.0;   // 矢羽根の長さ
+
+function makeArrowMat() {
+  const m = arrowMat.clone();
+  m.clippingPlanes = buildingClipPlanes;   // clone は配列ごと複製するので差し直す（柱と同じ理由）
+  return m;
+}
+
+function disposeArrow(gmlId) {
+  const m = arrows.get(gmlId);
+  if (!m) return;
+  arrows.delete(gmlId);
+  clipMeshes.delete(m);
+  scene.remove(m);
+  m.geometry.dispose();
+  m.material.dispose();
+}
+
+/* 下向きの矢印を1枚の板として作る。原点が上端で、-Y 方向へ length[m] 伸びる。
+   板は XY 平面に置く（法線は +Z）。この向きのまま、あとで Y 軸だけ回してカメラへ向ける。
+   太さは矢印の長さから決める（建物の大きさは見ない。板なので潰れる心配がなく、
+   「下げた量が大きいほど矢印も大きい」という素直な対応にできる）。 */
+function makeArrowGeometry(length) {
+  const hw = ARROW_HEAD_HW;
+  const w = ARROW_SHAFT_HW;
+  // 矢羽根は決まった大きさのまま。竿だけが下げた量に応じて伸び縮みする。
+  //   ⚠️ 下げた量が矢羽根より小さいときだけは、矢羽根を縮めて全体をその長さに収める
+  //     （そうしないと矢印が元の屋根より上へはみ出す）。
+  const headLen = Math.min(ARROW_HEAD_LEN, length);
+  const sy = -(length - headLen);                           // 竿と矢羽根の境目
+  const pos = new Float32Array([
+    // 竿（長方形＝三角形2枚）
+    -w, 0, 0,   w, 0, 0,   w, sy, 0,
+    -w, 0, 0,   w, sy, 0,  -w, sy, 0,
+    // 矢羽根（三角形1枚）
+    -hw, sy, 0,  hw, sy, 0,  0, -length, 0,
+  ]);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const nrm = new Float32Array(pos.length);
+  for (let i = 2; i < nrm.length; i += 3) nrm[i] = 1;      // 全部 +Z 向き
+  g.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+  g.computeBoundingBox();
+  g.computeBoundingSphere();
+  return g;
+}
+
+/* 板をカメラの方へ向ける（Y 軸まわりだけ回す）。
+   ★ カメラの姿勢をそのまま写すと、真上から見たとき板が寝てしまい「下向き」の意味が
+     消える。鉛直は保ったまま向きだけ合わせるのが正しい。
+   ⚠️ 更新は onBeforeRender で行う。描画ループへ配線を足さずに済み、
+     この矢印が画面に出るときだけ確実に呼ばれる（three は onBeforeRender の【あと】に
+     modelViewMatrix を作るので、ここで matrixWorld を直せばその場で効く）。 */
+function faceCameraOnRender(mesh) {
+  mesh.onBeforeRender = (renderer, scene2, cam) => {
+    mesh.rotation.y = Math.atan2(
+      cam.position.x - mesh.position.x,
+      cam.position.z - mesh.position.z,
+    );
+    mesh.updateMatrixWorld();
+  };
+}
+
+/* めり込みの矢印を作り直す（dy>=0 なら消すだけ）。
+   box は【今の】建物の境界箱（＝もう下がったあとの形）。 */
+function rebuildArrow(gmlId, box, dy) {
+  disposeArrow(gmlId);
+  if (dy >= 0 || !box || box.isEmpty()) return;
+  const drop = -dy;                      // 下げた量[m]（正の値）
+  if (drop < 0.5) return;                // ごくわずかな変更に矢印は出さない
+  const mesh = new THREE.Mesh(makeArrowGeometry(drop), makeArrowMat());
+  // 上端＝元の屋根の高さ。今の屋根(box.max.y)から下げたぶんだけ上に戻した位置。
+  mesh.position.set((box.min.x + box.max.x) / 2, box.max.y + drop, (box.min.z + box.max.z) / 2);
+  mesh.renderOrder = 1;                  // 柱より後（重なったとき矢印を上に）
+  faceCameraOnRender(mesh);
+  scene.add(mesh);
+  mesh.__arrowDy = dy;
+  // ⚠️ 柱と違い clipMeshes には【登録しない】。あれは断面（縦断図）に切り口の線を
+  //   描くための一覧で、矢印は建物ではなく注釈なので断面図に現れると邪魔になる。
+  //   箱庭で切り抜かれること自体はマテリアルの clippingPlanes が受け持つ。
+  arrows.set(gmlId, mesh);
+}
+
 // 非表示は「頂点を1点に潰す」で実現する（三角形が面積ゼロになって描かれなくなる）。
 //   ★ 透明マテリアルにする手もあるが、非表示のためだけに tile 全体を半透明扱いに
 //     すると描画順の問題が出るうえ重い。潰すだけならマテリアルに一切触らずに済み、
@@ -450,20 +564,33 @@ function applyEditToModel(modelScene, batchId, edit) {
   applyEditToParts(modelScene, collectBuildingVerts(modelScene, batchId), edit);
 }
 
-// 嵩上げの柱を作り直す。
-//   ★ 同じ建物は複数のタイル（LOD違い）に入っているが、柱は1本だけあればよい。
+// 高さ変更に付ける表示物を作り直す。
+//   嵩上げ(dy>0)なら【柱】、めり込み(dy<0)なら【下向きの矢印】。どちらも同じ寿命なので
+//   1か所でまとめて面倒を見る（別々にすると、上げ↔下げの行き来で片方が残る）。
+//   ★ 同じ建物は複数のタイル（LOD違い）に入っているが、付ける表示物は1つでよい。
 //     いちばん頂点数の多い＝最も細かい表現から作る（粗いLODで作ると footprint が荒れる）。
 function rebuildColumnsFor(gmlIds, { force = false } = {}) {
   const need = new Set();
   for (const gmlId of gmlIds) {
     const edit = edits.get(gmlId);
-    if (!edit || edit.hidden || edit.dy <= 0) { disposeColumn(gmlId); continue; }
-    const cur = columns.get(gmlId);
-    // 高さが変わっていなければ形はそのままでよい（透明度だけ合わせて作り直しを省く）。
-    //   ★ 透明度スライダーを動かすたびに数百棟ぶんの柱を作り直すと目に見えて重くなる。
-    if (!force && cur && cur.__colDy === edit.dy) {
-      applyColumnOpacity(cur, edit.opacity);
-      continue;
+    if (!edit || edit.hidden || edit.dy === 0) {
+      disposeColumn(gmlId); disposeArrow(gmlId); continue;
+    }
+    // ★ 反対の表現は必ず消す。上げ↔下げを行き来したときに前のものが残ると、
+    //   持ち上げた建物の頭上に「下げた矢印」が浮いたままになる。
+    if (edit.dy > 0) {
+      disposeArrow(gmlId);
+      const cur = columns.get(gmlId);
+      // 高さが変わっていなければ形はそのままでよい（透明度だけ合わせて作り直しを省く）。
+      //   ★ 透明度スライダーを動かすたびに数百棟ぶんの柱を作り直すと目に見えて重くなる。
+      if (!force && cur && cur.__colDy === edit.dy) {
+        applyColumnOpacity(cur, edit.opacity);
+        continue;
+      }
+    } else {
+      disposeColumn(gmlId);
+      const cur = arrows.get(gmlId);
+      if (!force && cur && cur.__arrowDy === edit.dy) continue;
     }
     need.add(gmlId);
   }
@@ -492,10 +619,33 @@ function rebuildColumnsFor(gmlIds, { force = false } = {}) {
   for (const gmlId of need) {
     const b = best.get(gmlId);
     const edit = edits.get(gmlId);
-    rebuildColumn(gmlId, b ? b.parts : [], edit.dy);
-    const col = columns.get(gmlId);
-    if (col) applyColumnOpacity(col, edit.opacity);   // 建物と同じ透明度に揃える
+    const parts = b ? b.parts : [];
+    if (edit.dy > 0) {
+      rebuildColumn(gmlId, parts, edit.dy);
+      const col = columns.get(gmlId);
+      if (col) applyColumnOpacity(col, edit.opacity);   // 建物と同じ透明度に揃える
+    } else {
+      // 矢印は「今の（下がったあとの）屋根の高さ」を起点に置くので、
+      // ここで現在の頂点から箱を測る（applyEditToParts の後に呼ばれている）。
+      rebuildArrow(gmlId, parts.length ? partsWorldBox(parts) : null, edit.dy);
+    }
   }
+}
+
+// parts（＝その建物の頂点）の【今の】ワールド境界箱。
+const _pwV = new THREE.Vector3();
+function partsWorldBox(parts) {
+  const box = new THREE.Box3();
+  const updatedRoots = new Set();
+  for (const p of parts) {
+    const pos = p.mesh.geometry.attributes.position;
+    if (!computeClipMeshWorld(p.mesh, _weWorld, updatedRoots)) continue;
+    for (const i of p.idxs) {
+      _pwV.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(_weWorld);
+      box.expandByPoint(_pwV);
+    }
+  }
+  return box;
 }
 const rebuildColumnFor = (gmlId) => rebuildColumnsFor([gmlId]);
 
@@ -506,21 +656,21 @@ function applyEditsToModel(modelScene) {
   const index = gmlIndexOf(modelScene);
   if (!index.size) return;
   const wanted = new Map();   // batchId -> gmlId
-  const needColumn = [];
+  const needDecor = [];
   for (const [gmlId, edit] of edits) {
     const batchId = index.get(gmlId);
     if (batchId === undefined) continue;
     wanted.set(batchId, gmlId);
-    if (edit.dy > 0 && !edit.hidden) needColumn.push(gmlId);
+    if (edit.dy !== 0 && !edit.hidden) needDecor.push(gmlId);
   }
   if (!wanted.size) return;
   const got = collectBuildingVertsMulti(modelScene, new Set(wanted.keys()));
   for (const [b, parts] of got) {
     applyEditToParts(modelScene, parts, edits.get(wanted.get(b)) || defaultEdit());
   }
-  // 届いたタイルの方が細かければ、柱もそちらから作り直す。
+  // 届いたタイルの方が細かければ、柱・矢印もそちらから作り直す。
   //   高さが同じでも LOD が変われば footprint が変わるので、ここは必ず作り直す。
-  if (needColumn.length) rebuildColumnsFor(needColumn, { force: true });
+  if (needDecor.length) rebuildColumnsFor(needDecor, { force: true });
 }
 setBuildingEditHook(applyEditsToModel);
 
@@ -580,6 +730,7 @@ function pickBuildingAt(clientX, clientY) {
       name: btValue(modelScene.batchTable, 'gml:name', batchId),
       usage: btValue(modelScene.batchTable, 'bldg:usage', batchId),
       height: btValue(modelScene.batchTable, 'bldg:measuredHeight', batchId),
+      storeys: btValue(modelScene.batchTable, 'bldg:storeysAboveGround', batchId),
       buildingId: btValue(modelScene.batchTable, 'uro:BuildingIDAttribute_uro:buildingID', batchId),
     };
   }
@@ -613,22 +764,49 @@ function boxAt(i) {
 const _selBox = new THREE.Box3();
 const _selV = new THREE.Vector3();
 
-// 選択中の建物すべての境界箱を、タイル1回の走査でまとめて測る。
+// 底面積を測るための一時ベクトル
+const _faA = new THREE.Vector3(), _faB = new THREE.Vector3(), _faC = new THREE.Vector3();
+
+// 選択中の建物すべての境界箱と底面積を、タイル1回の走査でまとめて測る。
 //   ★ 1棟ずつ measureBuildingBox を呼ぶと棟数×頂点数になって現実的でない
 //     （矩形選択で数千棟を選べるため）。
+//
+//   【底面積の測り方】
+//     三角形を水平面へ落とした【符号付き】投影面積を、向きごとに足し合わせる。
+//     上を向いた面（屋根）の合計が、そのまま建物の底面積になる。壁は真横なので
+//     投影面積がゼロになり、勝手に落ちる。凹んだ形・中庭のある形でも正しく出る。
+//
+//     ⚠️ 屋根と床のどちらが「正」になるかは座標系の向きしだいで決まる。このワールドは
+//       +X が西・+Z が北で鏡像になっているため、実測では上向きの面が【負】に出た。
+//       向きを決め打ちにせず、正負それぞれの合計のうち大きいほうを採る。
+//       閉じた立体なら両者は一致し、底が開いた建物（LOD2に多い）なら屋根側が残る。
+//
+//     ⚠️ 同じ建物が複数のタイル（LOD違い）に居ることがある。面積は箱のように
+//       union できない（足すと二重に数える）ので、タイルごとに別々に集計して
+//       いちばん細かい表現（三角形の多いもの）を採る。
 function measureSelectionBoxes() {
   const boxes = new Map();   // gmlId -> Box3
-  if (!editState.selection.size) return boxes;
+  const areas = new Map();   // gmlId -> { area, tris }
+  if (!editState.selection.size) return { boxes, areas };
   const updatedRoots = new Set();
   for (const t of wardTiles) {
     t.forEachLoadedModel((modelScene) => {
       const index = gmlIndexOf(modelScene);
       const wanted = new Map();   // batchId -> gmlId
-      for (const gmlId of editState.selection.keys()) {
+      // ★ 底面積は【まだ測っていない建物だけ】測る。
+      //   高さ変更は平行移動なので底面積は変わらない。ところがこの関数は高さドラッグ中に
+      //   毎フレーム呼ばれるので、毎回すべての三角形を回すと矩形選択（数千棟）で
+      //   目に見えて重くなる。箱は動くたびに測り直す必要があるが、面積は初回だけでよい。
+      const wantArea = new Set();   // batchId
+      for (const [gmlId, info] of editState.selection) {
         const b = index.get(gmlId);
-        if (b !== undefined) wanted.set(b, gmlId);
+        if (b === undefined) continue;
+        wanted.set(b, gmlId);
+        if (!Number.isFinite(info.footprint)) wantArea.add(b);
       }
       if (!wanted.size) return;
+      // このタイルぶんの集計（gmlId -> { up, dn, tris }）
+      const acc = new Map();
       modelScene.traverse((mesh) => {
         if (!mesh.isMesh) return;
         const g = mesh.geometry;
@@ -643,19 +821,49 @@ function measureSelectionBoxes() {
           _selV.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(_weWorld);
           box.expandByPoint(_selV);
         }
+        // 底面積は三角形ごとに見る（まだ測っていない建物がある場合だけ）
+        if (!wantArea.size) return;
+        const idx = g.index ? g.index.array : null;
+        const triCount = (idx ? idx.length : pos.count) / 3;
+        for (let f = 0; f < triCount; f++) {
+          const i0 = idx ? idx[f * 3] : f * 3;
+          const i1 = idx ? idx[f * 3 + 1] : f * 3 + 1;
+          const i2 = idx ? idx[f * 3 + 2] : f * 3 + 2;
+          const b = bid.getX(i0);
+          if (!wantArea.has(b)) continue;
+          const gmlId = wanted.get(b);
+          if (gmlId === undefined) continue;
+          _faA.set(pos.getX(i0), pos.getY(i0), pos.getZ(i0)).applyMatrix4(_weWorld);
+          _faB.set(pos.getX(i1), pos.getY(i1), pos.getZ(i1)).applyMatrix4(_weWorld);
+          _faC.set(pos.getX(i2), pos.getY(i2), pos.getZ(i2)).applyMatrix4(_weWorld);
+          const s = ((_faB.x - _faA.x) * (_faC.z - _faA.z)
+                   - (_faB.z - _faA.z) * (_faC.x - _faA.x)) / 2;
+          let a = acc.get(gmlId);
+          if (!a) { a = { up: 0, dn: 0, tris: 0 }; acc.set(gmlId, a); }
+          if (s > 0) a.up += s; else a.dn -= s;
+          a.tris++;
+        }
       });
+      for (const [gmlId, a] of acc) {
+        const cur = areas.get(gmlId);
+        if (cur && cur.tris >= a.tris) continue;   // より細かい表現が既にある
+        areas.set(gmlId, { area: Math.max(a.up, a.dn), tris: a.tris });
+      }
     });
   }
-  return boxes;
+  return { boxes, areas };
 }
 
 // 選択中の建物すべてに枠を合わせる。
 function updateSelectionBox() {
-  const boxes = measureSelectionBoxes();
+  const { boxes, areas } = measureSelectionBoxes();
   let n = 0;
   for (const info of editState.selection.values()) {
     const box = boxes.get(info.gmlId);
     if (!box || box.isEmpty()) continue;
+    // 測れたときだけ入れる（測らなかった＝前に測った値をそのまま使う）
+    const a = areas.get(info.gmlId);
+    if (a) info.footprint = a.area;
     _selBox.copy(box);
     // ★ 建物そのものの高さは、柱を足す前にここで控える（UI の総高さ表示に使う）。
     _selBox.getSize(_selV);
@@ -774,6 +982,7 @@ function applyRectSelection(r) {
       name: btValue(ms.batchTable, 'gml:name', b),
       usage: btValue(ms.batchTable, 'bldg:usage', b),
       height: btValue(ms.batchTable, 'bldg:measuredHeight', b),
+      storeys: btValue(ms.batchTable, 'bldg:storeysAboveGround', b),
       buildingId: btValue(ms.batchTable, 'uro:BuildingIDAttribute_uro:buildingID', b),
     });
   }
@@ -840,7 +1049,7 @@ function onPointerMove(ev) {
   //   1棟だけ選んでいれば、これまでどおりその棟だけが動く。
   const delta = dyPx * drag.mPerPx;
   for (const [gmlId, startDy] of drag.startDys) {
-    const edit = edits.get(gmlId) || defaultEdit();
+    const edit = carryMetrics(gmlId, edits.get(gmlId) || defaultEdit());
     edit.dy = startDy + delta;
     edit.hidden = false;                           // 高さをいじるなら表示状態に戻す
     edits.set(gmlId, edit);
@@ -891,7 +1100,7 @@ function onDoubleClick(ev) {
 // 何も変わっていない編集は捨てる（「初期状態」と同じ扱いに戻す）。
 function pruneIfPristine(gmlId) {
   const e = edits.get(gmlId);
-  if (e && isPristine(e)) { edits.delete(gmlId); disposeColumn(gmlId); }
+  if (e && isPristine(e)) { edits.delete(gmlId); disposeColumn(gmlId); disposeArrow(gmlId); }
   syncUI();
 }
 
@@ -902,7 +1111,9 @@ function setSelection(hits, { add = false } = {}) {
   for (const h of hits) {
     editState.selection.set(h.gmlId, {
       gmlId: h.gmlId, name: h.name, usage: h.usage, height: h.height,
-      buildingId: h.buildingId, measuredHeight: NaN,
+      storeys: h.storeys, buildingId: h.buildingId,
+      measuredHeight: NaN,
+      footprint: NaN,   // 底面積[㎡]。updateSelectionBox で実際の形から測る。
     });
     editState.primary = editState.selection.get(h.gmlId);
   }
@@ -944,12 +1155,128 @@ function baseHeightOf(info) {
 const baseHeightOfSelected = () => baseHeightOf(editState.primary);
 
 // =========================================================================
+// 床面積の増減を概算する
+//
+//   高さを変えた結果、延床面積がどれだけ増えた／減ったかをその場で見せる。
+//
+//   ★ PLATEAU の属性は【欠けているのが普通】なので、どこが欠けても必ず値が出るよう
+//     段階的な代替をあらかじめ決めてある。使った値が実データか仮定かは UI に出す。
+//
+//   【階高】次の順に、最初に成立したものを使う
+//     ① 属性の高さ ÷ 属性の階数（bldg:measuredHeight ÷ bldg:storeysAboveGround）
+//     ② 実測の高さ ÷ 属性の階数   … 高さ属性が無いとき。高さはジオメトリから測る
+//                                   （baseHeightOf が既にこの代替を持っている）
+//     ③ 3.0m を仮定               … 階数が無いとき。一般的な階高
+//
+//     ⚠️ 属性の高さは塔屋・パラペットまで含んだ実測値なので、こうして割った階高は
+//       実際の階高より大きめに出る（実測した1棟は 50.6m / 7階 = 7.2m だった）。
+//       あくまで概算であることを踏まえた使い方をしてもらう前提の数値。
+//
+//   【底面積】属性は使わず、必ずその建物の形から測る（measureSelectionBoxes）。
+//     属性の延床面積（uro:totalFloorArea）は欠損や複数棟一括の値が混じっていて
+//     当てにならない。実測なら常に得られるので、これが最も確実。
+//     ただしタイルが未読込の間だけは測れないので、そのときは面積を「—」と出す
+//     （階数の増減だけは階高から出せるので、そちらは表示する）。
+//
+//   【床面積】底面積 × 増減した階数。階数は整数に丸める（半端な階は無いため）。
+// =========================================================================
+const ASSUMED_FLOOR_HEIGHT = 3.0;   // 階数が分からない建物で仮定する階高[m]
+
+/* その建物の階高[m]と、それが実データか仮定かを返す */
+function floorHeightOf(info) {
+  const st = Number(info && info.storeys);
+  // 高さは baseHeightOf が「属性 → 実測」の順で埋めてくれる
+  const h = baseHeightOf(info);
+  if (Number.isFinite(st) && st > 0 && Number.isFinite(h) && h > 0) {
+    return { h: h / st, assumed: false, storeys: st };
+  }
+  return { h: ASSUMED_FLOOR_HEIGHT, assumed: true, storeys: NaN };
+}
+
+/* 1棟ぶんの増減。dy[m] を階数と床面積に直す。
+   ⚠️ 階数は【丸めない】。高さの変更は連続量なので、整数階に丸めると
+     「階高より小さい変更」がすべて 0 階＝増減なしになって集計から消える。
+     実測でこれが起きた: 階高 21.1m（1階建て21m）の建物を 6m 下げたとき
+     round(-6/21.1)=0 となり、矢印は出ているのに集計に入らなかった。
+     表示の段で小数1桁に丸めるだけにする。 */
+function floorDeltaOf(info, dy) {
+  const fh = floorHeightOf(info);
+  const floors = dy / fh.h;
+  const area = Number.isFinite(info.footprint) ? info.footprint * floors : NaN;
+  return { floors, area, floorHeight: fh.h, assumed: fh.assumed, storeys: fh.storeys };
+}
+
+/* 選択中の全棟をまとめた増減。 */
+function floorDeltaOfSelection() {
+  let floors = 0, area = 0, anyArea = false, anyAssumed = false;
+  for (const info of editState.selection.values()) {
+    const e = edits.get(info.gmlId);
+    const dy = e ? e.dy : 0;
+    if (!dy) continue;
+    const d = floorDeltaOf(info, dy);
+    floors += d.floors;
+    if (Number.isFinite(d.area)) { area += d.area; anyArea = true; }
+    if (d.assumed) anyAssumed = true;
+  }
+  return { floors, area: anyArea ? area : NaN, assumed: anyAssumed };
+}
+
+// 面積の表示（3桁区切り）。
+const fmtArea = (v) => (Number.isFinite(v)
+  ? `${v < 0 ? '−' : '+'}${Math.abs(Math.round(v)).toLocaleString('ja-JP')} ㎡` : '—');
+
+// 金額の表示。桁が大きくなりやすい（面積×単価）ので、億／万を自動で選ぶ。
+const fmtMoney = (yen) => {
+  if (!Number.isFinite(yen)) return '—';
+  const sign = yen < 0 ? '−' : '+';
+  const a = Math.abs(yen);
+  if (a >= 1e8) return `${sign}${(a / 1e8).toLocaleString('ja-JP', { maximumFractionDigits: 2 })} 億円`;
+  if (a >= 1e4) return `${sign}${Math.round(a / 1e4).toLocaleString('ja-JP')} 万円`;
+  return `${sign}${Math.round(a).toLocaleString('ja-JP')} 円`;
+};
+
+/* 選択中に測った値を、その建物の編集内容へ写す。
+   ★ 編集を作る・変える処理は必ずここを通すこと。ここを飛ばすと、その棟だけ
+     底面積が分からないまま編集され、集計の「面積不明」に落ちる。 */
+function carryMetrics(gmlId, e) {
+  const info = editState.selection.get(gmlId);
+  if (!info) return e;
+  if (Number.isFinite(info.footprint)) e.footprint = info.footprint;
+  if (Number.isFinite(info.measuredHeight)) e.measuredHeight = info.measuredHeight;
+  if (info.storeys !== undefined && info.storeys !== null) e.storeys = info.storeys;
+  if (info.height !== undefined && info.height !== null) e.height = info.height;
+  return e;
+}
+
+/* 編集済みの【全棟】をまとめた増減。増やした側・減らした側を分けて返す。
+   ⚠️ floorDeltaOf に渡すのは編集内容そのもの。storeys / height / measuredHeight /
+     footprint を選択情報と同じ名前で持たせてあるので、そのまま同じ計算に載る。 */
+function floorDeltaOfAll() {
+  const up = { n: 0, area: 0, floors: 0 };
+  const down = { n: 0, area: 0, floors: 0 };
+  let assumed = false, unknownArea = 0;
+  for (const e of edits.values()) {
+    if (!e.dy || e.hidden) continue;
+    const d = floorDeltaOf(e, e.dy);
+    if (d.assumed) assumed = true;
+    if (!Number.isFinite(d.area)) { unknownArea++; continue; }
+    const side = d.area >= 0 ? up : down;
+    side.n++; side.area += d.area; side.floors += d.floors;
+  }
+  return { up, down, total: up.area + down.area, assumed, unknownArea };
+}
+
+// =========================================================================
 // UI
 // =========================================================================
 let ui = null;
+let faUi = {};        // 右上の「床面積の増減」パネル
 function syncUI() {
   if (!ui) return;
   const n = editState.selection.size;
+  // ★ 選択が無くても呼ぶ。集計の対象は選択ではなく【編集済みの全棟】なので、
+  //   選択を外した瞬間にパネルが消えてしまってはいけない。
+  syncFloorArea();
   ui.panel.style.display = editState.enabled ? '' : 'none';
   if (!n) {
     ui.info.textContent = editState.enabled
@@ -1001,12 +1328,126 @@ function syncUI() {
   ui.count.textContent = edits.size ? `編集中: ${edits.size} 棟` : '';
 }
 
+// 右上の「床面積の増減」パネルを描き直す。
+//   対象は【編集済みの全棟】。選択を外しても集計は残る（編集そのものが残るため）。
+//   1棟も高さを変えていなければパネルごと隠す。
+function syncFloorArea() {
+  if (!faUi.panel) return;
+  const d = floorDeltaOfAll();
+  const n = d.up.n + d.down.n + d.unknownArea;
+  if (!n) { faUi.panel.classList.remove('on'); return; }
+  faUi.panel.classList.add('on');
+
+  const row = (cls, label, side) => (side.n
+    ? `<div class="fa-row ${cls}"><span class="fa-label">${label}</span>`
+      + `<span class="fa-n">${side.n} 棟 ／ ${side.floors > 0 ? '+' : ''}${side.floors.toFixed(1)} 階</span>`
+      + `<span class="fa-v">${fmtArea(side.area)}</span></div>`
+    : '');
+
+  const parts = [row('fa-up', '増', d.up), row('fa-dn', '減', d.down)];
+  // 合計は、増と減の両方があるときだけ出す（片側だけなら同じ数字が並ぶだけなので）
+  if (d.up.n && d.down.n) {
+    parts.push('<div class="fa-row fa-total"><span class="fa-label">合計</span>'
+      + `<span class="fa-n">${d.up.n + d.down.n} 棟</span>`
+      + `<span class="fa-v">${fmtArea(d.total)}</span></div>`);
+  }
+
+  const notes = [];
+  // 1棟だけを選んでいるときは、その建物の根拠（階高・底面積）を添える
+  if (editState.selection.size === 1 && editState.primary) {
+    const info = editState.primary;
+    const fh = floorHeightOf(info);
+    const src = fh.assumed ? '階数不明のため 3m と仮定' : `${fh.storeys}階から算出`;
+    const fp = Number.isFinite(info.footprint)
+      ? `${Math.round(info.footprint).toLocaleString('ja-JP')} ㎡` : '測定中';
+    notes.push(`選択中: 階高 ${fh.h.toFixed(1)}m（${src}）／ 底面積 ${fp}`);
+  } else if (d.assumed) {
+    notes.push('※ 階数が無い建物は階高 3m と仮定');
+  }
+  if (d.unknownArea) notes.push(`※ ${d.unknownArea} 棟は底面積を測れていません`);
+  if (notes.length) parts.push(`<div class="fa-note">${notes.join('<br>')}</div>`);
+
+  faUi.body.innerHTML = parts.join('');
+  syncLandPrice(d);
+}
+
+// -----------------------------------------------------------------------------
+// 地価換算（暫定：単価は手入力）
+//
+//   ★ 国交省「不動産情報ライブラリ」の地価公示データ（座標ごとに最寄り地点の
+//     ㎡単価を自動で引く）を組み込む予定だが、APIキーが審査待ちのため、
+//     それまでは単価をこのパネルで手入力してもらう形にしておく。
+//     計算そのもの（面積 × 単価）は先に用意しておき、データが揃ったら
+//     「単価をどこから取るか」の1点だけ差し替えれば済むようにしてある。
+// -----------------------------------------------------------------------------
+// 1坪 = 400/121 ㎡（尺貫法の定義そのまま。約 3.305785 ㎡）。
+const TSUBO_M2 = 400 / 121;
+
+function syncLandPrice(d) {
+  if (!faUi.landPriceBody) return;
+  // 内部の単位は「円/㎡」に統一する（万円/㎡ の入力欄が正なので、そこから作る）。
+  const manYenPerM2 = Number(faUi.landPricePerM2.value);
+  const unit = Number.isFinite(manYenPerM2) ? manYenPerM2 * 10000 : NaN;
+  if (!Number.isFinite(unit) || unit <= 0) {
+    faUi.landPriceNote.textContent = '単価を入力すると金額換算を表示します（地価公示データ導入まで手入力）';
+    faUi.landPriceBody.innerHTML = '';
+    return;
+  }
+  faUi.landPriceNote.textContent = '';
+  const upYen = Number.isFinite(d.up.area) ? d.up.area * unit : NaN;
+  const dnYen = Number.isFinite(d.down.area) ? d.down.area * unit : NaN;
+  const parts = [];
+  if (d.up.n) parts.push(`<div class="fa-row fa-up"><span class="fa-label">増</span>`
+    + `<span class="fa-v">${fmtMoney(upYen)}</span></div>`);
+  if (d.down.n) parts.push(`<div class="fa-row fa-dn"><span class="fa-label">減</span>`
+    + `<span class="fa-v">${fmtMoney(dnYen)}</span></div>`);
+  if (d.up.n && d.down.n) {
+    const total = (Number.isFinite(upYen) ? upYen : 0) + (Number.isFinite(dnYen) ? dnYen : 0);
+    parts.push(`<div class="fa-row fa-total"><span class="fa-label">通算</span>`
+      + `<span class="fa-v">${fmtMoney(total)}</span></div>`);
+  }
+  faUi.landPriceBody.innerHTML = parts.join('');
+}
+
+// 計算根拠の説明文（折りたたみパネルの中身）。固定文なので初回に1度だけ組み立てる。
+const FA_BASIS_HTML = `
+<b>階高の出し方（優先順）</b><br>
+① 属性の高さ ÷ 属性の階数（bldg:measuredHeight ÷ bldg:storeysAboveGround）<br>
+② 実測の高さ ÷ 属性の階数（高さ属性が無い建物。高さは3Dモデルの形から測る）<br>
+③ 3.0m と仮定（階数の属性が無い建物。一般的な階高）<br>
+※ 属性の高さは塔屋・パラペットを含む実測値のため、①②で出す階高は実際より
+大きめに出ることがあります。<br><br>
+<b>底面積の出し方</b><br>
+属性値（延床面積）は使わず、必ず3Dモデルの形から測ります。属性は欠損や
+複数棟一括の値が混じっていて当てにならないためです。建物の三角形を水平面へ
+投影した面積を、上向き・下向きそれぞれ合計し、大きいほうを底面積とします
+（壁は真横を向くため投影面積がゼロになり、自動的に無視されます）。<br><br>
+<b>床面積の増減</b><br>
+底面積 × （高さの変更量 ÷ 階高）。整数階には丸めません（階高より小さい
+変更も比例配分で数えます）。<br><br>
+<b>地価換算</b><br>
+床面積の増減 × 単価。単価は「万円/㎡」「万円/坪」のどちらに入力しても
+自動的にもう片方へ換算します（1坪 = 400/121 ㎡）。地価公示データを導入する
+までの間、単価は上の欄に手入力してください。`;
+
+function initFaBasisToggle() {
+  const btn = el('faBasisToggle'), body = el('faBasisBody');
+  if (!btn || !body) return;
+  body.innerHTML = FA_BASIS_HTML;
+  btn.addEventListener('click', () => {
+    const open = body.style.display !== 'none';
+    body.style.display = open ? 'none' : '';
+    btn.setAttribute('aria-expanded', String(!open));
+    btn.textContent = open ? '計算根拠を見る ▾' : '計算根拠を隠す ▴';
+  });
+}
+
 // 選択中の【全棟】に同じ変更を当てる。fn には (編集内容, その棟の情報) が渡る。
 function mutateSelected(fn) {
   if (!editState.selection.size) return;
   const touched = new Set();
   for (const info of editState.selection.values()) {
-    const e = edits.get(info.gmlId) || defaultEdit();
+    const e = carryMetrics(info.gmlId, edits.get(info.gmlId) || defaultEdit());
     fn(e, info);
     edits.set(info.gmlId, e);
     touched.add(info.gmlId);
@@ -1014,7 +1455,7 @@ function mutateSelected(fn) {
   applyEditsEverywhere(touched);            // 走査は1回にまとめる
   for (const gmlId of touched) {
     const e = edits.get(gmlId);
-    if (e && isPristine(e)) { edits.delete(gmlId); disposeColumn(gmlId); }
+    if (e && isPristine(e)) { edits.delete(gmlId); disposeColumn(gmlId); disposeArrow(gmlId); }
   }
   updateSelectionBox();
   syncUI();
@@ -1071,6 +1512,30 @@ function setEditEnabled(on) {
 }
 
 (function setupUI() {
+  faUi = {
+    panel: el('floorAreaPanel'), body: el('floorAreaBody'),
+    landPricePerM2: el('landPricePerM2'), landPricePerTsubo: el('landPricePerTsubo'),
+    landPriceNote: el('landPriceNote'), landPriceBody: el('landPriceBody'),
+  };
+  // ㎡単価・坪単価は【どちらに入力してももう片方へ自動換算する】。
+  //   ⚠️ 換算先の .value を書き換えても input イベントは発火しない（DOM の仕様）ので、
+  //     無限ループの心配はない。片方が空欄になったらもう片方も空欄に揃える
+  //     （半端な換算値が残って「入力していないのに単価が入っている」ように見えるのを防ぐ）。
+  if (faUi.landPricePerM2 && faUi.landPricePerTsubo) {
+    faUi.landPricePerM2.addEventListener('input', () => {
+      const v = Number(faUi.landPricePerM2.value);
+      faUi.landPricePerTsubo.value = (faUi.landPricePerM2.value === '' || !Number.isFinite(v))
+        ? '' : (v * TSUBO_M2).toFixed(1);
+      syncFloorArea();
+    });
+    faUi.landPricePerTsubo.addEventListener('input', () => {
+      const v = Number(faUi.landPricePerTsubo.value);
+      faUi.landPricePerM2.value = (faUi.landPricePerTsubo.value === '' || !Number.isFinite(v))
+        ? '' : (v / TSUBO_M2).toFixed(1);
+      syncFloorArea();
+    });
+  }
+  initFaBasisToggle();
   const onCb = el('buildingEditOn');
   if (!onCb) return;   // この画面に編集UIが無い構成でも動くように
   ui = {

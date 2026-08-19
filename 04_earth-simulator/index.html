@@ -133,6 +133,44 @@
     .ep-tab.active {
       background: #2b6cb0 !important; border-color: #63b3ed !important; color: #fff !important;
     }
+    /* 箱の操作パネル。編集パネルと同じ体裁で、既定では少し下に置く
+       （どちらも画面右に出るので、初期位置が重ならないようにする）。 */
+    #blocksPanel {
+      position: fixed; top: 260px; right: 352px; z-index: 12; display: none;
+      box-sizing: border-box; width: 300px; max-height: calc(100vh - 290px);
+      overflow-y: auto; overscroll-behavior: contain;
+      padding: 10px 12px; border-radius: 10px;
+      color: #e8eef7; background: rgba(15, 23, 42, 0.82);
+      backdrop-filter: blur(6px);
+      border: 1px solid rgba(148, 163, 184, 0.28);
+      box-shadow: 0 4px 20px rgba(0,0,0,0.35);
+      font-size: 12px; line-height: 1.5;
+      scrollbar-width: thin; scrollbar-color: rgba(148,163,184,0.5) transparent;
+    }
+    #blocksPanel.on { display: block; }
+    #blocksPanel h2 {
+      margin: 0 0 6px; font-size: 12px; font-weight: 700; color: #dbe9fb;
+      padding-bottom: 5px; border-bottom: 1px solid rgba(148,163,184,0.25);
+    }
+    #blocksPanel .muted { color: #9fb0c7; }
+    #blocksPanel input[type=number] {
+      font: inherit; font-size: 12px; color: #e8eef7;
+      background: rgba(148,163,184,0.14); border: 1px solid rgba(148,163,184,0.3);
+      border-radius: 4px; padding: 1px 4px;
+    }
+    #blocksPanel button {
+      font: inherit; font-size: 11px; color: #cdd8e6; cursor: pointer;
+      background: rgba(148,163,184,0.14); border: 1px solid rgba(148,163,184,0.3);
+      border-radius: 6px; padding: 3px 9px; transition: background .15s, border-color .15s;
+    }
+    #blocksPanel button:hover { background: rgba(148,163,184,0.28); }
+    body.embedded #blocksPanel { top: 260px; max-height: calc(100vh - 290px - 104px); }
+
+    /* 後退距離は読み取りやすさを優先して大きく出す（設計上いちばん見たい数字） */
+    .setback-dist {
+      font-size: 20px; font-weight: 700; color: #7ee0c0;
+      font-variant-numeric: tabular-nums;
+    }
     body.embedded #editPanel { top: 210px; max-height: calc(100vh - 240px - 104px); }
 
     /* ---------- 床面積の増減（右上）---------- */
@@ -495,6 +533,14 @@
         <div class="muted" style="font-size:11px">
           ONにすると、操作パネルが画面右に出ます。
         </div>
+
+        <!-- 跡地の検討用に、地面へ箱を置く。blocks.js が受け持つ。
+             01（モデリング）の自作モデルとは別物で、04 の中だけで完結する。 -->
+        <div class="sub-title" style="margin-top:8px">箱を置いて検討</div>
+        <label><input type="checkbox" id="blocksOn" /> 地面に箱を置く</label>
+        <div class="muted" style="font-size:11px">
+          ONにすると、箱の操作パネルが画面右に出ます。
+        </div>
       </div>
 
       <!-- ---------- 道路 ---------- -->
@@ -592,6 +638,13 @@
     <h2>建物の編集</h2>
     <div class="stats-line" id="buildingEditInfo"></div>
     <div class="stats-line" id="buildingEditId" style="font-variant-numeric:tabular-nums"></div>
+    <!-- 壁面後退を確定した建物群は「まとめて選ぶ」対象として覚えられる。
+         その1棟を選ぶだけで群ごと選ばれるので、覚えていることと解除手段を見せる
+         （黙って仲間まで選ばれると「余計なものまで選ばれた」と映るため）。 -->
+    <div id="selectionLockRow" style="display:none; align-items:center; gap:6px; margin-top:4px">
+      <span id="selectionLockLabel" style="color:#f4c542"></span>
+      <button type="button" id="selectionUnlock">まとめ選択を解除</button>
+    </div>
 
     <!-- 「高さの変更」と「壁面後退」は同時に使うものではないので、タブで排他にする -->
     <div class="ep-tabs">
@@ -634,48 +687,84 @@
       </div>
 
       <!-- ---- 壁面後退 ----
-           選択中の建物を、引いた面より外側だけ削る。頂点は動かさず、断片シェーダで
-           面の外側を描かないことで実現している（詳しくは js/buildingsetback.js の冒頭）。 -->
+           選択中の建物を、決めた面より外側だけ削る。頂点は動かさず、断片シェーダで
+           面の外側を描かないことで実現している（詳しくは js/buildingsetback.js の冒頭）。
+           面は「選択建物群を囲む箱の側面」から選び、ギズモで動かして決める。 -->
       <div class="ep-page" data-ep-page="setback" style="display:none">
         <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap">
-          <button type="button" id="setbackPick">面を引く</button>
-          <button type="button" id="setbackFlip">削る側 ⇄</button>
+          <button type="button" id="setbackPick">面を選ぶ</button>
         </div>
-        <div style="display:flex; align-items:center; gap:6px; margin-top:4px">
-          後退
-          <input type="number" id="setbackOffset" value="0" step="0.5" style="width:4.5em" /> m
+        <!-- 後退の起点。道路境界線などに面を合わせてから押すと、そこが 0m になる。
+             以後、面を動かすと「基準線から○m後退」が出る。 -->
+        <div id="setbackBaseRow" style="display:none; gap:6px; margin-top:4px">
+          <button type="button" id="setbackBaseSet">ここを基準線に</button>
+          <button type="button" id="setbackBaseClear">基準線を消す</button>
         </div>
-        <div style="display:flex; gap:6px; margin-top:4px">
-          <button type="button" id="setbackApply">後退を実行</button>
+        <!-- 後退距離。数字そのものが主役なので大きく出し、直接入力もできるようにする。 -->
+        <div id="setbackDistRow" style="display:none; align-items:baseline; gap:8px; margin-top:6px">
+          <span class="muted" style="font-size:11px">基準線から</span>
+          <span id="setbackDistVal" class="setback-dist">— m</span>
+          <input type="number" id="setbackDistInput" step="0.5" style="width:5em" /> m
+        </div>
+        <div id="setbackDistHint" class="muted" style="display:none; font-size:11px">
+          距離を入れるには、先に「ここを基準線に」で 0m の位置を決めてください。
+        </div>
+        <div style="display:flex; gap:6px; margin-top:6px">
+          <button type="button" id="setbackApply">後退を確定</button>
           <button type="button" id="setbackClear">削りを戻す</button>
         </div>
 
-        <!-- 両側を残して切り、片側ずつ【絶対高さ】を指定できる。
-             複数棟を選んでいても、それぞれの元の高さに関わらず同じ高さに揃う
-             （棟ごとに必要な移動量を内部で計算する）。 -->
-        <div style="display:flex; gap:6px; margin-top:6px">
-          <button type="button" id="splitApply">両側を残して切る</button>
-          <button type="button" id="splitClear">分割を戻す</button>
-        </div>
-        <div id="splitHeights" style="display:none; margin-top:4px">
-          <label style="display:flex; align-items:center; gap:6px">
-            手前側 <input type="range" id="splitDyA" min="0" max="100" step="0.5" value="0" style="flex:1" />
-            <span id="splitDyAVal" style="min-width:4em; text-align:right">0 m</span>
-          </label>
-          <label style="display:flex; align-items:center; gap:6px; margin-top:2px">
-            奥側 <input type="range" id="splitDyB" min="0" max="100" step="0.5" value="0" style="flex:1" />
-            <span id="splitDyBVal" style="min-width:4em; text-align:right">0 m</span>
-          </label>
-        </div>
         <div class="stats-line" id="setbackInfo" style="white-space:pre-line"></div>
         <div class="muted" style="font-size:11px">
-          「面を引く」を押して地面を2点クリックすると、その2点を通る鉛直面ができます。
-          後退の数値だけ平行移動した面（赤）が実際の切断位置です。<br />
-          一度実行したあとは、建物を選び直さなくても面の引き直し・後退量の変更ができます。
+          建物を選んでから「面を選ぶ」を押すと、選択した建物群を囲む箱の側面が出ます。
+          カーソルを乗せた面が明るくなるので、切りたい面をクリックしてください。<br />
+          まずギズモ（移動・回転）で面を道路境界線などに合わせ、「ここを基準線に」を
+          押します。そこが 0m になり、以後は面を動かすたびに「基準線から○m後退」が
+          出ます。削られるのは常に【箱の外側】です。<br />
+          「後退を確定」でギズモを畳みます。このとき対象群が記憶され、あとで
+          その中の1棟をダブルクリックするだけで群ごと選び直せます（後退距離の
+          直しが楽になります）。選択そのものは自由に変えられます。
+          記憶はパネル上部の「まとめ選択を解除」、または「削りを戻す」で消えます。
         </div>
       </div>
     </div>
     <div class="stats-line" id="buildingEditCount"></div>
+  </div>
+
+  <!-- ============ 箱を置いて検討（画面右・フローティング）============
+       壁面後退で空いた跡地に、どれくらいの建物なら収まるかを置いて確かめる道具。
+       中身は blocks.js が受け持つ。見出しをつまんで動かせる（panelmove.js）。 -->
+  <div id="blocksPanel">
+    <h2>箱を置いて検討</h2>
+    <div style="display:flex; gap:6px; flex-wrap:wrap">
+      <button type="button" id="blocksAdd">箱を置く</button>
+      <button type="button" id="blocksCopy">複製</button>
+    </div>
+    <!-- 選んでいる箱の実寸。ギズモでも変えられるが、数値でも決められるようにする。 -->
+    <div id="blocksSizeRow" style="display:none; margin-top:6px">
+      <div style="display:flex; align-items:center; gap:4px">
+        幅 <input type="number" id="blocksSizeX" step="0.5" min="0.5" style="width:4.5em" /> m
+        高 <input type="number" id="blocksSizeY" step="0.5" min="0.5" style="width:4.5em" /> m
+      </div>
+      <div style="display:flex; align-items:center; gap:4px; margin-top:3px">
+        奥行 <input type="number" id="blocksSizeZ" step="0.5" min="0.5" style="width:4.5em" /> m
+      </div>
+      <div style="display:flex; align-items:center; gap:4px; margin-top:3px">
+        向き <input type="number" id="blocksRotY" step="5" style="width:4.5em" /> 度
+        色 <input type="color" id="blocksColor" style="width:2.4em; height:1.5em; padding:0" />
+      </div>
+    </div>
+    <div style="display:flex; gap:6px; margin-top:6px">
+      <button type="button" id="blocksDelete">この箱を消す</button>
+      <button type="button" id="blocksClear">全部消す</button>
+    </div>
+    <div class="stats-line" id="blocksInfo" style="white-space:pre-line"></div>
+    <div class="muted" style="font-size:11px">
+      位置は箱そのものをドラッグ、向きと寸法はギズモ（緑の輪・角のハンドル）で
+      決めます。箱の外をクリックすると選択が外れます。高さは地面に自動で合わせます。<br />
+      「複製」を押すと同じ大きさ・向きの箱が半透明でカーソルに付いてくるので、
+      置きたいところでクリックしてください（Esc で中止）。
+    </div>
   </div>
 
   <div id="floorAreaPanel">

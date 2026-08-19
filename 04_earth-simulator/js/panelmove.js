@@ -57,7 +57,7 @@ function makeDraggable(panel, handle) {
 }
 
 // 見出し（h2）をつまみにする。パネルが無い画面構成でも動くよう、素通りさせる。
-for (const id of ['editPanel', 'floorAreaPanel']) {
+for (const id of ['editPanel', 'floorAreaPanel', 'blocksPanel']) {
   const panel = el(id);
   if (panel) makeDraggable(panel, panel.querySelector('h2'));
 }

@@ -65,7 +65,20 @@ const editState = {
   //           必要な変更量が違うので、選んだ時点で測って覚えておく。
   selection: new Map(),
   primary: null,      // 最後に選んだ1棟（1棟だけのときの情報表示に使う）
+  // ★ 壁面後退が作業中か（buildingsetback.js が立てる）。
+  //   立っている間は、選択が空になってもパネルの中身を畳まない。
+  //   畳むと、面の位置を調整している最中に操作先ごと消えてしまう。
+  setbackBusy: false,
 };
+
+// ★ まとめて扱った建物のまとまり（群）。
+//   壁面後退を確定した対象群をここへ登録しておくと、あとでその中の1棟を
+//   選び直しただけで【群ごと】選ばれる。まとめて後退した建物の後退距離を
+//   直したいときに、毎回全部を選び直さずに済ませるため。
+//   ⚠️ 選択そのものは固定しない（別の建物を選ぶのも解除するのも自由）。
+//     「選ばれたのが群の一員なら、仲間も一緒に連れてくる」だけの仕掛け。
+//   gmlId -> Map<gmlId, info>（その建物が属する群の全メンバーと、選んだ時の属性）
+const selectionGroups = new Map();
 // 1棟だけ選ばれているときの互換用（既存の呼び出し・デバッグ表示のため）
 Object.defineProperty(editState, 'selected', {
   get() { return this.selection.size === 1 ? this.primary : (this.selection.size ? this.primary : null); },
@@ -1109,6 +1122,15 @@ function pruneIfPristine(gmlId) {
 function setSelection(hits, { add = false } = {}) {
   if (!add) editState.selection.clear();
   for (const h of hits) {
+    // ★ 選んだ建物が「まとめて扱った群」の一員なら、仲間もまとめて選ぶ。
+    //   後退させた建物群の距離を直すとき、1棟つつくだけで群が揃う。
+    const group = selectionGroups.get(h.gmlId);
+    if (group) {
+      for (const [gid, info] of group) {
+        if (editState.selection.has(gid)) continue;
+        editState.selection.set(gid, { ...info, measuredHeight: NaN, footprint: NaN });
+      }
+    }
     editState.selection.set(h.gmlId, {
       gmlId: h.gmlId, name: h.name, usage: h.usage, height: h.height,
       storeys: h.storeys, buildingId: h.buildingId,
@@ -1279,12 +1301,20 @@ function syncUI() {
   syncFloorArea();
   // パネルは編集モードのときだけ出す（.on で表示を切り替える）
   ui.panel.classList.toggle('on', editState.enabled);
+  // ★ 群として覚えられていることを見せる。黙って仲間まで選ばれると
+  //   「余計なものまで選ばれた」と映るので、理由が分かるようにしておく。
+  if (ui.lockRow) {
+    const n = selectionGroupSize();
+    ui.lockRow.style.display = n >= 2 ? 'flex' : 'none';
+    if (n >= 2 && ui.lockLabel) ui.lockLabel.textContent = `${n} 棟をまとめて選択中`;
+  }
   if (!n) {
     ui.info.textContent = editState.enabled
       ? '建物をダブルクリックで選択／Shift＋ドラッグで矩形選択（Alt併用で追加）'
       : '';
     ui.id.textContent = '';
-    ui.controls.style.display = 'none';
+    // 壁面後退の作業中は畳まない（上の setbackBusy の注記を参照）
+    ui.controls.style.display = editState.setbackBusy ? '' : 'none';
     ui.count.textContent = edits.size ? `編集中: ${edits.size} 棟` : '';
     return;
   }
@@ -1541,6 +1571,8 @@ function setEditEnabled(on) {
   if (!onCb) return;   // この画面に編集UIが無い構成でも動くように
   ui = {
     panel: el('editPanel'),
+    lockRow: el('selectionLockRow'),
+    lockLabel: el('selectionLockLabel'),
     info: el('buildingEditInfo'),
     id: el('buildingEditId'),
     controls: el('buildingEditControls'),
@@ -1572,6 +1604,7 @@ function setEditEnabled(on) {
   ui.setTo.addEventListener('click', () => setSelectedHeight(Number(ui.setToHeight.value)));
   el('buildingEditReset').addEventListener('click', resetSelected);
   el('buildingEditResetAll').addEventListener('click', resetAll);
+  el('selectionUnlock').addEventListener('click', () => clearSelectionGroup());
 
   // 「高さの変更」／「壁面後退」の切り替え。
   //   ★ 同時に使うものではないので排他にする（壁面後退の途中で高さのスライダーを
@@ -1596,9 +1629,53 @@ function setEditEnabled(on) {
   syncUI();
 })();
 
+/* 壁面後退の作業中フラグを立てる／降ろす（buildingsetback が呼ぶ）。
+   ★ フラグを変えたら必ずパネルの見た目も更新する。切り替えただけでは
+     次に何かが syncUI を呼ぶまで反映されず、畳まれたままに見える。 */
+function setSetbackBusy(on) {
+  editState.setbackBusy = !!on;
+  syncUI();
+}
+
+/* いま選択中の建物を「まとめて扱った群」として覚える（壁面後退が確定時に呼ぶ）。
+   ★ 1棟だけのときは登録しない（群にする意味がないうえ、その1棟を選ぶたびに
+     余計な処理が走るのを避ける）。 */
+function registerSelectionGroup() {
+  if (editState.selection.size < 2) return;
+  const members = new Map();
+  for (const [gid, info] of editState.selection) {
+    members.set(gid, {
+      gmlId: gid, name: info.name, usage: info.usage, height: info.height,
+      storeys: info.storeys, buildingId: info.buildingId,
+    });
+  }
+  for (const gid of members.keys()) selectionGroups.set(gid, members);
+  syncUI();
+}
+
+/* 群の登録を解く。gmlIds を省くと、いま選択中の建物が属する群をすべて解く。 */
+function clearSelectionGroup(gmlIds) {
+  const ids = gmlIds || [...editState.selection.keys()];
+  for (const gid of ids) {
+    const group = selectionGroups.get(gid);
+    if (!group) continue;
+    for (const member of group.keys()) selectionGroups.delete(member);
+  }
+  syncUI();
+}
+
+/* その建物が群の一員か（UI 表示用）。 */
+function selectionGroupSize() {
+  const p = editState.primary;
+  if (!p) return 0;
+  const g = selectionGroups.get(p.gmlId);
+  return g ? g.size : 0;
+}
+
 export {
   editState, edits, setEditEnabled, resetSelected, resetAll,
-  applyEditsToModel, updateSelectionBox,
+  registerSelectionGroup, clearSelectionGroup, selectionGroupSize, setSetbackBusy,
+  applyEditsToModel, updateSelectionBox, applyEditsEverywhere, defaultEdit,
   // ★ 壁面後退（buildingsetback.js）へ貸し出す道具。
   //   あちらは「gml_id → batchid」と「その建物の階高」を必要とするが、どちらも
   //   決め方（索引の作り方／属性が欠けたときの代替）をこちらが持っているので、

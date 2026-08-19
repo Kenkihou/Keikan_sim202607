@@ -438,6 +438,54 @@ if (window.renderAllViews) window.renderAllViews();
 // ★追加：JSONセーブ・ロード機能の実装
 // ==========================================
 
+// 地球モード（04）の検討内容を iframe から受け取る。
+//   04 と 01 は同一オリジンなので、あちらが用意した window.getEarthEditState() を
+//   そのまま呼べる（postMessage を待つ必要がない＝セーブを同期処理のままにできる）。
+//   ⚠️ 地球モードを一度も開いていない／古い 04 が入っている場合もあるので、
+//     取れなければ黙って null にする。ここでセーブ自体を失敗させてはいけない。
+function readEarthState() {
+    try {
+        const frame = document.getElementById('earth-sim-iframe');
+        if (!frame) return null;   // 地球モードを一度も開いていない＝残すものが無い
+        const fn = frame.contentWindow && frame.contentWindow.getEarthEditState;
+        if (typeof fn !== 'function') {
+            // ⚠️ ここに来るのは、受け渡し口ができる前に作られた iframe が生き残っている場合。
+            //   地球モードは「閉じても iframe を捨てずに隠すだけ」なので（タイルの読み直しを
+            //   避けるため）、04 を更新しても開きっぱなしの iframe は古いままになる。
+            //   黙って null にすると「何も保存されない」ようにしか見えないので、必ず知らせる。
+            console.warn('地球モード側に受け渡し口（getEarthEditState）がありません。'
+                + 'ページを再読み込みしてから地球モードを開き直してください。');
+            return null;
+        }
+        return fn() || null;
+    } catch (e) {
+        console.warn('地球モードの検討内容を取得できませんでした', e);
+        return null;
+    }
+}
+
+// ロードで読み込んだ地球モードの検討内容の控え。
+//   ⚠️ ロード時点では地球モードがまだ開かれていないことの方が多く、開いていても
+//     タイルの読み込みが終わっていない。すぐ送っても当てる先が無いので、ここへ
+//     預けておき「地球側の準備ができた」合図（showEarthSimulator）で送る。
+let pendingEarthState = null;
+// 送り済みかどうか。開き直すたびに送り直さないための目印。
+let earthStateApplied = true;
+
+// 控えてある検討内容を地球モードへ送る。まだ開いていなければ何もしない。
+function pushEarthState() {
+    if (earthStateApplied) return;
+    const frame = document.getElementById('earth-sim-iframe');
+    const fn = frame && frame.contentWindow && frame.contentWindow.applyEarthEditState;
+    if (typeof fn !== 'function') return;   // まだ準備できていない。次の機会に送る
+    try {
+        fn(pendingEarthState);
+        earthStateApplied = true;
+    } catch (e) {
+        console.warn('地球モードへ検討内容を反映できませんでした', e);
+    }
+}
+
 // ■ セーブ処理
 document.getElementById('btn-save-json').addEventListener('click', () => {
     // セーブ中、一時的にGUIやメニューを隠してクリーンな状態にする
@@ -463,7 +511,11 @@ document.getElementById('btn-save-json').addEventListener('click', () => {
             // ★追加：02 で塗った外構の色（マテリアル名 → #rrggbb）。
             //   地物ごとではなく種類ごとの共有マテリアルなので、配置とは別に1つのマップで持つ。
             colors: getExteriorColors()
-        }
+        },
+        // ★追加：地球モード（04）での検討内容。
+        //   PLATEAU 建物の高さ変更・壁面後退・置いた箱を、緯度経度付きで残す。
+        //   地球モードを開いていなければ null（キーは残す＝あとから読む側の分岐が減る）。
+        earthState: readEarthState()
     };
 
     // Blobオブジェクトを作成し、ローカルへファイルとしてダウンロード
@@ -532,6 +584,12 @@ inputLoadJson.addEventListener('change', (e) => {
             // ★追加：外構の色も戻す。地物を組み立て終わってから当てること
             //   （マテリアルは地物を作った時点で生まれるため、順序を逆にすると当たらない）。
             restoreExteriorColors(json.exteriorState && json.exteriorState.colors);
+
+            // ★追加：5. 地球モード（04）の検討内容。
+            //   含まれない古いデータなら null＝地球モード側もまっさらに戻す。
+            pendingEarthState = json.earthState || null;
+            earthStateApplied = false;
+            pushEarthState();   // すでに地球モードが立ち上がっていればその場で当たる
 
             // 4. 各種3DメッシュとUIパネルの同期・再描画
             UIController.clearGUI();
@@ -1348,6 +1406,9 @@ window.showEarthSimulator = function() {
     const iframe = document.getElementById('earth-sim-iframe');
     if (!iframe || !isEarthModeActive) return;
     iframe.style.opacity = '1';
+
+    // ★追加：ロードで読み込んだ検討内容が控えてあれば、ここで当てる
+    pushEarthState();
 
     // 切り抜きの大きさを合わせる。スライダーから起動したならその値を送り、
     // それ以外（🌍ボタンやポータル）なら地球側の現在値をこちらのスライダーに映す。

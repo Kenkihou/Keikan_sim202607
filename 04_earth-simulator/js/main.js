@@ -44,7 +44,12 @@ import { editState as buildingEditState, resetAll as resetBuildingEdits, updateS
 // 建物を「後退面より外側だけ」削る／「両側を残して切って片側ずつ高さを変える」。
 // 読み込むだけで UI と、タイルへのフックを自前で組み立てる。
 import { updateSetbackGuide } from './buildingsetback.js';
-// 画面に浮いているパネル（建物の編集・床面積）を見出しのドラッグで動かせるようにする。
+// 跡地の検討用に、地面へ箱を置く（04 の中だけで完結する簡易モデル）。
+// 読み込むだけで UI と操作を自前で組み立てる。
+import './blocks.js';
+// 地球モードの検討内容を 01 のセーブJSONへ渡す入口（window.getEarthEditState）
+import './savestate.js';
+// 画面に浮いているパネル（建物の編集・床面積・箱）を見出しのドラッグで動かせるようにする。
 // 読み込むだけで対象パネルへ自分で取り付く。
 import './panelmove.js';
 // 街の屋根を1枚のスクリーンに見立てて文字を流す（読み込むだけでUIと配線を自前で持つ）。

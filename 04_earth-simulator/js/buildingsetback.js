@@ -47,38 +47,92 @@ import {
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import {
   computeClipMeshWorld, keepFinestLod, CAP_COLOR, buildingClipPlanes,
+  setSetbackTriClip, clipMeshes,
 } from './section.js';
 import { wardTiles, getTerrainTiles, setBuildingSetbackHook } from './tiles.js';
 import {
   editState, gmlIndexOf, floorHeightOf, registerSelectionGroup, clearSelectionGroup,
-  setSetbackBusy,
+  setSetbackBusy, setSetbackStepHooks, setStep, clearSelection,
+  columns, setColumnHook,
 } from './buildingedit.js';
 
-// 後退面。ワールドの水平面上の直線 (ax,az)→(bx,bz) を通る鉛直面として持つ。
-//   offset … その直線を法線方向へずらす量[m]。正で「削る側」が広がる。
-//   side   … どちら側を削るか（+1 / -1）。
+// =============================================================================
+// 後退セット — 「1か所ぶんの壁面後退」をひとまとまりにしたもの
+//
+//   ★ 街の何か所かで別々に後退を検討したいので、後退は【複数持てる】。
+//     以前は平面を1枚だけシェーダへ渡す作りで、2か所目を始めると1か所目が消えた。
+//   1セット = { 対象の建物群, 後退面, 基準線, 後退距離 }。
+//   ⚠️ 同じ建物が複数のセットに属してよい（角地で2方向から下げる場合）。
+//     だから「建物 → セット」は1対1ではなく、ビットの集合で持つ。
+// =============================================================================
+//   シェーダへ渡せる面の数。頂点属性にビットで詰めるので、float が正確に表せる
+//   範囲（2^24）より十分小さく取る。8か所あれば検討には足りる。
+const MAX_SETBACKS = 8;
+
+let nextSetbackId = 1;
+/* 1セットぶんの入れ物を作る。 */
+function makeSetbackSet(targetIds) {
+  return {
+    id: nextSetbackId++,
+    targets: new Set(targetIds),
+    line: null,       // { ax, az, bx, bz } 面が通る水平線
+    offset: 0,        // その線を法線方向へずらす量[m]
+    side: 1,          // どちら側を削るか（+1 / -1）
+    baseline: null,   // { x, z, nx, nz } 後退の起点（道路境界線など）
+    distance: NaN,    // 基準線から何メートル後退したか
+    // ★ 対象建物の属性（階数・高さ）の控え。
+    //   確定したあとは選択が外れるので、editState.selection からは引けなくなる。
+    //   床面積の集計に必要なので、確定した時点でこちらへ写しておく。
+    info: new Map(),  // gmlId -> { storeys, height, measuredHeight }
+  };
+}
+
+// 効いている後退セット。先頭から順に、シェーダの面スロット 0,1,2… に対応する。
+const setbackSets = [];
+// いま調整中のセット（setbackSets の要素そのもの）。確定すると null に戻る。
+let draftSet = null;
+
+/* 互換のための窓口。savestate.js など外から「いま調整中の1件」を見るために残す。
+   ⚠️ これ自体は状態を持たない。実体は draftSet。 */
 const setbackState = {
-  line: null,       // { ax, az, bx, bz }
-  offset: 0,
-  side: 1,
-  active: false,    // 適用中か
-  // ★ 確定したときの基準線と後退距離の控え。
-  //   確定すると endFaceEditing() が候補面もろとも基準線を片付けてしまうので、
-  //   ここへ写しておかないと「何メートル後退させたのか」が残らない
-  //   （セーブJSONへ持ち出すのも、あとで見直すのもこの値を使う）。
-  baseline: null,   // { x, z, nx, nz }
-  distance: NaN,
+  get line() { return draftSet ? draftSet.line : null; },
+  set line(v) { if (draftSet) draftSet.line = v; },
+  get offset() { return draftSet ? draftSet.offset : 0; },
+  set offset(v) { if (draftSet) draftSet.offset = v; },
+  get side() { return draftSet ? draftSet.side : 1; },
+  set side(v) { if (draftSet) draftSet.side = v; },
+  get baseline() { return draftSet ? draftSet.baseline : null; },
+  set baseline(v) { if (draftSet) draftSet.baseline = v; },
+  get distance() { return draftSet ? draftSet.distance : NaN; },
+  set distance(v) { if (draftSet) draftSet.distance = v; },
+  get active() { return setbackSets.length > 0; },
 };
 
-// 削る対象の建物（gml_id の集合）。
-const targets = new Set();
+/* いま調整中のセットの対象建物。UI と savestate が読む。 */
+const targets = {
+  get size() { return draftSet ? draftSet.targets.size : 0; },
+  clear() { if (draftSet) draftSet.targets.clear(); },
+  add(id) { if (draftSet) draftSet.targets.add(id); },
+  has(id) { return draftSet ? draftSet.targets.has(id) : false; },
+  [Symbol.iterator]() {
+    return (draftSet ? draftSet.targets : new Set())[Symbol.iterator]();
+  },
+};
 
-// シェーダへ渡す平面。xyz=法線（水平）, w=定数。
-//   ★ 全建物マテリアルで【同じオブジェクトを共有】する。こうしておけば、
-//     平面を動かしたときの更新が1か所で済み、マテリアルの数によらず一定コストになる。
-//   ⚠️ 法線がゼロベクトルのときは「削らない」を意味する。dot(0,p)+0 = 0 で、
-//     判定式 `< 0.0` が常に偽になるので、無効化のために特別な分岐が要らない。
-const setbackPlaneUniform = { value: new THREE.Vector4(0, 0, 0, 0) };
+/* 後退の対象になっている建物すべて（全セットの和）。 */
+function allTargetIds() {
+  const out = new Set();
+  for (const set of setbackSets) for (const id of set.targets) out.add(id);
+  return out;
+}
+
+// シェーダへ渡す面。xyz=法線（水平）, w=定数。スロットの数は固定で、
+// 使っていないスロットは法線ゼロ＝「削らない」を意味する
+// （dot(0,p)+0 = 0 で判定式 `< 0.0` が常に偽になり、無効化に分岐が要らない）。
+const setbackPlanesUniform = {
+  value: Array.from({ length: MAX_SETBACKS }, () => new THREE.Vector4(0, 0, 0, 0)),
+};
+const setbackCountUniform = { value: 0 };
 
 // 属性を書いたジオメトリを覚えておく（消すときに使う）。
 const markedGeoms = new Set();
@@ -86,26 +140,80 @@ const markedGeoms = new Set();
 // -----------------------------------------------------------------------------
 // 平面
 // -----------------------------------------------------------------------------
-/* 後退面を作る。戻り値は { nx, nz, c } で、削る側が nx*x + nz*z + c < 0 になる向き。 */
-function computePlane() {
-  const L = setbackState.line;
+/* セットの後退面を作る。戻り値は { nx, nz, c } で、
+   削る側が nx*x + nz*z + c < 0 になる向き。 */
+function computePlaneOf(set) {
+  const L = set && set.line;
   if (!L) return null;
   let dx = L.bx - L.ax, dz = L.bz - L.az;
   const len = Math.hypot(dx, dz);
   if (len < 1e-6) return null;
   dx /= len; dz /= len;
   // 水平な法線（線に直交）。side で向きを入れ替える。
-  const nx = -dz * setbackState.side, nz = dx * setbackState.side;
+  const nx = -dz * set.side, nz = dx * set.side;
   // 線を法線方向へ offset だけずらした位置を通る面
-  const px = L.ax + nx * setbackState.offset, pz = L.az + nz * setbackState.offset;
+  const px = L.ax + nx * set.offset, pz = L.az + nz * set.offset;
   return { nx, nz, c: -(nx * px + nz * pz) };
 }
 
-/* uniform へ反映する。active でなければゼロにして「削らない」状態にする。 */
+/* いま調整中のセットの面。 */
+function computePlane() { return computePlaneOf(draftSet); }
+
+/* 三角形を、その建物に効いている後退面の「残る側」だけに切り取る。
+   箱庭の断面（section.js）から呼ばれる。
+     戻り値 null … 削る面が無いのでそのまま使ってよい
+            []   … まるごと削られた
+            [[9個の座標], …] … 残った部分を三角形に分けたもの
+   ⚠️ 凸多角形を順に切っていく（Sutherland–Hodgman）。面は鉛直なので
+     判定は水平座標だけで足り、高さは補間で付いてくる。 */
+function clipTriBySetback(mask, ax, ay, az, bx, by, bz, cx2, cy, cz2) {
+  let poly = [ax, ay, az, bx, by, bz, cx2, cy, cz2];
+  let cut = false;
+  for (let i = 0; i < setbackSets.length && i < MAX_SETBACKS; i++) {
+    if (Math.floor(mask / Math.pow(2, i)) % 2 < 1) continue;   // このセットの対象ではない
+    const p = computePlaneOf(setbackSets[i]);
+    if (!p) continue;
+    cut = true;
+    const out = [];
+    const n = poly.length / 3;
+    for (let k = 0; k < n; k++) {
+      const j = (k + 1) % n;
+      const x0 = poly[k * 3], y0 = poly[k * 3 + 1], z0 = poly[k * 3 + 2];
+      const x1 = poly[j * 3], y1 = poly[j * 3 + 1], z1 = poly[j * 3 + 2];
+      const d0 = p.nx * x0 + p.nz * z0 + p.c;
+      const d1 = p.nx * x1 + p.nz * z1 + p.c;
+      if (d0 >= 0) out.push(x0, y0, z0);
+      if ((d0 >= 0) !== (d1 >= 0)) {
+        const t = d0 / (d0 - d1);
+        out.push(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, z0 + (z1 - z0) * t);
+      }
+    }
+    poly = out;
+    if (poly.length < 9) return [];   // 何も残らなかった
+  }
+  if (!cut) return null;
+  // 残った凸多角形を扇状に三角形へ分ける
+  const tris = [];
+  const n = poly.length / 3;
+  for (let k = 1; k + 1 < n; k++) {
+    tris.push([
+      poly[0], poly[1], poly[2],
+      poly[k * 3], poly[k * 3 + 1], poly[k * 3 + 2],
+      poly[(k + 1) * 3], poly[(k + 1) * 3 + 1], poly[(k + 1) * 3 + 2],
+    ]);
+  }
+  return tris;
+}
+setSetbackTriClip(clipTriBySetback);
+
+/* 全セットの面を uniform へ流す。 */
 function syncPlaneUniform() {
-  const p = setbackState.active ? computePlane() : null;
-  if (p) setbackPlaneUniform.value.set(p.nx, 0, p.nz, p.c);
-  else setbackPlaneUniform.value.set(0, 0, 0, 0);
+  for (let i = 0; i < MAX_SETBACKS; i++) {
+    const p = i < setbackSets.length ? computePlaneOf(setbackSets[i]) : null;
+    if (p) setbackPlanesUniform.value[i].set(p.nx, 0, p.nz, p.c);
+    else setbackPlanesUniform.value[i].set(0, 0, 0, 0);
+  }
+  setbackCountUniform.value = Math.min(setbackSets.length, MAX_SETBACKS);
   requestRender();
 }
 
@@ -126,29 +234,40 @@ function applySetbackShader(m) {
   const prev = m.onBeforeCompile;
   m.onBeforeCompile = function (shader, rendererRef) {
     if (prev) prev.call(this, shader, rendererRef);
-    shader.uniforms.uSetbackPlane = setbackPlaneUniform;
-    // --- 頂点側: 対象フラグと、判定に使うワールド座標を渡す
+    shader.uniforms.uSetbackPlanes = setbackPlanesUniform;
+    shader.uniforms.uSetbackCount = setbackCountUniform;
+    // --- 頂点側: どのセットに属するかのビットと、判定に使うワールド座標を渡す
     //   ⚠️ ワールド座標は自前で出す。three の worldPosition は影の設定しだいで
     //     定義されないことがあるため、あるものとして書くと環境によって壊れる。
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>
         attribute float _setback;
-        varying float vSetbackFlag;
+        varying float vSetbackMask;
         varying vec3 vSetbackWorld;`)
       .replace('#include <project_vertex>', `
-        vSetbackFlag = _setback;
+        vSetbackMask = _setback;
         vSetbackWorld = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;
         #include <project_vertex>`);
-    // --- 断片側: 対象かつ面の外側なら捨てる
+    // --- 断片側: 属しているセットのどれか1つでも外側なら捨てる
     //   色を決める前に捨てる（後だと無駄な計算をしてから捨てることになる）。
+    //   ⚠️ ビットの取り出しは整数演算ではなく mod で行う。整数ビット演算は
+    //     GLSL ES 3.00 でしか使えず、WebGL1 に落ちた環境でコンパイルが通らない。
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>
-        uniform vec4 uSetbackPlane;
-        varying float vSetbackFlag;
+        uniform vec4 uSetbackPlanes[ ${MAX_SETBACKS} ];
+        uniform int uSetbackCount;
+        varying float vSetbackMask;
         varying vec3 vSetbackWorld;`)
       .replace('#include <clipping_planes_fragment>', `
-        if ( vSetbackFlag > 0.5 &&
-             dot( uSetbackPlane.xyz, vSetbackWorld ) + uSetbackPlane.w < 0.0 ) discard;
+        if ( vSetbackMask > 0.5 ) {
+          for ( int si = 0; si < ${MAX_SETBACKS}; si ++ ) {
+            if ( si >= uSetbackCount ) break;
+            float bit = mod( floor( vSetbackMask / pow( 2.0, float( si ) ) ), 2.0 );
+            if ( bit > 0.5 &&
+                 dot( uSetbackPlanes[ si ].xyz, vSetbackWorld )
+                   + uSetbackPlanes[ si ].w < 0.0 ) discard;
+          }
+        }
         #include <clipping_planes_fragment>`);
   };
   m.needsUpdate = true;
@@ -157,15 +276,28 @@ function applySetbackShader(m) {
 // -----------------------------------------------------------------------------
 // 頂点属性（この頂点は削る対象か）
 // -----------------------------------------------------------------------------
+/* gmlId → 属するセットのビット和。
+   ★ 毎タイルで作り直すと無駄なので、セットが変わったときだけ組み直す。 */
+let maskIndex = new Map();
+function rebuildMaskIndex() {
+  maskIndex = new Map();
+  for (let i = 0; i < setbackSets.length && i < MAX_SETBACKS; i++) {
+    const bit = Math.pow(2, i);
+    for (const gmlId of setbackSets[i].targets) {
+      maskIndex.set(gmlId, (maskIndex.get(gmlId) || 0) + bit);
+    }
+  }
+}
+
 /* 1タイルぶんの属性を書く。対象が1棟も居なければ属性は作らない。 */
 function markModelScene(modelScene) {
   const index = gmlIndexOf(modelScene);
   if (!index.size) return;
-  // このタイルに居る対象建物の batchid
-  const wanted = new Set();
-  for (const gmlId of targets) {
+  // このタイルに居る対象建物の batchid → ビット
+  const wanted = new Map();
+  for (const [gmlId, bits] of maskIndex) {
     const b = index.get(gmlId);
-    if (b !== undefined) wanted.add(b);
+    if (b !== undefined) wanted.set(b, bits);
   }
   modelScene.traverse((mesh) => {
     if (!mesh.isMesh || !mesh.geometry) return;
@@ -183,7 +315,7 @@ function markModelScene(modelScene) {
     }
     const arr = attr.array;
     for (let i = 0; i < pos.count; i++) {
-      arr[i] = (bid && wanted.has(bid.getX(i))) ? 1 : 0;
+      arr[i] = bid ? (wanted.get(bid.getX(i)) || 0) : 0;
     }
     attr.needsUpdate = true;
     // シェーダはこのメッシュのマテリアルに当てる
@@ -192,41 +324,46 @@ function markModelScene(modelScene) {
   });
 }
 
+/* 嵩上げの赤い柱にも、建物と同じ「どのセットに属するか」を書き込む。
+   ★ 柱は建物1棟につき1メッシュなので、全頂点が同じビットでよい。
+   ⚠️ 柱を切らないと、建物だけ削れて赤い柱が空中に残る。 */
+function markColumn(mesh, gmlId) {
+  if (!mesh || !mesh.geometry) return;
+  const g = mesh.geometry;
+  const pos = g.attributes.position;
+  if (!pos) return;
+  const bits = maskIndex.get(gmlId) || 0;
+  let attr = g.attributes._setback;
+  if (!attr || attr.count !== pos.count) {
+    attr = new THREE.BufferAttribute(new Float32Array(pos.count), 1);
+    g.setAttribute('_setback', attr);
+    markedGeoms.add(g);
+  }
+  attr.array.fill(bits);
+  attr.needsUpdate = true;
+  const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  for (const m of mats) if (m) applySetbackShader(m);
+}
+
+// 柱ができた瞬間にも当てる（そのときの maskIndex を使う）
+setColumnHook(markColumn);
+
 /* 読み込み済みの全タイルへ当て直す。 */
 function markAll() {
+  rebuildMaskIndex();
   for (const t of wardTiles) t.forEachLoadedModel(markModelScene);
+  for (const [gmlId, mesh] of columns) markColumn(mesh, gmlId);
 }
 
 // タイルが届くたびに当て直す（タイルは絶えず入れ替わるため）
 setBuildingSetbackHook((modelScene) => {
-  if (!setbackState.active) return;
+  if (!setbackSets.length) return;
   markModelScene(modelScene);
 });
 
 // -----------------------------------------------------------------------------
 // 削れた床面積
 // -----------------------------------------------------------------------------
-/* 多角形を「nx*x + nz*z + c < 0」の側だけに切り取る（Sutherland–Hodgman）。
-   poly は [x0,z0, x1,z1, ...]。戻り値も同じ並び。 */
-function clipPolygonToOutside(poly, nx, nz, c) {
-  const out = [];
-  const n = poly.length / 2;
-  for (let i = 0; i < n; i++) {
-    const j = (i + 1) % n;
-    const x0 = poly[i * 2], z0 = poly[i * 2 + 1];
-    const x1 = poly[j * 2], z1 = poly[j * 2 + 1];
-    const d0 = nx * x0 + nz * z0 + c;
-    const d1 = nx * x1 + nz * z1 + c;
-    const in0 = d0 < 0, in1 = d1 < 0;
-    if (in0) out.push(x0, z0);
-    if (in0 !== in1) {
-      const t = d0 / (d0 - d1);
-      out.push(x0 + (x1 - x0) * t, z0 + (z1 - z0) * t);
-    }
-  }
-  return out;
-}
-
 /* 多角形の符号付き面積（水平面）。 */
 function polygonArea(poly) {
   let a = 0;
@@ -238,23 +375,56 @@ function polygonArea(poly) {
   return a / 2;
 }
 
+/* 多角形を「nx*x + nz*z + c >= 0」の側（＝残る側）だけに切り取る。
+   ⚠️ 複数の後退が重なる建物では、削れた量を面ごとに足してはいけない。
+     同じ場所を二度数えてしまう（角地で2方向から下げると顕著）。
+     残る側は【すべての面の内側の共通部分】＝凸領域なので、順に切っていけば
+     厳密に求まる。削れた量は「元の面積 − 残った面積」で出す。 */
+function clipPolygonToInside(poly, nx, nz, c) {
+  const out = [];
+  const n = poly.length / 2;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const x0 = poly[i * 2], z0 = poly[i * 2 + 1];
+    const x1 = poly[j * 2], z1 = poly[j * 2 + 1];
+    const d0 = nx * x0 + nz * z0 + c;
+    const d1 = nx * x1 + nz * z1 + c;
+    const in0 = d0 >= 0, in1 = d1 >= 0;
+    if (in0) out.push(x0, z0);
+    if (in0 !== in1) {
+      const t = d0 / (d0 - d1);
+      out.push(x0 + (x1 - x0) * t, z0 + (z1 - z0) * t);
+    }
+  }
+  return out;
+}
+
 /* 削れる平面積[㎡]を測る。gmlId ごとに返す。
    ★ 測り方は buildingedit.js の底面積と同じ考え（三角形の水平投影を向きごとに
-     合計し、大きいほうを採る）。違うのは、後退面より外側だけを切り出す点。
+     合計し、大きいほうを採る）。違うのは、削れて無くなる分だけを取り出す点。
    ⚠️ 同じ建物が複数タイル（LOD違い）に居るので、三角形数がいちばん多い
      ＝最も細かい表現のものを採る（足すと二重に数える）。 */
 const _saW = new THREE.Matrix4();
 function measureCutArea() {
-  const plane = computePlane();
   const out = new Map();   // gmlId -> 面積
-  if (!plane || !targets.size) return out;
-  const { nx, nz, c } = plane;
+  if (!setbackSets.length) return out;
+  // 建物ごとに、その建物へ効いている面を集めておく
+  const planesOf = new Map();   // gmlId -> [{nx,nz,c}, ...]
+  for (const set of setbackSets) {
+    const p = computePlaneOf(set);
+    if (!p) continue;
+    for (const gmlId of set.targets) {
+      if (!planesOf.has(gmlId)) planesOf.set(gmlId, []);
+      planesOf.get(gmlId).push(p);
+    }
+  }
+  if (!planesOf.size) return out;
   const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3();
   for (const t of wardTiles) {
     t.forEachLoadedModel((modelScene) => {
       const index = gmlIndexOf(modelScene);
       const wanted = new Map();   // batchId -> gmlId
-      for (const gmlId of targets) {
+      for (const gmlId of planesOf.keys()) {
         const b = index.get(gmlId);
         if (b !== undefined) wanted.set(b, gmlId);
       }
@@ -278,14 +448,20 @@ function measureCutArea() {
           A.set(pos.getX(i0), pos.getY(i0), pos.getZ(i0)).applyMatrix4(_saW);
           B.set(pos.getX(i1), pos.getY(i1), pos.getZ(i1)).applyMatrix4(_saW);
           C.set(pos.getX(i2), pos.getY(i2), pos.getZ(i2)).applyMatrix4(_saW);
-          const clipped = clipPolygonToOutside(
-            [A.x, A.z, B.x, B.z, C.x, C.z], nx, nz, c,
-          );
+          const tri = [A.x, A.z, B.x, B.z, C.x, C.z];
+          // 残る側＝効いている面すべての内側。順に切っていけば共通部分になる。
+          let kept = tri;
+          for (const p of planesOf.get(gmlId)) {
+            if (kept.length < 6) break;
+            kept = clipPolygonToInside(kept, p.nx, p.nz, p.c);
+          }
+          const whole = polygonArea(tri);
+          const rest = kept.length < 6 ? 0 : polygonArea(kept);
+          // 削れた分＝元 − 残り。符号は元の三角形の向きに合わせて数える。
+          const s = whole - rest;
           let a = acc.get(gmlId);
           if (!a) { a = { up: 0, dn: 0, tris: 0 }; acc.set(gmlId, a); }
           a.tris++;
-          if (clipped.length < 6) continue;      // 面の外側に何も残らなかった
-          const s = polygonArea(clipped);
           if (s > 0) a.up += s; else a.dn -= s;
         }
       });
@@ -301,13 +477,23 @@ function measureCutArea() {
   return areas;
 }
 
+/* 確定済みセットが控えている、その建物の属性。 */
+function infoOfTarget(gmlId) {
+  for (const set of setbackSets) {
+    const v = set.info.get(gmlId);
+    if (v) return v;
+  }
+  return null;
+}
+
 /* 削れた床面積[㎡]の合計。階数は buildingedit と同じ決め方（属性→実測→3m仮定）。 */
 function measureCutFloorArea() {
   const areas = measureCutArea();
   let total = 0, assumed = false;
   const per = new Map();
   for (const [gmlId, area] of areas) {
-    const info = editState.selection.get(gmlId) || {};
+    // 選択が外れていてもセットの控えから引ける（確定後の集計のため）
+    const info = editState.selection.get(gmlId) || infoOfTarget(gmlId) || {};
     const fh = floorHeightOf(info);
     // その建物の高さ ÷ 階高 ＝ 階数。削るのは全層なので、階数ぶんの床が消える。
     const h = Number.isFinite(info.measuredHeight) ? info.measuredHeight : NaN;
@@ -321,72 +507,144 @@ function measureCutFloorArea() {
 }
 
 // -----------------------------------------------------------------------------
-// 公開API（段階1ではスクリプトから呼ぶ。UIは次の段階で作る）
+// セットの出し入れ
+// -----------------------------------------------------------------------------
+/* 新しい後退セットを始める。いま選択中の建物が対象になる。
+   ★ この時点で setbackSets へ入れてしまう。プレビューと確定済みで別の仕組みを
+     持つと、面を動かすたびに2通りの経路を通ることになって食い違う。
+     やめたときは removeSet で取り除けばよい。 */
+function beginSetbackSet() {
+  if (setbackSets.length >= MAX_SETBACKS) {
+    return { ok: false, reason: `後退は同時に ${MAX_SETBACKS} か所までです` };
+  }
+  if (!editState.selection.size) return { ok: false, reason: '建物が選ばれていません' };
+  draftSet = makeSetbackSet(editState.selection.keys());
+  captureInfo(draftSet);
+  setbackSets.push(draftSet);
+  return { ok: true };
+}
+
+/* 対象建物の属性を控える（確定後に選択が外れても集計できるように）。 */
+function captureInfo(set) {
+  for (const [gmlId, info] of editState.selection) {
+    if (!set.targets.has(gmlId)) continue;
+    set.info.set(gmlId, {
+      storeys: info.storeys, height: info.height, measuredHeight: info.measuredHeight,
+    });
+  }
+}
+
+/* セットを取り除く。 */
+function removeSet(set) {
+  const i = setbackSets.indexOf(set);
+  if (i < 0) return;
+  setbackSets.splice(i, 1);
+  if (draftSet === set) draftSet = null;
+  refreshSetbacks();
+}
+
+/* いま選んでいる建物に関わるセットを全部取り除く。 */
+function removeSetsOfSelection() {
+  const ids = new Set(editState.selection.keys());
+  for (const set of [...setbackSets]) {
+    for (const id of set.targets) {
+      if (ids.has(id)) { removeSet(set); break; }
+    }
+  }
+}
+
+/* 全部取り消して元に戻す。 */
+function clearSetback() {
+  setbackSets.length = 0;
+  draftSet = null;
+  refreshSetbacks();
+}
+
+/* 面・属性・断面・断面図を、いまのセット一式に合わせて作り直す。
+   ★ セットを足した・消した・面を動かした、のどれでもここを通す。
+     経路を1本にしておかないと、どれかの更新を書き忘れる。 */
+function refreshSetbacks() {
+  markAll();          // 頂点属性（どのセットに属するか）
+  syncPlaneUniform(); // シェーダへ渡す面
+  rebuildCaps();      // 切り口の面
+  markSectionDirty(); // 箱庭・縦断図
+  requestRender();
+}
+
+// -----------------------------------------------------------------------------
+// 調整中のセットへの操作
 // -----------------------------------------------------------------------------
 /* 後退面のもとになる線を決める（ワールド座標の2点）。 */
 function setSetbackLine(ax, az, bx, bz) {
-  setbackState.line = { ax, az, bx, bz };
+  if (!draftSet) return;
+  draftSet.line = { ax, az, bx, bz };
   syncPlaneUniform();
-}
-
-/* いま適用中のもの（削る／分割）を、対象を選び直さずに作り直す。
-   ★ 面を引き直した・後退量を変えた・削る側を反転した、のいずれでも呼ぶ。
-     どれも「対象は同じまま、面だけが変わった」場面なので、
-     建物を選び直させる必要がない。 */
-function reapplyCurrent() {
-  if (setbackState.active) applySetback({ keepTargets: true });
 }
 
 /* 線からずらす量[m]。正で削る側が広がる。 */
 function setSetbackOffset(m) {
-  setbackState.offset = Number(m) || 0;
+  if (!draftSet) return;
+  draftSet.offset = Number(m) || 0;
   syncPlaneUniform();
 }
 
 /* どちら側を削るか入れ替える。 */
 function flipSetbackSide() {
-  setbackState.side *= -1;
+  if (!draftSet) return;
+  draftSet.side *= -1;
   syncPlaneUniform();
 }
 
-/* いま選択中の建物を対象にして、削りを有効にする。 */
-/* keepTargets … true なら【いま適用中の対象をそのまま使う】。
-   ★ 後退量や切断面を調整するときに使う。適用したあと建物の選択を外していても、
-     対象は targets に控えてあるので選び直さずに済む。
-     ⚠️ 選択から作り直してしまうと、選択が空の瞬間に対象がゼロになって
-       それまでの削り・分割が消える（実際そうなっていた）。 */
-function applySetback({ keepTargets = false } = {}) {
-  if (!keepTargets) {
-    targets.clear();
-    for (const gmlId of editState.selection.keys()) targets.add(gmlId);
-  }
-  if (!targets.size) return { ok: false, reason: '建物が選ばれていません' };
-  if (!setbackState.line) return { ok: false, reason: '後退面が決まっていません' };
-  setbackState.active = true;
+/* 面を動かしたあとの作り直し（対象は変えない）。 */
+function reapplyCurrent() {
+  if (draftSet) refreshSetbacks();
+}
+
+/* いま調整中のセットを確定する。 */
+function applySetback() {
+  if (!draftSet) return { ok: false, reason: '後退の面が決まっていません' };
+  if (!draftSet.targets.size) return { ok: false, reason: '建物が選ばれていません' };
+  if (!draftSet.line) return { ok: false, reason: '後退面が決まっていません' };
   // 基準線と後退距離は、候補面が片付く前にここで控える
-  setbackState.baseline = faceState.baseline ? { ...faceState.baseline } : setbackState.baseline;
+  if (faceState.baseline) draftSet.baseline = { ...faceState.baseline };
   const d0 = setbackDistance();
-  if (Number.isFinite(d0)) setbackState.distance = d0;
-  markAll();
-  syncPlaneUniform();
-  rebuildCap();          // 切り口に面を張る
-  markSectionDirty();
+  if (Number.isFinite(d0)) draftSet.distance = d0;
+  captureInfo(draftSet);
+  const done = draftSet;
+  draftSet = null;          // 確定＝調整対象から外れる
+  refreshSetbacks();
   const fa = measureCutFloorArea();
-  return { ok: true, 棟数: targets.size, 削れた床面積: fa.total, 内訳: fa.per };
+  return { ok: true, 棟数: done.targets.size, 削れた床面積: fa.total, 内訳: fa.per };
 }
 
-/* 削りを解除して元に戻す。 */
-function clearSetback() {
-  setbackState.active = false;
-  setbackState.baseline = null;
-  setbackState.distance = NaN;
-  targets.clear();
-  // 属性を 0 で埋め直す（属性そのものは残しても描画に影響しない）
-  markAll();
-  syncPlaneUniform();
-  rebuildCap();          // 切り口の面も消える（active でなくなるため）
-  markSectionDirty();
-  requestRender();
+/* 確定済みセットの後退距離をあとから直す。
+   ★ 基準線と向きはセットが覚えているので、距離だけ与えれば面を置き直せる。
+     引き直さずに「6mを7mに」といった微調整ができるようにするため。 */
+function setDistanceOfSet(set, d) {
+  const b = set && set.baseline;
+  const p = computePlaneOf(set);
+  if (!b || !p || !Number.isFinite(d)) return false;
+  // ★ 内側（建物が残る側）は【面の法線そのもの】。computePlaneOf は
+  //   「削る側が負」になる向きで法線を返すので、法線方向へ進めば必ず内側になる。
+  //   基準線の法線 b.n は引いたときの向き次第で裏返っていることがあり、
+  //   そちらを使うと後退の向きが反転する。
+  // ⚠️ 面に沿った向きの取り方で、線から出る法線の符号が変わる。
+  //   computePlaneOf は線の方向 (dx,dz) から n = (-dz, dx)*side を作るので、
+  //   u = (nz, -nx) にしないと法線が裏返り、削る側が入れ替わる。
+  //   （u = (-nz, nx) にしていたため、距離を変えるたびに削りが反転して
+  //     面積が 0 と全体を行き来していた。）
+  const ux = p.nz, uz = -p.nx;
+  const px = b.x + p.nx * d, pz = b.z + p.nz * d;
+  set.line = { ax: px - ux * 300, az: pz - uz * 300, bx: px + ux * 300, bz: pz + uz * 300 };
+  set.offset = 0;
+  // ★ 念のため向きを検算して、ずれていたら側を入れ替える。
+  //   取り方を1か所間違えるだけで「削る側が反転する」という分かりにくい壊れ方を
+  //   するので、結果そのものを確かめてから確定させる。
+  const after = computePlaneOf(set);
+  if (after && (after.nx * p.nx + after.nz * p.nz) < 0) set.side *= -1;
+  set.distance = d;
+  refreshSetbacks();
+  return true;
 }
 
 // =============================================================================
@@ -471,7 +729,7 @@ const SCAN_STEP = 0.12;
      交差の回数で内外を決めるので、線分が断片化していても、順番がばらばらでも、
      自己交差していても正しく塗れる。閉じている必要すらない。
    ⚠️ 代わりに輪郭が刻み幅ぶんギザつくので、輪郭方式が成功したときはそちらを使う。 */
-function fillByScanline(segs) {
+function fillByScanline(segs, uLo = -Infinity, uHi = Infinity) {
   let vMin = Infinity, vMax = -Infinity;
   for (let i = 1; i < segs.length; i += 2) {
     if (segs[i] < vMin) vMin = segs[i];
@@ -493,7 +751,12 @@ function fillByScanline(segs) {
     xs.sort((a, b) => a - b);
     const vTop = Math.min(v + SCAN_STEP, vMax);
     for (let k = 0; k + 1 < xs.length; k += 2) {
-      const a = xs[k], b = xs[k + 1];
+      // ★ 塗る帯だけを他の後退面の内側に縮める。
+      //   ⚠️ 交線そのものを切ってはいけない。走査線は「交点の本数の偶奇」で
+      //     内外を決めているので、線分を途中で切ると切り口の端点が
+      //     余分な交点として数えられ、内外が反転して断面がまるごと消える。
+      //     輪郭は元のまま残し、塗る区間だけを狭めるのが正しい。
+      const a = Math.max(xs[k], uLo), b = Math.min(xs[k + 1], uHi);
       if (b - a < 1e-4) continue;
       out.push(a, v, b, v, b, vTop, a, v, b, vTop, a, vTop);
     }
@@ -511,7 +774,7 @@ function fillByScanline(segs) {
        箱庭の断面（section.js の buildSectionFill）が clipMeshes 全体に対して
        1回だけ適用しているのと同じ形にする。 */
 const _capW = new THREE.Matrix4();
-function forEachTargetTriangle(fn) {
+function forEachTargetTriangle(targetIds, fn) {
   const cands = [];
   const updatedRoots = new Set();
   for (const t of wardTiles) {
@@ -521,7 +784,7 @@ function forEachTargetTriangle(fn) {
       //   分割で「棟ごと」に三角形を仕分けるために、どの棟の三角形かを
       //   呼び出し側へ返す必要がある。
       const wanted = new Map();
-      for (const gmlId of targets) {
+      for (const gmlId of targetIds) {
         const b = index.get(gmlId);
         if (b !== undefined) wanted.set(b, gmlId);
       }
@@ -535,7 +798,18 @@ function forEachTargetTriangle(fn) {
       });
     });
   }
-  for (const cand of keepFinestLod(cands)) {
+  // ★ 嵩上げの柱も混ぜる。柱は建物と地続きの立体なので、切り口も一緒に
+  //   塞がないと赤い部分だけ口が開いて見える。
+  //   ⚠️ 柱は LOD の選別（keepFinestLod）に混ぜない。タイルの親子関係を持たず、
+  //     建物1棟につき1つしかないので、選別に入れると弾かれかねない。
+  const columnCands = [];
+  for (const [gmlId, mesh] of columns) {
+    if (!targetIds.has || !targetIds.has(gmlId)) continue;
+    if (!mesh.visible || !mesh.geometry || !mesh.geometry.attributes.position) continue;
+    mesh.updateWorldMatrix(true, false);
+    columnCands.push({ mesh, world: mesh.matrixWorld.clone(), gmlId });
+  }
+  for (const cand of [...keepFinestLod(cands), ...columnCands]) {
     const g = cand.mesh.geometry;
     const pos = g.attributes.position, bid = g.attributes._batchid;
     const e = cand.world.elements;
@@ -548,7 +822,9 @@ function forEachTargetTriangle(fn) {
       const i0 = idx ? idx[f * 3] : f * 3;
       const i1 = idx ? idx[f * 3 + 1] : f * 3 + 1;
       const i2 = idx ? idx[f * 3 + 2] : f * 3 + 2;
-      const gmlId = cand.wanted.get(bid.getX(i0));
+      // 柱は 1メッシュ＝1棟なので batchid を持たない。cand.gmlId をそのまま使う。
+      const gmlId = cand.gmlId !== undefined
+        ? cand.gmlId : cand.wanted.get(bid.getX(i0));
       if (gmlId === undefined) continue;
       fn(cand, i0, i1, i2, wx, wy, wz, gmlId);
     }
@@ -556,31 +832,66 @@ function forEachTargetTriangle(fn) {
 }
 
 /* 切り口の面を作り直す。 */
-/* 断面の頂点（ワールド座標の三角形リスト）を作る。分割でも使うので分けてある。 */
-function buildCapVerts(plane) {
-  const L = setbackState.line;
+/* この断面の上で、他の後退面に削られずに【残っている】u の範囲を出す。
+   ★ 断面は平面の上にあるので、他の面までの距離は u について 1次式になる。
+     d(u) = d0 + k*u。これが 0 以上の側が残る側で、k の符号で
+     「u がある値以上」か「以下」かが決まる。面が平行なら全域が同じ側。
+   複数の面が効いていれば、その共通部分を返す。 */
+function keptURange(gmlId, self, ux, uz, px, pz, baseU) {
+  let lo = -Infinity, hi = Infinity;
+  for (const set of setbackSets) {
+    if (set === self || !set.targets.has(gmlId)) continue;
+    const p = computePlaneOf(set);
+    if (!p) continue;
+    const k = p.nx * ux + p.nz * uz;
+    const d0 = p.nx * px + p.nz * pz + p.c - baseU * k;
+    if (Math.abs(k) < 1e-9) {
+      // 面が平行。全域が残る側か、全域が削られた側か。
+      if (d0 < 0) return { lo: 0, hi: -1 };   // 空の範囲
+      continue;
+    }
+    const edge = -d0 / k;
+    if (k > 0) lo = Math.max(lo, edge);
+    else hi = Math.min(hi, edge);
+  }
+  return { lo, hi };
+}
+
+/* 断面の頂点（ワールド座標の三角形リスト）を作る。
+   ★ 建物ごとに分けて塗る。走査線は交線の本数の偶奇で内外を決めるので、
+     別の建物の交線が混ざると内外が入れ替わってしまう。 */
+function buildCapVerts(set, plane) {
+  const L = set.line;
   let ux = L.bx - L.ax, uz = L.bz - L.az;
   const ulen = Math.hypot(ux, uz) || 1; ux /= ulen; uz /= ulen;
-
-  // 対象建物の三角形を集めて交線を取る
-  const segs = [];
-  forEachTargetTriangle((cand, i0, i1, i2, wx, wy, wz) => {
-    triCutSegment(wx(i0), wy(i0), wz(i0), wx(i1), wy(i1), wz(i1),
-      wx(i2), wy(i2), wz(i2), plane, ux, uz, segs);
-  });
-  capStats.segs = segs.length / 4;
-  if (!segs.length) { capStats.tris = 0; return []; }
-
   // 面上の点 (u,v) をワールドへ戻すための基準点（＝原点から面へ下ろした足）
   const px = -plane.nx * plane.c, pz = -plane.nz * plane.c;
   const baseU = px * ux + pz * uz;
+
+  // 対象建物の三角形を集めて交線を取る（棟ごとに分けて持つ）
+  const perBuilding = new Map();   // gmlId -> segs
+  forEachTargetTriangle(set.targets, (cand, i0, i1, i2, wx, wy, wz, gmlId) => {
+    let segs = perBuilding.get(gmlId);
+    if (!segs) { segs = []; perBuilding.set(gmlId, segs); }
+    triCutSegment(wx(i0), wy(i0), wz(i0), wx(i1), wy(i1), wz(i1),
+      wx(i2), wy(i2), wz(i2), plane, ux, uz, segs);
+  });
+
   const verts = [];
-  const sv = fillByScanline(segs);
-  for (let i = 0; i < sv.length; i += 2) {
-    // u はワールドの水平方向、v は高さ。基準点から u 方向へ戻す。
-    const uu = sv[i] - baseU;
-    verts.push(px + ux * uu, sv[i + 1], pz + uz * uu);
+  let nsegs = 0;
+  for (const [gmlId, segs] of perBuilding) {
+    if (!segs.length) continue;
+    nsegs += segs.length / 4;
+    const { lo, hi } = keptURange(gmlId, set, ux, uz, px, pz, baseU);
+    if (hi - lo < 1e-4) continue;   // 他の後退で丸ごと削られている
+    const sv = fillByScanline(segs, lo, hi);
+    for (let i = 0; i < sv.length; i += 2) {
+      // u はワールドの水平方向、v は高さ。基準点から u 方向へ戻す。
+      const uu = sv[i] - baseU;
+      verts.push(px + ux * uu, sv[i + 1], pz + uz * uu);
+    }
   }
+  capStats.segs = nsegs;
   capStats.tris = verts.length / 9;
   return verts;
 }
@@ -610,15 +921,36 @@ function makeCapGeometry(verts, plane, offset = 0) {
   return geom;
 }
 
-/* 削り（片側を消す）の切り口を作り直す。 */
-function rebuildCap() {
-  for (const ch of capGroup.children) ch.geometry.dispose();
+/* 削りの切り口を、効いているセットぶんまとめて作り直す。
+   ⚠️ セットごとに別のメッシュにする。1つに統合すると、片方を消したときに
+     もう片方まで作り直すことになり、面を動かすたびの手戻りが大きい。 */
+function rebuildCaps() {
+  for (const ch of capGroup.children) { clipMeshes.delete(ch); ch.geometry.dispose(); }
   capGroup.clear();
-  const plane = computePlane();
-  if (!setbackState.active || !plane || !targets.size) { requestRender(); return; }
-  const verts = buildCapVerts(plane);
-  if (!verts.length) { requestRender(); return; }
-  capGroup.add(new THREE.Mesh(makeCapGeometry(verts, plane), capMat));
+  capStats.segs = 0; capStats.tris = 0;
+  let segs = 0, tris = 0;
+  for (const set of setbackSets) {
+    const plane = computePlaneOf(set);
+    if (!plane || !set.targets.size) continue;
+    const verts = buildCapVerts(set, plane);
+    segs += capStats.segs; tris += capStats.tris;
+    if (!verts.length) continue;
+    const mesh = new THREE.Mesh(makeCapGeometry(verts, plane), capMat);
+    mesh.__setbackSetId = set.id;
+    capGroup.add(mesh);
+    // ★ 箱庭の断面にもこの切り口を数えさせる。
+    //   ⚠️ 登録しないと、後退で削った側の輪郭が開いたままになり、
+    //     箱庭の断面（輪郭をループに繋いで面を張る方式）が閉じられない。
+    //   ワールド行列はこのメッシュ自身のもので足りる（scene 直下ではないが
+    //   capGroup は動かないので、自分を root として登録すれば正しく働く）。
+    mesh.__clipRoot = mesh;
+    mesh.__clipGroup = capGroup;
+    mesh.__clipTile = null;
+    mesh.__clipIsTerrain = false;
+    mesh.updateWorldMatrix(true, false);
+    clipMeshes.add(mesh);
+  }
+  capStats.segs = segs; capStats.tris = tris;
   requestRender();
 }
 
@@ -678,6 +1010,16 @@ const FACE_COLOR_ACTIVE = 0xd8402f; // 選ばれて切断面になった側面
 // handle … ギズモが掴む対象（面の位置と向きだけを持つ空の入れ物）
 const faceState = {
   box: null, faces: [], picked: null, handle: null, hover: null,
+  // 壁面後退の中の小さな手順。
+  //   'face' … 削る面を選ぶ（囲み箱の4側面が出ている）
+  //   'base' … ギズモで基準線に合わせて確定する
+  //   'move' … 面をドラッグ／数値入力で後退量を決める
+  //   'done' … 確定済み（ギズモも面も畳んである）
+  //   ⚠️ 基準線を決める場面と後退量を決める場面を分ける。以前は同じ画面で
+  //     ギズモ1つに両方をやらせていて、いま何を合わせているのか分からなかった。
+  phase: 'face',
+  arrows: [],   // 面の中央に出す「削る向き」の矢印
+  rotBar: null, // 面の上に立てる回転バー（上下ドラッグで面を回す）
   // ★ 後退の起点となる線（道路境界線などに手で合わせたもの）。
   //   { x, z, nx, nz } … 線が通る点と、その法線（水平）。
   //   これを決めておくと、そこから何メートル後退したかを数字で出せる。
@@ -727,6 +1069,22 @@ function selectionBox() {
 }
 
 function disposeFaces() {
+  showFaceHint(null);
+  if (faceState.rotBar) {
+    // 線と球でマテリアルを共有しているので、後始末は1回だけ
+    let mat = null;
+    for (const ch of faceState.rotBar.children) { ch.geometry.dispose(); mat = ch.material; }
+    if (mat) mat.dispose();
+    if (faceState.rotBar.parent) faceState.rotBar.parent.remove(faceState.rotBar);
+    faceState.rotBar = null;
+  }
+  rotDrag = null;
+  for (const a of faceState.arrows) {
+    a.geometry.dispose();
+    a.material.dispose();
+    if (a.parent) a.parent.remove(a);
+  }
+  faceState.arrows = [];
   for (const m of faceGroup.children) { m.geometry.dispose(); m.material.dispose(); }
   faceGroup.clear();
   faceState.faces = [];
@@ -754,21 +1112,77 @@ function buildFaces() {
     { cx: midX, cz: min.z - FACE_MARGIN, half: halfX, nx: 0, nz: 1 },
     { cx: midX, cz: max.z + FACE_MARGIN, half: halfX, nx: 0, nz: -1 },
   ];
-  for (const d of defs) {
-    const geo = new THREE.PlaneGeometry(Math.max(d.half * 2, 1), hy * 2);
+  const newFace = (w, h) => {
     const mat = new THREE.MeshBasicMaterial({
       color: FACE_COLOR, transparent: true, opacity: 0.22,
       side: THREE.DoubleSide, depthWrite: false,
     });
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.set(d.cx, cy, d.cz);
-    // PlaneGeometry は既定で +Z を向くので、法線の向きへ回す
-    mesh.rotation.y = Math.atan2(d.nx, d.nz);
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(Math.max(w, 1), Math.max(h, 1)), mat);
     mesh.frustumCulled = false;
     faceGroup.add(mesh);
     faceState.faces.push(mesh);
+    return mesh;
+  };
+  for (const d of defs) {
+    const mesh = newFace(d.half * 2, hy * 2);
+    mesh.position.set(d.cx, cy, d.cz);
+    // PlaneGeometry は既定で +Z を向くので、法線の向きへ回す
+    mesh.rotation.y = Math.atan2(d.nx, d.nz);
+    mesh.__faceKind = 'side';
+    // ★ その面を押すとどちらへ削れるのかを、面の中央の矢印で見せる。
+    //   面を選んでから初めて削れる向きが分かる、では選び直しが増える。
+    faceState.arrows.push(makeFaceArrow(mesh, hy));
   }
+  // ★ 上面。ここを押すと高さの変更に進む。
+  //   ⚠️ 側面と同じ「面を押して決める」入口に揃える。ボタンで選ばせると
+  //     囲み箱が出ているのに別の場所を押させることになって、視線が飛ぶ。
+  //   ⚠️ 上面は箱より【内側に縮めて】置く。同じ大きさだと、見下ろす角度では
+  //     側面の手前に上面が重なり、側面を押したつもりで高さの変更に入ってしまう。
+  //     縁を空けておけば、そこを押せば必ず側面が当たる。
+  const TOP_SHRINK = 0.72;
+  const top = newFace(halfX * 2 * TOP_SHRINK, halfZ * 2 * TOP_SHRINK);
+  top.position.set(midX, max.y + FACE_MARGIN, midZ);
+  top.rotation.x = -Math.PI / 2;   // 水平に寝かせる（+Z が上を向く）
+  top.__faceKind = 'top';
+  faceState.arrows.push(makeFaceArrow(top, Math.min(halfX, halfZ) * TOP_SHRINK, ARROW_COLOR_TOP));
   requestRender();
+}
+
+/* 面の中央に出す「削る向き」の矢印。面と同じ向きに寝かせた平たい矢。
+   ⚠️ 矢印は面の【子】にする。面を動かすと矢印も一緒に動いてほしいし、
+     面を捨てるときに消し忘れることもなくなる。 */
+const ARROW_COLOR = 0xffd23c;        // 側面＝壁面後退
+const ARROW_COLOR_TOP = 0xd8402f;    // 上面＝高さの変更（切断面の赤に合わせる）
+function makeFaceArrow(faceMesh, sizeHint, color = ARROW_COLOR) {
+  // 矢の長さ[m]。面の高さを基準にする（幅は建物の並びしだいで極端に長くなるため）。
+  const L = Math.max(Math.min(sizeHint * 0.9, 22), 6);
+  const w = L * 0.16;      // 竿の幅の半分
+  const hw = L * 0.42;     // 矢羽根の幅の半分
+  const hl = L * 0.45;     // 矢羽根の長さ
+  // 面のローカル座標で作る。
+  //   ⚠️ 面は mesh.rotation.y = atan2(nx, nz) で「箱の内側の向き」へ回してある。
+  //     PlaneGeometry の法線は +Z なので、【+Z が箱の内側】。
+  //     矢を -Z へ向けていたため外を指していた。動かす向き＝+Z へ向ける。
+  const verts = [
+    -w, 0, 0, w, 0, 0, w, 0, (L - hl),
+    -w, 0, 0, w, 0, (L - hl), -w, 0, (L - hl),
+    -hw, 0, (L - hl), hw, 0, (L - hl), 0, 0, L,
+  ];
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  g.computeVertexNormals();
+  const m = new THREE.MeshBasicMaterial({
+    color, transparent: true, opacity: 0.85,
+    side: THREE.DoubleSide, depthTest: false,
+  });
+  const mesh = new THREE.Mesh(g, m);
+  // ⚠️ 回転は掛けない。頂点は既に面のローカル XZ 平面（Y=0）で作ってあり、
+  //   矢先は +Z ＝【面に直角な内向き】を指している。
+  //   ここで X 軸まわりに回していたため、矢が面に沿って倒れて見えていた。
+  mesh.renderOrder = 7;
+  mesh.frustumCulled = false;
+  faceMesh.add(mesh);
+  return mesh;
 }
 
 /* 基準線を今のギズモ位置で決める。 */
@@ -779,8 +1193,23 @@ function setBaselineHere() {
     x: h.position.x, z: h.position.z,
     nx: Math.sin(h.rotation.y), nz: Math.cos(h.rotation.y),
   };
+  // ★ 基準線を確定したらギズモは畳む。ここから先は「面をどれだけ下げるか」
+  //   だけの操作で、向きはもう動かさない。ギズモを出したままだと、
+  //   基準線ごと動かせてしまい 0m の位置がずれる。
+  detachGizmos();
+  faceState.phase = 'move';
   updateBaselineMesh();
   syncSetbackUI();
+  requestRender();
+}
+
+/* ギズモを対象から外して隠す（畳むだけ。面や基準線はそのまま）。 */
+function detachGizmos() {
+  for (const g of gizmos) {
+    g.detach();
+    g.enabled = false;
+    if (g.getHelper) g.getHelper().visible = false;
+  }
 }
 
 /* 基準線を消す。 */
@@ -871,32 +1300,57 @@ function syncPlaneFromHandle() {
   const h = faceState.handle, box = faceState.box;
   if (!h || !box) return;
   // 面の法線（水平）と、面に沿った向き（＝切断線の向き）
+  //   ⚠️ 線の向きは【法線がそのまま出る取り方】にすること。
+  //     computePlaneOf は線の方向 (dx,dz) から n = (-dz, dx)*side を作るので、
+  //     u = (nz, -nx) なら n がそっくり戻る。u = (-nz, nx) にすると法線が裏返り、
+  //     輪を回すと切断面だけ逆向きに回っていた。その食い違いを「削る側の反転」で
+  //     埋め合わせていたため、回している途中で削りが突然裏返り、
+  //     狙った角度で止められなかった。
   const nx = Math.sin(h.rotation.y), nz = Math.cos(h.rotation.y);
-  const ux = -nz, uz = nx;
+  const ux = nz, uz = -nx;
   setbackState.offset = 0;
+  // ★ 候補の面は【箱の内側】を向けて作ってある（buildFaces の nx,nz）。
+  //   その向きを法線にすれば、削られるのは常に法線の裏側＝箱の外側になる。
+  //   だから側の入れ替えは要らない。回している間ずっと同じ側が削れる。
+  setbackState.side = 1;
   setSetbackLine(h.position.x - ux * 300, h.position.z - uz * 300,
     h.position.x + ux * 300, h.position.z + uz * 300);
-  // 箱の中心が「残る側」に来るよう向きを合わせる（＝外側が削られる）
-  const c = new THREE.Vector3(); box.getCenter(c);
-  const p0 = computePlane();
-  if (p0 && (p0.nx * c.x + p0.nz * c.z + p0.c) < 0) setbackState.side *= -1;
   // 選ばれている板も handle に追従させる
   if (faceState.picked) {
     faceState.picked.position.copy(h.position);
     faceState.picked.rotation.y = h.rotation.y;
   }
-  reapplyCurrent();
-  syncPlaneUniform();
+  // 動かしている間は面（uniform）だけ。重い作り直しは手を離してから。
+  if (faceAdjusting) syncPlaneUniform();
+  else reapplyCurrent();
   requestRender();
 }
 
 /* 面を選ぶ。選んだ面から切断面を決め、ギズモを付ける。 */
 function pickFace(mesh) {
+  // ★ 面を選んだ時点で新しいセットを立てる。ここから先の面の動きは、
+  //   そのセットを直接いじる＝プレビューがそのまま確定内容になる。
+  const r = beginSetbackSet();
+  if (!r.ok) { setInfo(r.reason); return; }
   faceState.picked = mesh;
   // ★ 壁面後退の作業中は、選択が空になってもパネルの中身を畳ませない
   //   （畳まれると調整の途中で操作先が消えてしまう）。
   setSetbackBusy(true);
   faceState.hover = null;
+  // ★ 選ばなかった3面は【消す】。残しておくと、基準線を合わせている最中に
+  //   別の面を掴んでしまい、選び直しになってしまう。
+  for (const m of [...faceState.faces]) {
+    if (m === mesh) continue;
+    m.geometry.dispose();
+    m.material.dispose();
+    faceGroup.remove(m);
+  }
+  faceState.faces = [mesh];
+  faceState.arrows = faceState.arrows.filter((a) => a.parent === mesh);
+  faceState.phase = 'base';
+  // 面の上に回転バーを立てる（面の高さの半分ぶんを目安に）
+  const hy = (faceState.box.max.y - faceState.box.min.y) / 2;
+  faceState.rotBar = buildRotBar(mesh, Math.max(hy, 2));
   refreshFaceLook();
   const h = ensureHandle();
   h.position.copy(mesh.position);
@@ -907,12 +1361,9 @@ function pickFace(mesh) {
     g.enabled = true;
     if (g.getHelper) g.getHelper().visible = true;
   }
-  // ★ 面を選んだ時点で削りを効かせる（確定前のプレビュー）。
-  //   面を動かすたびに結果が見えないと、どこまで削れるのか分からないため。
-  //   「後退を確定」はこのプレビューを確定させ、ギズモを畳むだけ。
-  //   ⚠️ 先に切断面を作ること。applySetback は面が決まっていないと失敗する。
+  // 面の位置から切断面を決める。セットは既に効いているので、これだけで
+  // 削りのプレビューが出る（確定はギズモと面を畳むだけ）。
   syncPlaneFromHandle();
-  applySetback();
   requestRender();
 }
 
@@ -925,11 +1376,12 @@ function pickFace(mesh) {
 const gizmoMove = new TransformControls(camera, renderer.domElement);
 gizmoMove.setMode('translate');
 gizmoMove.showY = false;        // 面は鉛直のまま。上下には動かさない
-const gizmoRot = new TransformControls(camera, renderer.domElement);
-gizmoRot.setMode('rotate');
-gizmoRot.showX = false;         // 面は鉛直のまま。傾けるのは水平の向きだけ
-gizmoRot.showZ = false;
-const gizmos = [gizmoMove, gizmoRot];
+// ⚠️ 回転は TransformControls の輪を使わない。
+//   水平の輪は見る角度によって細い楕円に潰れ、掴んだ点のわずかな動きが
+//   大きな角度変化になる。狙った向きで止められず「きれいに回らない」となる。
+//   代わりに、面から上へ伸びる【バーを上下にドラッグ】して回す（下の rotBar）。
+//   上下の動きは視点の傾きに左右されないので、どこから見ても同じ感触で回せる。
+const gizmos = [gizmoMove];
 for (const g of gizmos) {
   scene.add(g.getHelper ? g.getHelper() : g);
   g.enabled = false;
@@ -943,30 +1395,78 @@ for (const g of gizmos) {
     // ⚠️ 掴んでいない方のギズモは止める。2つ重ねているので、
     //   そのままだと掴んでいない側が同じドラッグを拾って二重に動く。
     for (const other of gizmos) if (other !== g) other.enabled = !e.value;
+    setFaceAdjusting(e.value);
   });
   g.addEventListener('objectChange', () => { syncPlaneFromHandle(); syncSetbackUI(); });
 }
 
+// ---- 回転バー（面から上へ伸びる棒。上下ドラッグで面を回す）--------------------
+const ROTBAR_COLOR = ARROW_COLOR;   // 矢印と同じ黄色（後退の道具として揃える）
+// 1ピクセル動かすと何度回るか。180度を約300pxに割り当てる。
+//   ⚠️ 大きすぎると狙った角度で止められない。ここが操作感の要。
+const ROT_DEG_PER_PX = 0.6;
+
+/* 面の中心から上へ伸びる細い線と、その先端の球。
+   面の子にしておくと、回した向きにそのまま付いてくる。
+   ★ 掴むのは先端の球。線は「どこから伸びているか」を示すだけなので細くてよい。
+     球を大きめにしておけば、どの距離からでも掴める。 */
+function buildRotBar(faceMesh, halfH) {
+  // 面のローカルは X=面に沿う / Y=高さ / Z=法線。原点（面の中心）から上へ。
+  const len = halfH + Math.max(halfH * 0.6, 6);   // 線の長さ[m]
+  const rad = Math.max(len * 0.010, 0.10);        // 線の太さ[m]
+  const knobR = Math.max(len * 0.075, 1.3);       // 先端の球の半径[m]
+  const mat = new THREE.MeshBasicMaterial({
+    color: ROTBAR_COLOR, transparent: true, opacity: 0.95, depthTest: false,
+  });
+  const grp = new THREE.Group();
+  grp.renderOrder = 8;
+  const stemGeo = new THREE.CylinderGeometry(rad, rad, len, 8);
+  stemGeo.translate(0, len / 2, 0);
+  const stem = new THREE.Mesh(stemGeo, mat);
+  stem.frustumCulled = false;
+  const knobGeo = new THREE.SphereGeometry(knobR, 20, 14);
+  knobGeo.translate(0, len, 0);
+  const knob = new THREE.Mesh(knobGeo, mat);
+  knob.frustumCulled = false;
+  grp.add(stem, knob);
+  faceMesh.add(grp);
+  return grp;
+}
+
+// 回転ドラッグの状態。{ y0, angle0 }
+let rotDrag = null;
+
+// 面を動かしている最中かどうか。
+//   ★ 動かしている間は【シェーダへ渡す面だけ】を更新する。
+//   ⚠️ 頂点属性の書き直し・切り口の作り直し・箱庭断面の作り直しまで毎回やると、
+//     1回あたり数百ミリ秒かかってドラッグが追いつかない。輪を回しても角度が飛び、
+//     狙った向きで止められなくなる（実際そうなっていた）。
+//     重いものは【手を離したとき】にまとめて1回だけ作り直す。
+let faceAdjusting = false;
+function setFaceAdjusting(on) {
+  if (faceAdjusting === !!on) return;
+  faceAdjusting = !!on;
+  // 動かしている間は切り口を隠す。古い位置に取り残された灰色の面が見えると、
+  // どこまで削れるのか却って分からなくなる。
+  capGroup.visible = !faceAdjusting;
+  if (!faceAdjusting) refreshSetbacks();
+  requestRender();
+}
+
 /* 面の選択・ギズモを畳む（確定したとき／やめたとき）。 */
 function endFaceEditing() {
+  // ★ 確定していないセットは捨てる。面を選んだ時点で setbackSets に入れてあるので、
+  //   ここで消さないと「やめたはずの後退」が残る。
+  if (draftSet) removeSet(draftSet);
   setSetbackBusy(false);
-  for (const g of gizmos) {
-    g.detach();
-    g.enabled = false;
-    if (g.getHelper) g.getHelper().visible = false;
-  }
+  detachGizmos();
+  faceState.phase = 'face';
+  faceDrag = null;
   if (faceState.handle) faceState.handle.visible = false;
   disposeFaces();
   faceState.box = null;
   clearBaseline();
   requestRender();
-}
-
-/* 「面を選ぶ」を始める（候補の4面を出す）。 */
-function startFacePick() {
-  if (!editState.selection.size) { setInfo('先に建物を選んでください'); return; }
-  buildFaces();
-  setInfo('囲み箱の面をクリックして、切る面を選んでください');
 }
 
 /* 面の見た目を今の状態（選択中／カーソルが乗っている／それ以外）に合わせる。 */
@@ -983,18 +1483,69 @@ function refreshFaceLook() {
 /* カーソルが乗っている面を光らせる。
    ⚠️ ギズモを掴んでいる間は当たり判定を取らない。ドラッグ中に面の上を通ると
      光り方が目まぐるしく変わって、掴んでいる軸が分からなくなる。 */
+/* 面にカーソルを乗せたときの案内札。押すと何が起きるかを言葉で出す。
+   ★ 色を変えるだけでは、側面と上面で行き先が違うことが伝わらない。 */
+let hintEl = null;
+function showFaceHint(mesh, ev) {
+  if (!hintEl) hintEl = el('faceHint');
+  if (!hintEl) return;
+  if (!mesh) { hintEl.style.display = 'none'; return; }
+  const isTop = mesh.__faceKind === 'top';
+  hintEl.textContent = isTop ? 'この面で高さを変更する' : 'この面で壁面後退する';
+  hintEl.classList.toggle('top', isTop);
+  hintEl.style.display = 'block';
+  moveFaceHint(ev);
+}
+
+function moveFaceHint(ev) {
+  if (!hintEl || hintEl.style.display === 'none' || !ev) return;
+  // カーソルの右下に少しずらして置く（カーソルの下に隠れないように）
+  hintEl.style.left = (ev.clientX + 14) + 'px';
+  hintEl.style.top = (ev.clientY + 16) + 'px';
+}
+
 function onFaceHover(ev) {
-  if (!faceState.faces.length) return;
-  if (gizmos.some((g) => g.dragging)) return;
+  if (!faceState.faces.length) { showFaceHint(null); return; }
+  if (gizmos.some((g) => g.dragging)) { showFaceHint(null); return; }
   const r = renderer.domElement.getBoundingClientRect();
   _ndc.set(((ev.clientX - r.left) / r.width) * 2 - 1,
     -((ev.clientY - r.top) / r.height) * 2 + 1);
   _rc.setFromCamera(_ndc, camera);
   const hit = _rc.intersectObjects(faceState.faces, false)[0];
   const next = hit ? hit.object : null;
-  if (next === faceState.hover) return;   // 変わったときだけ描き直す
+  moveFaceHint(ev);                       // 札は毎回カーソルに付いてくる
+  if (next === faceState.hover) return;   // 面が変わったときだけ描き直す
   faceState.hover = next;
+  // 面を選んだあと（基準線を合わせる場面）は札を出さない。もう選ぶ場面ではない。
+  showFaceHint(faceState.phase === 'face' ? next : null, ev);
   refreshFaceLook();
+}
+
+// ---- 面をドラッグして後退量を決める ----------------------------------------
+//   ★ 基準線を確定したあとは、面そのものを掴んで動かす。ギズモを出したままだと
+//     基準線ごと動かせてしまい、0m の位置がずれる。
+//   ⚠️ カーソルの動きは【基準線の法線方向】にだけ効かせる。画面上の自由な動きを
+//     そのまま渡すと、面が斜めに逃げて後退距離が読めなくなる。
+let faceDrag = null;   // { x0, y0, pos0, vx, vy, len2 }
+
+/* 面を法線方向へ 1m 動かしたとき、画面上で何ピクセル動くか。
+   ⚠️ 「カーソルが指す水平面上の点」で測ってはいけない。視線が水平に近づくほど
+     交点が遠くへ飛び、数十ピクセルの操作が百メートル単位の移動になる
+     （実測でドラッグ 50px が 153m 動いた）。画面上の 1m の長さで割れば、
+     見えている大きさのぶんだけ動くので、どの角度から見ても破綻しない。 */
+const _fsA = new THREE.Vector3();
+const _fsB = new THREE.Vector3();
+function faceScreenScale() {
+  const b = faceState.baseline, h = faceState.handle;
+  if (!b || !h) return null;
+  const r = renderer.domElement.getBoundingClientRect();
+  _fsA.copy(h.position).project(camera);
+  _fsB.set(h.position.x + b.nx, h.position.y, h.position.z + b.nz).project(camera);
+  const vx = (_fsB.x - _fsA.x) * r.width / 2;
+  const vy = -(_fsB.y - _fsA.y) * r.height / 2;
+  // 面を真正面から見ていると 1m が 0px になり、感度が無限大になる。下限で止める。
+  const len2 = Math.max(vx * vx + vy * vy, 4);
+  return { vx, vy, len2 };
 }
 
 // 面のクリック。捕捉フェーズで受けて buildingedit へ渡さない
@@ -1006,12 +1557,73 @@ function onFaceDown(ev) {
   _ndc.set(((ev.clientX - r.left) / r.width) * 2 - 1,
     -((ev.clientY - r.top) / r.height) * 2 + 1);
   _rc.setFromCamera(_ndc, camera);
+  // ★ 回転バーが先。面より手前に立っているので、こちらを先に見る。
+  if (faceState.rotBar && faceState.handle
+      && _rc.intersectObject(faceState.rotBar, true).length) {
+    ev.stopPropagation();
+    ev.preventDefault();
+    rotDrag = { y0: ev.clientY, angle0: faceState.handle.rotation.y };
+    setFaceAdjusting(true);
+    controls.enabled = false;
+    return;
+  }
   const hit = _rc.intersectObjects(faceState.faces, false)[0];
   if (!hit) return;
   ev.stopPropagation();
   ev.preventDefault();
-  pickFace(hit.object);
+  if (faceState.phase === 'face') {
+    // ★ 押した面の種類で行き先が決まる。上面＝高さの変更、側面＝壁面後退。
+    if (hit.object.__faceKind === 'top') {
+      endFaceEditing();      // 囲み箱を畳んでから高さの手順へ
+      setStep('height');
+      return;
+    }
+    pickFace(hit.object);
+    setStep('setback');
+    syncSetbackUI();
+    return;
+  }
+  if (faceState.phase !== 'move') return;   // 基準線を合わせている間はギズモの担当
+  const sc = faceScreenScale();
+  if (!sc) return;
+  faceDrag = { x0: ev.clientX, y0: ev.clientY, pos0: faceState.handle.position.clone(), ...sc };
+  setFaceAdjusting(true);
+  controls.enabled = false;   // 面を動かしている間はカメラを止める
+}
+
+function onFaceDrag(ev) {
+  // 回転バーを掴んでいる間は、上下の動きをそのまま角度にする。
+  //   ⚠️ 判断材料は画面の上下だけ。カメラをどこへ回しても同じ手触りになる。
+  if (rotDrag && faceState.handle) {
+    const dy = rotDrag.y0 - ev.clientY;
+    faceState.handle.rotation.y = rotDrag.angle0 + dy * ROT_DEG_PER_PX * Math.PI / 180;
+    syncPlaneFromHandle();
+    syncSetbackUI();
+    return;
+  }
+  if (!faceDrag) return;
+  const b = faceState.baseline, h = faceState.handle;
+  if (!b || !h) return;
+  // カーソルの動きを「法線方向の 1m」に射影して、動かす量[m]を出す
+  const dx = ev.clientX - faceDrag.x0, dy = ev.clientY - faceDrag.y0;
+  const d = (dx * faceDrag.vx + dy * faceDrag.vy) / faceDrag.len2;
+  h.position.x = faceDrag.pos0.x + b.nx * d;
+  h.position.z = faceDrag.pos0.z + b.nz * d;
+  syncPlaneFromHandle();
   syncSetbackUI();
+}
+
+function onFaceUp() {
+  if (rotDrag) {
+    rotDrag = null;
+    setFaceAdjusting(false);   // ここで切り口を作り直す
+    controls.enabled = true;
+    return;
+  }
+  if (!faceDrag) return;
+  faceDrag = null;
+  setFaceAdjusting(false);   // ここで切り口を作り直す
+  controls.enabled = true;
 }
 
 // =============================================================================
@@ -1022,90 +1634,150 @@ function setInfo(text) { if (sbUi.info) sbUi.info.textContent = text; }
 
 function syncSetbackUI() {
   if (!sbUi.info) return;
-  const lines = [];
-  const n = editState.selection.size;
-  if (setbackState.active) {
-    const fa = measureCutFloorArea();
-    lines.push(`${targets.size} 棟を後退中 ／ 削れた延床 約 ${Math.round(fa.total).toLocaleString('ja-JP')} ㎡`);
-    if (fa.assumed) lines.push('※ 階数が無い建物は階高 3m と仮定');
-    if (faceState.picked) lines.push('ギズモで面を動かすと削り方が変わります');
-  } else if (faceState.picked) {
-    if (faceState.baseline) lines.push('ギズモで面を動かし、「後退を確定」を押してください');
-    else lines.push('まず道路境界線などに面を合わせて「ここを基準線に」を押してください');
-  } else if (faceState.faces.length) {
-    lines.push('囲み箱の面をクリックして、切る面を選んでください');
-  } else if (!n) {
-    lines.push('建物を選ぶと「面を選ぶ」が使えます');
-  } else {
-    lines.push(`${n} 棟を選択中。「面を選ぶ」を押してください`);
-  }
-  sbUi.info.textContent = lines.join('\n');
-  // 基準線まわりのボタンは、面を選んでいるときだけ意味がある
-  if (sbUi.baseRow) sbUi.baseRow.style.display = faceState.picked ? 'flex' : 'none';
-  if (sbUi.baseSet) {
-    sbUi.baseSet.textContent = faceState.baseline ? '基準線を引き直す' : 'ここを基準線に';
-  }
-  // ★ 後退距離は数字そのものが主役なので、案内文に混ぜず大きく別立てで出す。
-  //   ⚠️ 行は【面を選んでいる間つねに出す】。基準線がまだ無いときも枠だけ見せて
-  //     「先に基準線を決める」と促す。出したり消したりすると、入力欄がどこにあるのか
-  //     分からなくなる（実際「入力欄が見当たらない」となった）。
+  const ph = faceState.phase;
+  // 小さな手順ごとに、その場面のものだけ出す
+  if (sbUi.stepBase) sbUi.stepBase.style.display = (ph === 'base') ? '' : 'none';
+  if (sbUi.stepMove) sbUi.stepMove.style.display = (ph === 'move') ? '' : 'none';
+
   const dist = setbackDistance();
-  const hasBase = !!faceState.baseline;
-  if (sbUi.distRow) sbUi.distRow.style.display = faceState.picked ? 'flex' : 'none';
   if (sbUi.distVal) {
     sbUi.distVal.textContent = Number.isFinite(dist) ? `${dist.toFixed(2)} m` : '— m';
   }
-  if (sbUi.distInput) {
-    sbUi.distInput.disabled = !hasBase;
+  if (sbUi.distInput && Number.isFinite(dist)
+      && document.activeElement !== sbUi.distInput) {
     // 打ち込んでいる最中は上書きしない（打った端から戻ると入力できない）
-    if (Number.isFinite(dist) && document.activeElement !== sbUi.distInput) {
-      sbUi.distInput.value = dist.toFixed(2);
-    }
-    if (!hasBase) sbUi.distInput.value = '';
+    sbUi.distInput.value = dist.toFixed(2);
   }
-  if (sbUi.distHint) {
-    sbUi.distHint.style.display = (faceState.picked && !hasBase) ? '' : 'none';
+
+  // 削れた量は結果の要約なので、手順の案内とは分けて1行だけ出す。
+  // ★ 合計は【全部の場所ぶん】。1か所ずつ足し合わせるのではなく、建物ごとに
+  //   「残る側の共通部分」から出しているので、重なっても二重に数えない。
+  const lines = [];
+  if (setbackSets.length) {
+    const fa = measureCutFloorArea();
+    const n = allTargetIds().size;
+    lines.push(`${setbackSets.length} か所 ／ ${n} 棟 ／ `
+      + `削れた延床 約 ${Math.round(fa.total).toLocaleString('ja-JP')} ㎡`);
+    if (fa.assumed) lines.push('※ 階数が無い建物は階高 3m と仮定');
   }
+  sbUi.info.textContent = lines.join('\n');
+  renderSetbackList();
+}
+
+/* 後退した場所の一覧を描き直す。
+   ⚠️ 毎回作り直すが、数値入力に触っている最中は差し替えない
+     （打っている途中で入力欄が入れ替わると、値が飛んで打てなくなる）。 */
+function renderSetbackList() {
+  const wrap = sbUi.listWrap, list = sbUi.list;
+  if (!wrap || !list) return;
+  wrap.style.display = setbackSets.length ? '' : 'none';
+  if (!setbackSets.length) { list.innerHTML = ''; return; }
+  if (list.contains(document.activeElement)) return;
+  list.innerHTML = '';
+  setbackSets.forEach((set, i) => {
+    const row = document.createElement('div');
+    row.className = 'sb-row' + (set === draftSet ? ' sb-draft' : '');
+    const no = document.createElement('span');
+    no.className = 'sb-no';
+    no.textContent = String(i + 1);
+    const n = document.createElement('span');
+    n.className = 'sb-n';
+    n.textContent = `${set.targets.size} 棟`;
+    const inp = document.createElement('input');
+    inp.type = 'number';
+    inp.step = '0.5';
+    inp.value = Number.isFinite(set.distance) ? set.distance.toFixed(2) : '';
+    // 基準線を控えていない場所は、距離だけでは面を置き直せない
+    inp.disabled = !set.baseline;
+    inp.title = set.baseline ? '後退距離[m]' : '基準線が無いので数値では直せません';
+    inp.addEventListener('input', () => {
+      const v = Number(inp.value);
+      if (Number.isFinite(v)) setDistanceOfSet(set, v);
+    });
+    const unit = document.createElement('span');
+    unit.className = 'muted';
+    unit.style.fontSize = '11px';
+    unit.textContent = 'm';
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.textContent = '消す';
+    del.addEventListener('click', () => { removeSet(set); syncSetbackUI(); });
+    row.append(no, n, inp, unit, del);
+    list.appendChild(row);
+  });
+}
+
+/* 囲み箱の面を出す（buildingedit が手順 'pick' に入るときに呼ぶ）。
+   ここで出す面のうち、上面を押せば高さの変更、側面を押せば壁面後退へ進む。 */
+function enterSetbackStep() {
+  if (!editState.selection.size) { setInfo('先に建物を選んでください'); return; }
+  faceState.phase = 'face';
+  clearBaseline();
+  buildFaces();
+  syncSetbackUI();
+}
+
+/* 面を選ぶところからやり直す（1か所確定したあと、続けて別の場所をやるため）。 */
+function restartFacePick() {
+  faceState.phase = 'face';
+  clearBaseline();
+  buildFaces();
+  syncSetbackUI();
 }
 
 (function setupSetbackUI() {
-  const pick = el('setbackPick');
-  if (!pick) return;   // この画面に後退UIが無い構成でも動くように
+  const apply = el('setbackApply');
+  if (!apply) return;   // この画面に後退UIが無い構成でも動くように
   sbUi = {
-    info: el('setbackInfo'), baseRow: el('setbackBaseRow'),
-    baseSet: el('setbackBaseSet'), distRow: el('setbackDistRow'),
-    distHint: el('setbackDistHint'),
+    info: el('setbackInfo'),
+    stepBase: el('setbackStepBase'),
+    stepMove: el('setbackStepMove'),
     distVal: el('setbackDistVal'), distInput: el('setbackDistInput'),
+    listWrap: el('setbackListWrap'), list: el('setbackList'),
   };
-  pick.addEventListener('click', () => { startFacePick(); syncSetbackUI(); });
+  // buildingedit の手順切り替えから、この機能の開始・終了を呼んでもらう
+  setSetbackStepHooks(enterSetbackStep, endFaceEditing);
+
   el('setbackBaseSet').addEventListener('click', () => setBaselineHere());
-  el('setbackBaseClear').addEventListener('click', () => clearBaseline());
   sbUi.distInput.addEventListener('input', () => {
     setSetbackDistance(Number(sbUi.distInput.value));
   });
-  el('setbackApply').addEventListener('click', () => {
+  apply.addEventListener('click', () => {
     const r = applySetback();
     if (!r.ok) { setInfo(r.reason); return; }
     // ★ この対象群を「まとめて扱った群」として覚える。あとで群の1棟を選び直すだけで
     //   群ごと選ばれるので、後退距離の直しがしやすい。選択自体は自由に変えられる。
     registerSelectionGroup();
-    // 確定したらギズモと候補面を畳む（削りはそのまま残る）
+    // ★ 確定したら【建物を選ぶところ】まで戻す。
+    //   面だけ出し直すと、確定した直後に囲み箱がまた現れて
+    //   「まだ何か操作させられている」ように見える。次にやることは
+    //   たいてい別の建物の検討なので、選択も外して最初の状態に揃える。
     endFaceEditing();
+    clearSelection();
+    setStep('select');
     syncSetbackUI();
   });
   el('setbackClear').addEventListener('click', () => {
-    clearSetback();
     endFaceEditing();
-    // 削りを取り消したら「まとめて選ぶ」の登録も解く
+    // ★ 消すのは【いま選んでいる建物に関わる後退】だけ。他の場所の検討は残す。
+    removeSetsOfSelection();
     clearSelectionGroup();
-    syncSetbackUI();
+    clearSelection();
+    setStep('select');
+  });
+  el('setbackClearAll').addEventListener('click', () => {
+    endFaceEditing();
+    clearSetback();
+    clearSelectionGroup();
+    clearSelection();
+    setStep('select');
   });
   // ★ 捕捉フェーズで受ける（buildingedit より先に横取りするため）
   renderer.domElement.addEventListener('pointerdown', onFaceDown, true);
   renderer.domElement.addEventListener('pointermove', onFaceHover);
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && faceState.faces.length) { endFaceEditing(); syncSetbackUI(); }
-  });
+  renderer.domElement.addEventListener('pointermove', onFaceDrag);
+  renderer.domElement.addEventListener('pointerup', onFaceUp);
+  renderer.domElement.addEventListener('pointercancel', onFaceUp);
   syncSetbackUI();
 })();
 
@@ -1126,9 +1798,11 @@ function updateSetbackGuide() {
 
 export {
   setbackState, targets, faceState,
+  setbackSets, MAX_SETBACKS, makeSetbackSet, removeSet, setDistanceOfSet,
+  beginSetbackSet, refreshSetbacks, allTargetIds,
   setSetbackLine, setSetbackOffset, flipSetbackSide,
   applySetback, clearSetback, updateSetbackGuide, capStats,
-  startFacePick, endFaceEditing, setBaselineHere, clearBaseline,
+  enterSetbackStep, restartFacePick, endFaceEditing, setBaselineHere, clearBaseline,
   setbackDistance, setSetbackDistance,
   measureCutArea, measureCutFloorArea,
 };

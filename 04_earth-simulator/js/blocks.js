@@ -377,7 +377,7 @@ function setBlockColor(hex) {
 // -----------------------------------------------------------------------------
 function startGhost() {
   const src = blocksState.picked;
-  if (!src) return { ok: false, reason: '複製したい箱を選んでください' };
+  if (!src) return { ok: false, reason: '複製したい建物を選んでください' };
   cancelGhost();
   const mesh = new THREE.Mesh(src.geometry.clone(), makeBlockMaterial(true));
   mesh.material.color.copy(src.material.color);   // 色も元の箱に合わせる
@@ -542,9 +542,11 @@ let ui = {};
 
 function syncBlocksUI() {
   if (!ui.panel) return;
-  ui.panel.classList.toggle('on', blocksState.enabled);
   const has = !!blocksState.picked;
   if (ui.sizeRow) ui.sizeRow.style.display = has ? '' : 'none';
+  // ★ 選んでいる箱があるかどうかで、押せるボタンを丸ごと入れ替える。
+  if (ui.idleRow) ui.idleRow.style.display = has ? 'none' : 'flex';
+  if (ui.pickedRow) ui.pickedRow.style.display = has ? 'flex' : 'none';
   if (has && document.activeElement !== ui.sizeX
       && document.activeElement !== ui.sizeY && document.activeElement !== ui.sizeZ) {
     const s = blockSize(blocksState.picked);
@@ -565,30 +567,67 @@ function syncBlocksUI() {
   }
   const lines = [];
   if (blocksState.ghost) lines.push('置きたいところでクリックしてください（Esc で中止）');
-  else if (has) lines.push('箱をドラッグで移動／ギズモで大きさ・向きを調整');
-  else if (blocksState.list.length) lines.push('箱をクリックすると選べます');
-  else lines.push('「箱を置く」で画面中央の地面に 10m 角の箱が出ます');
-  lines.push(`置いた箱: ${blocksState.list.length} 個`);
+  else if (has) lines.push('建物をドラッグで移動／ギズモで大きさ・向きを調整');
+  else if (blocksState.list.length) lines.push('建物をクリックすると選べます');
+  else lines.push('「新規作成」で画面中央の地面に 10m 角の建物が出ます');
+  lines.push(`置いた建物: ${blocksState.list.length} 個`);
   if (ui.info) ui.info.textContent = lines.join('\n');
 }
 
+// 道具を開いたときに呼ぶ差し込み口（buildingedit.js が登録する）。
+//   ⚠️ あちらを import すると相互参照になるので、関数を預けてもらう。
+let openHook = null;
+function setBlocksOpenHook(fn) { openHook = fn; }
+
 function setBlocksEnabled(on) {
   blocksState.enabled = !!on;
-  if (!on) { cancelGhost(); pickBlock(null); setOwnCursor(null); }
-  blockGroup.visible = blocksState.enabled;
+  if (!on) {
+    cancelGhost();
+    pickBlock(null);
+    setOwnCursor(null);
+    // 道具を閉じたら、開閉ボタンの見た目も畳んだ状態に揃える
+    if (ui.body && ui.open) {
+      ui.body.style.display = 'none';
+      ui.open.setAttribute('aria-expanded', 'false');
+      ui.open.textContent = '建物を置く ▾';
+    }
+  }
+  // ★ 置いた箱は【いつでも見えたまま】にする。
+  //   ⚠️ 以前は enabled に連動して消していたが、道具を閉じたり編集モードを
+  //     抜けたりするたびに検討した箱ごと消えてしまう。enabled が決めるのは
+  //     「触れるかどうか」だけ。消すのは「全部消す」の役目。
+  blockGroup.visible = true;
   syncBlocksUI();
   requestRender();
 }
 
 (function setupBlocksUI() {
-  const onCb = el('blocksOn');
-  if (!onCb) return;   // この画面に箱UIが無い構成でも動くように
+  // ⚠️ かつては左上のチェックボックス（#blocksOn）の有無で「この画面に箱UIがあるか」を
+  //   判定していた。入口を 01 のツールバーへ移してチェックを消したとき、ここが
+  //   即 return するようになり、パネルが一切出なくなった。判定はパネル自体で行う。
+  if (!el('blocksPanel')) return;
   ui = {
-    panel: el('blocksPanel'), info: el('blocksInfo'), sizeRow: el('blocksSizeRow'),
+    panel: el('blocksPanel'), body: el('blocksBody'), open: el('blocksOpen'),
+    idleRow: el('blocksIdleRow'), pickedRow: el('blocksPickedRow'),
+    info: el('blocksInfo'), sizeRow: el('blocksSizeRow'),
     sizeX: el('blocksSizeX'), sizeY: el('blocksSizeY'), sizeZ: el('blocksSizeZ'),
     rotY: el('blocksRotY'), color: el('blocksColor'),
   };
-  onCb.addEventListener('change', () => setBlocksEnabled(onCb.checked));
+  // 「建物を置く」の畳み開き。既定は閉じておき、必要なときだけ道具一式を出す。
+  //   ⚠️ 開いている間だけ箱を触れるようにする。閉じているのに箱を掴めると、
+  //     建物を選ぼうとして箱を動かしてしまう。
+  if (ui.open && ui.body) {
+    ui.open.addEventListener('click', () => {
+      const shown = ui.body.style.display !== 'none';
+      ui.body.style.display = shown ? 'none' : '';
+      ui.open.setAttribute('aria-expanded', String(!shown));
+      ui.open.textContent = shown ? '建物を置く ▾' : '建物を置く ▴';
+      setBlocksEnabled(!shown);
+      // ★ 開いたら PLATEAU 建物の選択受付は切ってもらう。
+      //   どちらもクリックで拾う道具なので、両方が受け付けていると取り違える。
+      if (!shown && openHook) openHook();
+    });
+  }
   el('blocksAdd').addEventListener('click', () => {
     const r = addBlock();
     if (!r.ok && ui.info) ui.info.textContent = r.reason;
@@ -608,8 +647,22 @@ function setBlocksEnabled(on) {
   renderer.domElement.addEventListener('pointermove', onPointerMove);
   renderer.domElement.addEventListener('pointerup', onPointerUp);
   renderer.domElement.addEventListener('pointercancel', onPointerUp);
-  window.addEventListener('keydown', (e) => { if (e.key === 'Escape') cancelGhost(); });
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { cancelGhost(); return; }
+    // Delete / Backspace で、選んでいる箱を消す。
+    //   ⚠️ 入力欄に文字を打っている最中は横取りしない。寸法を打ち直そうとして
+    //     Backspace を押しただけで箱が消えてしまう。
+    if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+    if (!blocksState.enabled || !blocksState.picked) return;
+    const a = document.activeElement;
+    if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.isContentEditable)) return;
+    e.preventDefault();
+    removeBlock(blocksState.picked);
+  });
   setBlocksEnabled(false);
 })();
 
-export { blocksState, addBlock, addBlockAt, regroundBlocks, removeAllBlocks, setBlocksEnabled };
+export {
+  blocksState, addBlock, addBlockAt, regroundBlocks, removeAllBlocks,
+  setBlocksEnabled, setBlocksOpenHook,
+};

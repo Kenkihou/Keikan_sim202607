@@ -466,6 +466,16 @@ function linkLoops(segs) {
 
 // 断面メッシュを作り直す。
 const _secTmpBox = new THREE.Box3();
+// 壁面後退で削られた部分を、箱庭の断面からも取り除くための差し込み口。
+//   ⚠️ buildingsetback.js を直接 import できない（あちらがこちらを import していて
+//     循環になる）。あちらから関数を預けてもらう。
+//   fn(mask, ax,ay,az, bx,by,bz, cx,cy,cz) →
+//     null … そのまま使ってよい
+//     []   … まるごと削られている
+//     [[9個の座標], ...] … 残った部分の三角形
+let setbackTriClip = null;
+function setSetbackTriClip(fn) { setbackTriClip = fn; }
+
 function buildSectionFill() {
   for (const c of sectionFillGroup.children) c.geometry.dispose();
   sectionFillGroup.clear();
@@ -556,16 +566,33 @@ function buildSectionFill() {
       triStart = gp.start / 3;
       triEnd = (gp.start + gp.count) / 3;
     }
+    // 壁面後退の対象かどうかは、建物に書き込まれている属性で分かる
+    const sbAttr = (!isTerrain && setbackTriClip) ? g.attributes._setback : null;
     for (let f = triStart; f < triEnd; f++) {
       const i0 = idx ? idx[f * 3] : f * 3, i1 = idx ? idx[f * 3 + 1] : f * 3 + 1, i2 = idx ? idx[f * 3 + 2] : f * 3 + 2;
       const ax = wp[i0 * 3], ay = wp[i0 * 3 + 1], az = wp[i0 * 3 + 2];
       const bx = wp[i1 * 3], by = wp[i1 * 3 + 1], bz = wp[i1 * 3 + 2];
       const c0 = wp[i2 * 3], c1 = wp[i2 * 3 + 1], c2 = wp[i2 * 3 + 2];
+      const out = isTerrain ? groundSegsPerFace : segsPerFace;
+      // ★ 壁面後退で削った部分は、箱庭の断面にも出してはいけない。
+      //   削られた立体はもう無いのに、断面（灰色＋ハッチ）だけが元の形で残る。
+      const mask = sbAttr ? sbAttr.array[i0] : 0;
+      const parts = mask ? setbackTriClip(mask, ax, ay, az, bx, by, bz, c0, c1, c2) : null;
+      if (parts && !parts.length) continue;          // まるごと削られた
+      if (parts) {
+        for (const t of parts) {
+          for (let fi = 0; fi < 4; fi++) {
+            const [axis, val, uAxis] = faces[fi];
+            triPlaneSegment(t[0], t[1], t[2], t[3], t[4], t[5], t[6], t[7], t[8],
+              axis, val, uAxis, _secTmpBox.min.y, _secTmpBox.max.y, out[fi]);
+          }
+        }
+        continue;
+      }
       for (let fi = 0; fi < 4; fi++) {
         const [axis, val, uAxis] = faces[fi];
         triPlaneSegment(ax, ay, az, bx, by, bz, c0, c1, c2, axis, val, uAxis,
-          _secTmpBox.min.y, _secTmpBox.max.y,
-          isTerrain ? groundSegsPerFace[fi] : segsPerFace[fi]);
+          _secTmpBox.min.y, _secTmpBox.max.y, out[fi]);
       }
     }
   }
@@ -858,7 +885,7 @@ function buildSectionFill() {
 export {
   CLIP_SIZE_MIN, CLIP_SIZE_MAX, CLIP_SIZE_STEP, CLIP_SIZE_DEFAULT,
   CAP_COLOR, clipState, buildingClipPlanes, terrainClipPlanes, updateClipPlanes,
-  clipMeshes, registerClipMeshes, unregisterClipMeshes,
+  clipMeshes, registerClipMeshes, unregisterClipMeshes, setSetbackTriClip,
   computeClipMeshWorld, keepFinestLod,
   sectionFillGroup, soilFillGroup, soilBottomMesh, labelGroup,
   groundLines, groundLineMats, soilContourLines, soilContourMats, soilMats,

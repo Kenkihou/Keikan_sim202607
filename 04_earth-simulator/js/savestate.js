@@ -15,8 +15,7 @@ import { EARTH_R } from './core.js';
 import { ORIGIN_LAT, ORIGIN_LON, DEG2RAD, CITY_ID, CITY_LABEL } from './config.js';
 import { edits, applyEditsEverywhere, defaultEdit, resetAll } from './buildingedit.js';
 import {
-  setbackState, targets, faceState, setbackDistance,
-  setSetbackLine, setSetbackOffset, applySetback, clearSetback,
+  setbackSets, MAX_SETBACKS, makeSetbackSet, refreshSetbacks, clearSetback,
 } from './buildingsetback.js';
 import {
   blocksState, addBlockAt, regroundBlocks, removeAllBlocks, setBlocksEnabled,
@@ -63,31 +62,36 @@ function collectBuildingEdits() {
   return out;
 }
 
-/* 壁面後退。
-   ⚠️ 削りは【シェーダへ渡す平面を1枚だけ共有する】作りなので、同時に有効な
-     後退は1組だけ。過去に確定した後退の履歴は持っていないため、ここでも
-     「いま効いている1組」しか出せない。 */
-function collectSetback() {
-  if (!setbackState.active || !setbackState.line) return null;
-  const { ax, az, bx, bz } = setbackState.line;
-  // 確定時の控え（setbackState）を優先し、調整中なら今の値を使う
-  const base = setbackState.baseline || faceState.baseline;
-  const dist = Number.isFinite(setbackState.distance) ? setbackState.distance : setbackDistance();
-  return {
-    対象: [...targets],
-    後退面: {
-      始点: { ...localToLatLng(ax, az), x: r2(ax), z: r2(az) },
-      終点: { ...localToLatLng(bx, bz), x: r2(bx), z: r2(bz) },
-      ずらし量: r2(setbackState.offset),
-      削る側: setbackState.side,
-    },
-    基準線: base ? {
-      ...localToLatLng(base.x, base.z),
-      x: r2(base.x), z: r2(base.z),
-      法線: { nx: r3(base.nx), nz: r3(base.nz) },
-    } : null,
-    後退距離: Number.isFinite(dist) ? r2(dist) : null,
-  };
+/* 壁面後退。街の何か所かを並行して検討できるので、配列で出す。
+   ⚠️ 以前は1組しか持てず、オブジェクト1つで書き出していた。読む側は
+     配列でないデータも受け取れるようにしてある（restoreSetbacks を参照）。 */
+function collectSetbacks() {
+  const out = [];
+  for (const set of setbackSets) {
+    if (!set.line || !set.targets.size) continue;
+    const { ax, az, bx, bz } = set.line;
+    out.push({
+      対象: [...set.targets],
+      後退面: {
+        始点: { ...localToLatLng(ax, az), x: r2(ax), z: r2(az) },
+        終点: { ...localToLatLng(bx, bz), x: r2(bx), z: r2(bz) },
+        ずらし量: r2(set.offset),
+        削る側: set.side,
+      },
+      基準線: set.baseline ? {
+        ...localToLatLng(set.baseline.x, set.baseline.z),
+        x: r2(set.baseline.x), z: r2(set.baseline.z),
+        法線: { nx: r3(set.baseline.nx), nz: r3(set.baseline.nz) },
+      } : null,
+      後退距離: Number.isFinite(set.distance) ? r2(set.distance) : null,
+      // 階数・高さの控え。確定後は選択が外れていて属性を引けないため。
+      建物属性: [...set.info].map(([gmlId, v]) => ({
+        gmlId, 階数: v.storeys ?? null,
+        高さ: r2(v.height), 実測高さ: r2(v.measuredHeight),
+      })),
+    });
+  }
+  return out;
 }
 
 /* 置いた箱。寸法は scale を掛けた実寸[m]で出す。 */
@@ -112,9 +116,9 @@ function collectBlocks() {
    まっさらな地球モードで無駄にキーが増えないようにする。 */
 function collectEarthState() {
   const 建物の高さ変更 = collectBuildingEdits();
-  const 壁面後退 = collectSetback();
+  const 壁面後退 = collectSetbacks();
   const 置いた箱 = collectBlocks();
-  if (!建物の高さ変更.length && !壁面後退 && !置いた箱.length) return null;
+  if (!建物の高さ変更.length && !壁面後退.length && !置いた箱.length) return null;
   return {
     version: '1.0',
     都市: { id: CITY_ID, label: CITY_LABEL },
@@ -157,26 +161,43 @@ function restoreBuildingEdits(list) {
   return ids.length;
 }
 
-function restoreSetback(sb) {
-  if (!sb || !sb.後退面) return false;
-  const a = toLocal(sb.後退面.始点 || {});
-  const b = toLocal(sb.後退面.終点 || {});
-  if (!a || !b) return false;
-  targets.clear();
-  for (const id of (sb.対象 || [])) targets.add(id);
-  if (!targets.size) return false;
-  setSetbackLine(a.x, a.z, b.x, b.z);
-  if (Number.isFinite(sb.削る側)) setbackState.side = sb.削る側;
-  setSetbackOffset(Number.isFinite(sb.後退面.ずらし量) ? sb.後退面.ずらし量 : 0);
-  const base = sb.基準線 ? toLocal(sb.基準線) : null;
-  setbackState.baseline = base
-    ? { x: base.x, z: base.z, nx: sb.基準線.法線 ? sb.基準線.法線.nx : 0,
-        nz: sb.基準線.法線 ? sb.基準線.法線.nz : 0 }
-    : null;
-  setbackState.distance = Number.isFinite(sb.後退距離) ? sb.後退距離 : NaN;
-  // targets は上で自分で入れたので、選択から取り直させない
-  const r = applySetback({ keepTargets: true });
-  return !!(r && r.ok);
+function restoreSetbacks(data) {
+  // ★ 古いセーブデータは1組ぶんのオブジェクト。配列に均してから読む。
+  const list = Array.isArray(data) ? data : (data ? [data] : []);
+  let n = 0;
+  for (const sb of list) {
+    if (n >= MAX_SETBACKS) break;
+    if (!sb || !sb.後退面) continue;
+    const a = toLocal(sb.後退面.始点 || {});
+    const b = toLocal(sb.後退面.終点 || {});
+    if (!a || !b) continue;
+    const ids = sb.対象 || [];
+    if (!ids.length) continue;
+    const set = makeSetbackSet(ids);
+    set.line = { ax: a.x, az: a.z, bx: b.x, bz: b.z };
+    // ⚠️ 「削る側」は 後退面 の中にある。ここを sb.削る側 と書いていたため
+    //   常に undefined で、側が既定の +1 に戻っていた。1組しか持てなかった頃は
+    //   側がほぼ +1 だったので露見せず、複数持てるようにして初めて
+    //   「読み込むと一部の建物が丸ごと削れる」形で表に出た。
+    if (Number.isFinite(sb.後退面.削る側)) set.side = sb.後退面.削る側;
+    set.offset = Number.isFinite(sb.後退面.ずらし量) ? sb.後退面.ずらし量 : 0;
+    const base = sb.基準線 ? toLocal(sb.基準線) : null;
+    set.baseline = base
+      ? { x: base.x, z: base.z, nx: sb.基準線.法線 ? sb.基準線.法線.nx : 0,
+          nz: sb.基準線.法線 ? sb.基準線.法線.nz : 0 }
+      : null;
+    set.distance = Number.isFinite(sb.後退距離) ? sb.後退距離 : NaN;
+    for (const rec of (sb.建物属性 || [])) {
+      if (!rec || !rec.gmlId) continue;
+      set.info.set(rec.gmlId, {
+        storeys: rec.階数, height: rec.高さ, measuredHeight: rec.実測高さ,
+      });
+    }
+    setbackSets.push(set);
+    n++;
+  }
+  if (n) refreshSetbacks();
+  return n;
 }
 
 function restoreBlocks(list) {
@@ -217,9 +238,9 @@ function applyEarthState(state) {
   resetAll();
   clearSetback();
   removeAllBlocks();
-  if (!state) return { ok: true, 建物: 0, 壁面後退: false, 箱: 0 };
+  if (!state) return { ok: true, 建物: 0, 壁面後退: 0, 箱: 0 };
   const 建物 = restoreBuildingEdits(state.建物の高さ変更);
-  const 壁面後退 = restoreSetback(state.壁面後退);
+  const 壁面後退 = restoreSetbacks(state.壁面後退);
   const 箱 = restoreBlocks(state.置いた箱);
   return { ok: true, 建物, 壁面後退, 箱 };
 }

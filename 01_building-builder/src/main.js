@@ -416,6 +416,34 @@ window.clearAll = function() {
     }
 };
 
+// ---- PLATEAU 建物の編集（04 側の buildingedit.js）----------------------
+//   ボタンの見た目だけこちらが持ち、実体は 04。👣（ストリートビュー）と同じ作法。
+let isBuildingEditOn = false;
+function applyBuildingEditButtonState() {
+    const btn = document.getElementById('app1-buildingedit-toggle');
+    if (!btn) return;
+    btn.classList.toggle('active', isBuildingEditOn);
+    btn.setAttribute('data-tooltip',
+        isBuildingEditOn ? '🏢 建物の編集を終わる' : '🏢 PLATEAU 建物を編集する');
+}
+(function setupApp1BuildingEditToggle() {
+    const btn = document.getElementById('app1-buildingedit-toggle');
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+        if (!isEarthModeActive) return;   // 地球モード以外では意味がない
+        const iframe = document.getElementById('earth-sim-iframe');
+        const win = iframe && iframe.contentWindow;
+        if (!win || typeof win.toggleEarthBuildingEdit !== 'function') return;
+        // ★ 先に他を終わらせる。あとから止めると、こちらのパネルまで
+        //   一緒に畳まれてしまう場合がある。
+        if (!isBuildingEditOn) stopOtherEarthModes('buildingedit');
+        isBuildingEditOn = !!win.toggleEarthBuildingEdit();
+        applyBuildingEditButtonState();
+        updateBottomBar();
+    });
+    applyBuildingEditButtonState();
+})();
+
 // ==========================================
 // 4. 地球モード（04_earth-simulator）への受け渡し
 // ==========================================
@@ -1023,6 +1051,36 @@ function applyProfileButtonState() {
     btn.classList.toggle('active', isProfileOn);
     btn.setAttribute('data-tooltip', isProfileOn ? '断面を非表示にする' : '東西断面を表示する');
 }
+// ⛰ 地形断面 / 👣 ストリートビュー / 🏢 建物編集 は【同時には使わない】。
+//   どれかを始めたら、他は終わらせる。
+//   ⚠️ 3つとも「地球モードの上に別の見せ方を重ねる」道具で、重ねると
+//     どのモードにいるのか分からなくなる（断面を見ながら建物を選ぼうとして
+//     選べない、といった行き違いが起きる）。
+//   except に「これから始めるもの」を渡す。
+function stopOtherEarthModes(except) {
+    const iframe = document.getElementById('earth-sim-iframe');
+    const win = iframe && iframe.contentWindow;
+    if (!win) return;
+    if (except !== 'profile' && isProfileOn && typeof win.setEarthProfileOn === 'function') {
+        isProfileOn = false;
+        win.setEarthProfileOn(false);
+        applyProfileButtonState();
+    }
+    if (except !== 'buildingedit' && isBuildingEditOn
+        && typeof win.toggleEarthBuildingEdit === 'function') {
+        win.toggleEarthBuildingEdit();          // ON のときに呼べば OFF になる
+        isBuildingEditOn = false;
+        applyBuildingEditButtonState();
+    }
+    if (except !== 'streetview' && isStreetViewOn
+        && typeof win.toggleEarthStreetView === 'function') {
+        isStreetViewOn = !!win.toggleEarthStreetView();
+        if (!isStreetViewOn) restoreClipSizeAfterStreetView();
+        applyStreetViewButtonState();
+    }
+    updateBottomBar();
+}
+
 (function setupApp1ProfileToggle() {
     const btn = document.getElementById('app1-profile-toggle');
     if (!btn) return;
@@ -1032,8 +1090,10 @@ function applyProfileButtonState() {
         const win = iframe && iframe.contentWindow;
         if (!win || typeof win.setEarthProfileOn !== 'function') return;
         isProfileOn = !isProfileOn;
+        if (isProfileOn) stopOtherEarthModes('profile');
         win.setEarthProfileOn(isProfileOn);
         applyProfileButtonState();
+        updateBottomBar();
     });
     applyProfileButtonState();
 })();
@@ -1080,6 +1140,7 @@ function applyStreetViewButtonState() {
         //   切り抜きの箱が小さいと、その外の道路には降りられず歩いても壁で止まるため。
         //   入る前の大きさを覚えておいて、抜けるときに戻す。
         if (!isStreetViewOn) {
+            stopOtherEarthModes('streetview');
             const cs = document.getElementById('app1-clip-slider');
             if (cs) {
                 clipSizeBeforeStreetView = cs.value;
@@ -1475,6 +1536,8 @@ window.closeEarthSimulator = function() {
     applyProfileButtonState();   // ボタンの表示（active/tooltip）を非地球モードの状態に戻す
     isStreetViewOn = false;
     applyStreetViewButtonState();
+    isBuildingEditOn = false;
+    applyBuildingEditButtonState();
 
     // 地球側で決めた向き・配置地点を受け取り、セーブデータに残るようにする
     const heading = parseFloat(sessionStorage.getItem('earth_model_heading'));
@@ -1609,6 +1672,8 @@ function updateBottomBar() {
          'locked-btn');
     lock('app1-profile-toggle', !isEarthModeActive || clipLocked || isStreetViewOn, 'locked-btn');
     lock('app1-streetview-toggle', !isEarthModeActive || clipLocked, 'locked-btn');
+    lock('app1-buildingedit-toggle',
+         !isEarthModeActive || clipLocked || isStreetViewOn, 'locked-btn');
 
     // ★単独起動（ポータルのタイルから直接開いた）中は、スライダーを 0 まで下げて
     //   そのシミュレーターを終了できないようにする。モデリング画面から開いたときは

@@ -31,6 +31,8 @@ import {
 } from './core.js';
 import { computeClipMeshWorld, clipMeshes, buildingClipPlanes } from './section.js';
 import { wardTiles, setBuildingEditHook } from './tiles.js';
+// 箱を置く道具。建物編集と同じボタンで出し入れするので、こちらから面倒を見る。
+import { setBlocksEnabled, setBlocksOpenHook } from './blocks.js';
 
 // 高さ変更で「底面」とみなす帯の厚み[m]。
 //   嵩上げのとき、底面リングの頂点だけを据え置いて他を持ち上げると、両者をつなぐ
@@ -69,6 +71,20 @@ const editState = {
   //   立っている間は、選択が空になってもパネルの中身を畳まない。
   //   畳むと、面の位置を調整している最中に操作先ごと消えてしまう。
   setbackBusy: false,
+  // ★ いまどの手順にいるか。パネルはこれ1つで出し分ける。
+  //   'select'  … 建物を選ぶ
+  //   'pick'    … 囲み箱の面を押して、高さか壁面後退かを決める
+  //   'height'  … 高さの変更
+  //   'setback' … 壁面後退
+  //   ⚠️ 選択と操作を1画面に同居させない。以前はタブで両方見えていたが、
+  //     壁面後退の途中で高さのスライダーを触ってしまう取り違えが起きた。
+  step: 'select',
+  // ★ 建物のクリック選択を受け付けているか。
+  //   ⚠️ 手順が 'select' でも、これが立っていない限りクリックに反応しない。
+  //     編集モードに入った時点で拾い始めると、カメラを回すつもりの操作で
+  //     建物を掴んでしまう誤爆が絶えなかった。
+  //     「既存の PLATEAU 建物を編集する」を押している間だけ拾う。
+  picking: false,
 };
 
 // ★ まとめて扱った建物のまとまり（群）。
@@ -341,7 +357,17 @@ function rebuildColumn(gmlId, parts, dy) {
   mesh.updateWorldMatrix(true, false);
   clipMeshes.add(mesh);
   columns.set(gmlId, mesh);
+  // ★ 嵩上げの柱も壁面後退で切りたい。切る仕組みは buildingsetback.js が
+  //   持っているので、柱ができたことだけ知らせる（あちらを import すると
+  //   相互参照になるため、差し込み口で繋ぐ）。
+  if (columnHook) {
+    try { columnHook(mesh, gmlId); } catch (e) { console.warn('柱の後退処理に失敗', e); }
+  }
 }
+
+// 柱ができたときに呼ぶ差し込み口（buildingsetback.js が登録する）。
+let columnHook = null;
+function setColumnHook(fn) { columnHook = fn; }
 
 // ---- めり込みの矢印 ------------------------------------------------------
 //   高さを下げた建物は「低くなった」ことが空からは分かりにくい（元の高さが
@@ -920,24 +946,29 @@ function metersPerPixelAt(worldPoint) {
 //     離した位置との差で判定する。カメラ操作の邪魔はしない（controls はそのまま動く）。
 let clearDown = null;
 
-// ---- 矩形選択（Shift＋ドラッグ）----------------------------------------
+// ---- 矩形選択（2点クリック）--------------------------------------------
 //   ★ 判定は「建物の境界箱の中心が矩形の中に入るか」。CADの窓選択と同じ考え方で、
 //     大きな建物が矩形にかすっただけで巻き込まれるのを防ぐ。
-//   Alt を併用すると、今の選択に足し込む。
-let rect = null;   // { x0,y0,x1,y1, add }
+//   ⚠️ ドラッグではなく【2点クリック】で取る。ドラッグで取ろうとすると
+//     カメラの回転・パンと同じ操作になり、どちらを意図したのか区別できない。
+//     Shift 併用で逃げていたが、押し忘れるとカメラが回ってしまい使いづらかった。
+//   1点目を押すと rectPending に控え、2点目で確定する。Esc でやめられる。
+let rectPending = null;   // { x, y }
+let rectCursor = null;    // 2点目を決めるまでのカーソル位置
 let rectEl = null;
 function showRectBox() {
+  if (!rectPending || !rectCursor) return;
   if (!rectEl) {
     rectEl = document.createElement('div');
     rectEl.style.cssText = 'position:fixed; border:1px solid #4ea1ff; background:rgba(78,161,255,0.15);' +
       'pointer-events:none; z-index:9999;';
     document.body.appendChild(rectEl);
   }
-  const x = Math.min(rect.x0, rect.x1), y = Math.min(rect.y0, rect.y1);
+  const x = Math.min(rectPending.x, rectCursor.x), y = Math.min(rectPending.y, rectCursor.y);
   rectEl.style.left = x + 'px';
   rectEl.style.top = y + 'px';
-  rectEl.style.width = Math.abs(rect.x1 - rect.x0) + 'px';
-  rectEl.style.height = Math.abs(rect.y1 - rect.y0) + 'px';
+  rectEl.style.width = Math.abs(rectCursor.x - rectPending.x) + 'px';
+  rectEl.style.height = Math.abs(rectCursor.y - rectPending.y) + 'px';
   rectEl.style.display = '';
 }
 function hideRectBox() { if (rectEl) rectEl.style.display = 'none'; }
@@ -946,9 +977,9 @@ const _rsBox = new THREE.Box3();
 const _rsV = new THREE.Vector3();
 // 読み込み済みの建物すべての境界箱を batchid ごとに測って、矩形に入るものを選ぶ。
 //   ★ 同じ建物が複数タイル（LOD違い）に入っているので gml_id でまとめる。
-function applyRectSelection(r) {
-  const x0 = Math.min(r.x0, r.x1), x1 = Math.max(r.x0, r.x1);
-  const y0 = Math.min(r.y0, r.y1), y1 = Math.max(r.y0, r.y1);
+function applyRectSelection(a, b, { add = false } = {}) {
+  const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x);
+  const y0 = Math.min(a.y, b.y), y1 = Math.max(a.y, b.y);
   if (x1 - x0 < 3 && y1 - y0 < 3) return;   // ただのクリックとみなす
   const dom = renderer.domElement;
   const vr = dom.getBoundingClientRect();
@@ -999,7 +1030,7 @@ function applyRectSelection(r) {
       buildingId: btValue(ms.batchTable, 'uro:BuildingIDAttribute_uro:buildingID', b),
     });
   }
-  setSelection(hits, { add: r.add });
+  setSelection(hits, { add });
 }
 
 // 押した先が「いま選択中の建物」かどうか。
@@ -1009,14 +1040,12 @@ function isSelectedHit(hit) {
 
 function onPointerDown(ev) {
   if (!editState.enabled || ev.button !== 0) return;
-  // Shift＋ドラッグは矩形選択。カメラ操作より先に横取りする。
-  if (ev.shiftKey) {
-    rect = { x0: ev.clientX, y0: ev.clientY, x1: ev.clientX, y1: ev.clientY, add: ev.altKey };
-    controls.enabled = false;
-    capturePointer(ev.pointerId, true);
-    showRectBox();
-    return;
-  }
+  // ★ 建物を掴んで高さを変えられるのは【高さの手順のときだけ】。
+  //   ⚠️ 以前は「選ぶ手順以外なら掴める」としていたため、壁面後退で側面を
+  //     選んだあと、囲み箱の外に出ている建物本体をドラッグすると高さが
+  //     変わってしまった（後退の調整中に建物が伸び縮みする）。
+  //     面を選ぶ場面（pick）でも同じで、選ぶだけのつもりが編集になる。
+  if (editState.step !== 'height') { clearDown = { x: ev.clientX, y: ev.clientY }; return; }
   const hit = pickBuildingAt(ev.clientX, ev.clientY);
   if (!isSelectedHit(hit)) {
     // 地面・空・選択していない建物。カメラ操作はそのまま通しつつ、
@@ -1053,7 +1082,8 @@ function capturePointer(pointerId, on) {
 }
 
 function onPointerMove(ev) {
-  if (rect) { rect.x1 = ev.clientX; rect.y1 = ev.clientY; showRectBox(); return; }
+  // 1点目を打ったあとは、カーソルまでの矩形を見せる
+  if (rectPending) { rectCursor = { x: ev.clientX, y: ev.clientY }; showRectBox(); }
   if (!drag) return;
   const dyPx = drag.startY - ev.clientY;           // 上へ動かすと正
   if (!drag.moved && Math.abs(dyPx) < DRAG_THRESHOLD_PX) return;
@@ -1073,22 +1103,41 @@ function onPointerMove(ev) {
 }
 
 function onPointerUp(ev) {
-  if (rect) {
-    const r = rect;
-    rect = null;
-    controls.enabled = true;
-    capturePointer(ev.pointerId, false);
-    hideRectBox();
-    applyRectSelection(r);
-    return;
-  }
   if (!drag) {
-    // 選択中の建物以外を「動かさずに」クリックした＝選択を解除する
-    if (clearDown && editState.enabled) {
-      const moved = Math.hypot(ev.clientX - clearDown.x, ev.clientY - clearDown.y);
-      if (moved < DRAG_THRESHOLD_PX && editState.selection.size) clearSelection();
-    }
+    // 「動かさずに離した」＝クリック。カメラを回した後には反応しない。
+    const still = clearDown
+      && Math.hypot(ev.clientX - clearDown.x, ev.clientY - clearDown.y) < DRAG_THRESHOLD_PX;
     clearDown = null;
+    if (!still || !editState.enabled) return;
+    if (editState.step === 'select') {
+      if (!editState.picking) return;   // 受付前。クリックは素通しする
+      // ★ 2点クリックで矩形選択。1点目を控え、2点目で確定する。
+      //   ⚠️ ダブルクリックの1回目もここを通る。矩形の1点目として控えるだけなので
+      //     実害はなく、ダブルクリックが成立すればそちらが選択を上書きする。
+      if (!rectPending) {
+        rectPending = { x: ev.clientX, y: ev.clientY };
+        rectCursor = { x: ev.clientX, y: ev.clientY };
+        syncUI();
+      } else {
+        const a = rectPending;
+        rectPending = null; rectCursor = null;
+        hideRectBox();
+        applyRectSelection(a, { x: ev.clientX, y: ev.clientY }, { add: ev.altKey });
+        syncUI();
+      }
+      return;
+    }
+    // ★ 高さをいじったあと、関係ないところをクリックしたら最初の状態へ戻す。
+    //   スライダーのパネルが出たままだと、次の建物を選ぶ場面なのか
+    //   まだ操作中なのか分からなくなる。
+    //   ⚠️ 壁面後退の最中は戻さない。面のドラッグやギズモの外側を押しただけで
+    //     作業が畳まれてしまう。
+    if (editState.step === 'height') {
+      clearSelection();
+      setStep('select');
+    }
+    // ⚠️ 'pick' と 'setback' では何もしない。囲み箱の外を押しただけで
+    //   選択が外れると、面を選び直したいだけなのに最初からやり直しになる。
     return;
   }
   const d = drag;
@@ -1103,7 +1152,7 @@ function onPointerUp(ev) {
 //     結果は「その建物が選ばれた状態」に落ち着く。
 //   Shift＋ダブルクリックなら、選択に足す／外す（1棟ずつの調整用）。
 function onDoubleClick(ev) {
-  if (!editState.enabled) return;
+  if (!editState.enabled || !editState.picking) return;
   const hit = pickBuildingAt(ev.clientX, ev.clientY);
   if (!hit) return;
   if (ev.shiftKey) toggleSelection(hit);
@@ -1292,7 +1341,66 @@ function floorDeltaOfAll() {
 // UI
 // =========================================================================
 let ui = null;
+// 「同じ量だけ上げ下げ」スライダーの基準。高さの手順に入った時点の各棟の dy。
+//   ★ スライダーの値をそのまま「基準からの増減」として読む。差分を足し込む方式だと
+//     つまみを戻しても元に戻らず、行ったり来たりできない。
+let relBase = new Map();   // gmlId -> dy
 let faUi = {};        // 右上の「床面積の増減」パネル
+/* 手順を切り替える。パネルの出し分けと、その手順に入るときの下ごしらえを1か所に集める。
+   ⚠️ 手順の入り口と出口をここへ寄せること。ボタンごとに散らすと、
+     「壁面後退から抜けたのに面が残る」といった消し忘れが必ず出る。 */
+function setStep(next) {
+  const prev = editState.step;
+  editState.step = next;
+  // 囲み箱の面は 'pick' と 'setback' でだけ要る。そこから離れたら片付ける。
+  //   ⚠️ 'pick' → 'setback' は面を選んだ流れの続きなので片付けない。
+  const usedFaces = (prev === 'pick' || prev === 'setback');
+  const needsFaces = (next === 'pick' || next === 'setback');
+  if (usedFaces && !needsFaces) endSetbackStep();
+  if (next === 'pick') startSetbackStep();
+  if (next === 'height') captureRelBase();
+  if (next === 'select') {
+    // 手順の先頭へ戻ったら、受付は切っておく（押し直してもらう）
+    editState.picking = false;
+    rectPending = null; rectCursor = null; hideRectBox();
+  }
+  syncUI();
+  requestRender();
+}
+
+/* 建物のクリック選択を受け付けるかどうかを切り替える。 */
+function setPicking(on) {
+  editState.picking = !!on;
+  if (!on) { rectPending = null; rectCursor = null; hideRectBox(); }
+  // ★ 選び始めたら、自分で置いた建物の道具は畳む。
+  //   どちらもクリックで拾う道具なので、同時に開いていると取り違える。
+  if (on) setBlocksEnabled(false);
+  syncUI();
+  requestRender();
+}
+
+/* 「同じ量だけ」スライダーの基準を、いまの高さで取り直す。
+   ★ 呼ぶのは【高さの手順に入るとき】だけ。基準は「その建物の元の高さ」に
+     据え置く。
+   ⚠️ 「高さを揃える」を動かしたあとに取り直してはいけない。2本のスライダーは
+     どちらも【元の高さから見た指定】であって、積み重ねるものではない。
+     揃えた結果を基準にすると「揃えてから同じ量だけ」が加算になってしまう。
+     揃えたあとに「同じ量だけ」を動かしたら、揃えた指定は捨てて
+     元の高さ＋その量へ飛ぶ（不連続に切り替わる）のが正しい。 */
+function captureRelBase() {
+  relBase = new Map();
+  for (const gmlId of editState.selection.keys()) {
+    relBase.set(gmlId, (edits.get(gmlId) || defaultEdit()).dy);
+  }
+}
+
+// 壁面後退の開始・終了は buildingsetback.js が持っている。読み込み順の都合で
+// 直接は呼べないので、あちらから差し込んでもらう（循環 import を作らないため）。
+let setbackStepHooks = { start: null, end: null };
+function setSetbackStepHooks(start, end) { setbackStepHooks = { start, end }; }
+function startSetbackStep() { if (setbackStepHooks.start) setbackStepHooks.start(); }
+function endSetbackStep() { if (setbackStepHooks.end) setbackStepHooks.end(); }
+
 function syncUI() {
   if (!ui) return;
   const n = editState.selection.size;
@@ -1304,58 +1412,75 @@ function syncUI() {
   // ★ 群として覚えられていることを見せる。黙って仲間まで選ばれると
   //   「余計なものまで選ばれた」と映るので、理由が分かるようにしておく。
   if (ui.lockRow) {
-    const n = selectionGroupSize();
-    ui.lockRow.style.display = n >= 2 ? 'flex' : 'none';
-    if (n >= 2 && ui.lockLabel) ui.lockLabel.textContent = `${n} 棟をまとめて選択中`;
+    const g = selectionGroupSize();
+    ui.lockRow.style.display = g >= 2 ? 'flex' : 'none';
+    if (g >= 2 && ui.lockLabel) ui.lockLabel.textContent = `${g} 棟をまとめて選択中`;
   }
+  // 手順ごとの区画を出し分ける
+  for (const [name, box] of Object.entries(ui.steps)) {
+    if (box) box.style.display = (name === editState.step) ? '' : 'none';
+  }
+  // 選択を確定できるのは1棟以上選ばれているときだけ
+  if (ui.confirmSel) ui.confirmSel.disabled = !n;
+  // 「選び始める」の開閉。受付中だけ中身を出す。
+  if (ui.pickBody) ui.pickBody.style.display = editState.picking ? '' : 'none';
+  if (ui.startPick) {
+    ui.startPick.textContent = editState.picking
+      ? '既存の PLATEAU 建物を編集する ▴' : '既存の PLATEAU 建物を編集する ▾';
+    ui.startPick.setAttribute('aria-expanded', String(editState.picking));
+  }
+  if (ui.rectHint) ui.rectHint.style.display = rectPending ? '' : 'none';
+
+  // 見出し行（何棟選んでいるか／1棟なら属性）
   if (!n) {
-    ui.info.textContent = editState.enabled
-      ? '建物をダブルクリックで選択／Shift＋ドラッグで矩形選択（Alt併用で追加）'
-      : '';
-    ui.id.textContent = '';
-    // 壁面後退の作業中は畳まない（上の setbackBusy の注記を参照）
-    ui.controls.style.display = editState.setbackBusy ? '' : 'none';
-    ui.count.textContent = edits.size ? `編集中: ${edits.size} 棟` : '';
-    return;
-  }
-  const sel = editState.primary;
-  const e = edits.get(sel.gmlId) || defaultEdit();
-  const baseH = baseHeightOfSelected();
-  if (n > 1) {
-    // 複数選択中は、まとめ操作が主役なので棟数と高さの範囲だけ出す
-    let lo = Infinity, hi = -Infinity;
-    for (const info of editState.selection.values()) {
-      const b = baseHeightOf(info);
-      if (Number.isFinite(b)) { lo = Math.min(lo, b); hi = Math.max(hi, b); }
-    }
-    const range = Number.isFinite(lo) ? `／ 元の高さ ${lo.toFixed(1)}〜${hi.toFixed(1)}m` : '';
-    ui.info.textContent = `${n} 棟を選択中 ${range}`;
+    ui.info.textContent = editState.enabled ? '建物が選ばれていません' : '';
     ui.id.textContent = '';
   } else {
-    const head = [sel.name || '（名称なし）'];
-    if (Number.isFinite(baseH) && baseH > 0) head.push(`元の高さ ${baseH.toFixed(1)}m`);
-    if (sel.usage) head.push(sel.usage);
-    ui.info.textContent = head.join(' ／ ');
-    // 建物IDは PLATEAU の建物ID属性。無いタイルもあるので gml_id で補う。
-    ui.id.textContent = sel.buildingId ? `建物ID: ${sel.buildingId}` : `gml_id: ${sel.gmlId}`;
-    ui.id.title = `gml_id: ${sel.gmlId}`;
+    const sel = editState.primary;
+    const baseH = baseHeightOfSelected();
+    if (n > 1) {
+      let lo = Infinity, hi = -Infinity;
+      for (const info of editState.selection.values()) {
+        const b = baseHeightOf(info);
+        if (Number.isFinite(b)) { lo = Math.min(lo, b); hi = Math.max(hi, b); }
+      }
+      const range = Number.isFinite(lo) ? `／ 元の高さ ${lo.toFixed(1)}〜${hi.toFixed(1)}m` : '';
+      ui.info.textContent = `${n} 棟を選択中 ${range}`;
+      ui.id.textContent = '';
+    } else {
+      const head = [sel.name || '（名称なし）'];
+      if (Number.isFinite(baseH) && baseH > 0) head.push(`元の高さ ${baseH.toFixed(1)}m`);
+      if (sel.usage) head.push(sel.usage);
+      ui.info.textContent = head.join(' ／ ');
+      // 建物IDは PLATEAU の建物ID属性。無いタイルもあるので gml_id で補う。
+      ui.id.textContent = sel.buildingId ? `建物ID: ${sel.buildingId}` : `gml_id: ${sel.gmlId}`;
+      ui.id.title = `gml_id: ${sel.gmlId}`;
+    }
   }
-  ui.controls.style.display = '';
-  ui.opacity.value = String(Math.round(e.opacity * 100));
-  ui.opacityVal.textContent = `${Math.round(e.opacity * 100)}%`;
-  ui.hidden.checked = e.hidden;
-  // スライダーは「変更量」ではなく【総高さ】を 0〜100m の固定目盛りで表す。
-  //   ★ 元の高さの目盛りから始まるので、つまみの位置がそのまま「今の建物の高さ」になる。
-  //     元が100mを超える建物では目盛りに収まらないので端に寄せて表示する
-  //     （その状態からつまみを動かすと、その高さまで下げる操作になる）。
-  ui.dy.value = String(clampSlider(sliderHeight(baseH, e.dy)));
-  // 総高さを主に出し、元からどれだけ変えたかを添える
-  const total = sliderHeight(baseH, e.dy);
-  const delta = e.dy === 0 ? ''
-    : (e.dy > 0 ? `（+${e.dy.toFixed(1)} 嵩上げ）` : `（${e.dy.toFixed(1)} めり込み）`);
-  ui.dyVal.textContent = n > 1
-    ? `${total.toFixed(1)} m ${delta}（動かすと ${n} 棟すべて同じ高さになります）`
-    : `${total.toFixed(1)} m ${delta}`;
+
+  // 高さの手順の入力欄
+  if (editState.step === 'height' && n) {
+    const sel = editState.primary;
+    const e = edits.get(sel.gmlId) || defaultEdit();
+    const baseH = baseHeightOfSelected();
+    const pct = Math.round(e.opacity * 100);
+    ui.opacity.value = String(pct);
+    // ★ 0% は「非表示」と読ませる。別に非表示のチェックを置いていたが、
+    //   透過0%とチェックONの2通りで同じ見た目になり、どちらが効いているのか
+    //   分からなくなっていた。0%＝非表示に一本化した。
+    ui.opacityVal.textContent = pct === 0 ? '非表示' : `${pct}%`;
+    // 「同じ量だけ」のつまみは、元の高さから見た増減を指す。
+    //   ⚠️ 「高さを揃える」で動かしたぶんもここに映る（揃えた結果を
+    //     元の高さと比べた差）。つまみを掴んだ瞬間にその値が採用されるので、
+    //     表示と操作の意味が食い違わない。
+    const rel = e.dy - (relBase.get(sel.gmlId) ?? 0);
+    ui.rel.value = String(Math.max(-50, Math.min(50, rel)));
+    ui.relVal.textContent = rel === 0 ? '±0 m'
+      : `${rel > 0 ? '+' : ''}${rel.toFixed(1)} m`;
+    const total = sliderHeight(baseH, e.dy);
+    ui.dy.value = String(clampSlider(total));
+    ui.dyVal.textContent = `${total.toFixed(1)} m`;
+  }
   ui.count.textContent = edits.size ? `編集中: ${edits.size} 棟` : '';
 }
 
@@ -1461,6 +1586,18 @@ const FA_BASIS_HTML = `
 自動的にもう片方へ換算します（1坪 = 400/121 ㎡）。地価公示データを導入する
 までの間、単価は上の欄に手入力してください。`;
 
+/* 床面積パネルの畳み開き。長いので既定では開いておき、邪魔なら畳めるようにする。 */
+function initFaFoldToggle() {
+  const btn = el('faFoldToggle'), body = el('faFoldBody');
+  if (!btn || !body) return;
+  btn.addEventListener('click', () => {
+    const open = body.style.display !== 'none';
+    body.style.display = open ? 'none' : '';
+    btn.setAttribute('aria-expanded', String(!open));
+    btn.textContent = open ? '床面積の増減 ▾' : '床面積の増減 ▴';
+  });
+}
+
 function initFaBasisToggle() {
   const btn = el('faBasisToggle'), body = el('faBasisBody');
   if (!btn || !body) return;
@@ -1531,16 +1668,30 @@ function resetAll() {
 
 function setEditEnabled(on) {
   editState.enabled = on;
+  // ★ 箱の道具は編集パネルの中に畳んである。編集モードを抜けるときだけ
+  //   閉じる（入るときに勝手に開かない＝建物を選ぶ場面で箱を掴まない）。
+  if (!on) setBlocksEnabled(false);
   if (!on) {
     editState.selection.clear();
     editState.primary = null;
     for (const b of boxPool) b.visible = false;
     if (drag) { drag = null; controls.enabled = true; }
-    if (rect) { rect = null; hideRectBox(); controls.enabled = true; }
+    rectPending = null; rectCursor = null; hideRectBox();
   }
-  syncUI();
+  // ★ 入るときも出るときも手順を最初へ戻す。setStep 経由にすること。
+  //   壁面後退の途中で編集モードを閉じたとき、面やギズモを片付けるのは
+  //   setStep の仕事なので、ここで editState.step を直接書いてはいけない。
+  setStep('select');
   requestRender();
 }
+
+/* 01（モデリング画面）のツールバーから呼ばれる入口。
+   同一オリジンの iframe なので、あちらは window.toggleEarthBuildingEdit() を直接呼べる。 */
+window.toggleEarthBuildingEdit = function () {
+  setEditEnabled(!editState.enabled);
+  return editState.enabled;
+};
+window.getEarthBuildingEditOn = () => editState.enabled;
 
 (function setupUI() {
   faUi = {
@@ -1567,58 +1718,72 @@ function setEditEnabled(on) {
     });
   }
   initFaBasisToggle();
-  const onCb = el('buildingEditOn');
-  if (!onCb) return;   // この画面に編集UIが無い構成でも動くように
+  initFaFoldToggle();
+  const panel = el('editPanel');
+  if (!panel) return;   // この画面に編集UIが無い構成でも動くように
   ui = {
-    panel: el('editPanel'),
+    panel,
     lockRow: el('selectionLockRow'),
     lockLabel: el('selectionLockLabel'),
     info: el('buildingEditInfo'),
     id: el('buildingEditId'),
-    controls: el('buildingEditControls'),
+    count: el('buildingEditCount'),
+    confirmSel: el('buildingEditConfirmSel'),
+    startPick: el('buildingEditStartPick'),
+    pickBody: el('buildingEditPickBody'),
+    rectHint: el('buildingEditRectHint'),
     opacity: el('buildingEditOpacity'),
     opacityVal: el('buildingEditOpacityVal'),
-    hidden: el('buildingEditHidden'),
+    rel: el('buildingEditRel'),
+    relVal: el('buildingEditRelVal'),
     dy: el('buildingEditDy'),
     dyVal: el('buildingEditDyVal'),
-    count: el('buildingEditCount'),
-    bumpAmount: el('buildingEditBumpAmount'),
-    bumpBy: el('buildingEditBumpUp'),
-    bumpDown: el('buildingEditBumpDown'),
-    setToHeight: el('buildingEditSetHeight'),
-    setTo: el('buildingEditSetTo'),
+    steps: {},
   };
-  onCb.addEventListener('change', () => setEditEnabled(onCb.checked));
-  ui.opacity.addEventListener('input', () => {
-    mutateSelected((e) => { e.opacity = Number(ui.opacity.value) / 100; });
-  });
-  ui.hidden.addEventListener('change', () => {
-    mutateSelected((e) => { e.hidden = ui.hidden.checked; });
-  });
-  // つまみの位置＝目指す総高さ。複数選んでいれば全部その高さに揃う（絶対指定）。
-  ui.dy.addEventListener('input', () => setSelectedHeight(Number(ui.dy.value)));
-  // まとめて同じ量だけ上げ下げ（相対指定）
-  ui.bumpBy.addEventListener('click', () => raiseSelectedBy(Number(ui.bumpAmount.value)));
-  ui.bumpDown.addEventListener('click', () => raiseSelectedBy(-Number(ui.bumpAmount.value)));
-  // まとめて同じ総高さに（絶対指定。スライダーの範囲外も入れられる数値入力）
-  ui.setTo.addEventListener('click', () => setSelectedHeight(Number(ui.setToHeight.value)));
-  el('buildingEditReset').addEventListener('click', resetSelected);
-  el('buildingEditResetAll').addEventListener('click', resetAll);
-  el('selectionUnlock').addEventListener('click', () => clearSelectionGroup());
-
-  // 「高さの変更」／「壁面後退」の切り替え。
-  //   ★ 同時に使うものではないので排他にする（壁面後退の途中で高さのスライダーを
-  //     触ってしまう、といった取り違えを防ぐ）。中身は消さずに表示だけ切り替えるので、
-  //     行き来しても入力値は保たれる。
-  const tabs = [...document.querySelectorAll('.ep-tab')];
-  const pages = [...document.querySelectorAll('.ep-page')];
-  for (const tab of tabs) {
-    tab.addEventListener('click', () => {
-      const want = tab.dataset.epTab;
-      for (const t of tabs) t.classList.toggle('active', t === tab);
-      for (const p of pages) p.style.display = (p.dataset.epPage === want) ? '' : 'none';
-    });
+  for (const box of document.querySelectorAll('.ep-step')) {
+    ui.steps[box.dataset.epStep] = box;
   }
+
+  // ---- 手順1: 選ぶ ----
+  ui.startPick.addEventListener('click', () => setPicking(!editState.picking));
+  // 自分で置く建物の道具が開いたら、こちらの受付は切る
+  setBlocksOpenHook(() => setPicking(false));
+  ui.confirmSel.addEventListener('click', () => {
+    if (editState.selection.size) setStep('pick');
+  });
+  el('buildingEditClearSel').addEventListener('click', () => {
+    rectPending = null; rectCursor = null; hideRectBox();
+    clearSelection();
+  });
+
+  // ---- 手順2 は囲み箱の面をクリックして決める（buildingsetback.js が受ける）----
+  // どの手順からでも「選び直す」で最初へ戻れる
+  for (const b of document.querySelectorAll('.ep-back')) {
+    b.addEventListener('click', () => setStep('select'));
+  }
+
+  // ---- 手順3-1: 高さ ----
+  //   透過度は 0% を「非表示」として扱う（別のチェックは置かない）。
+  ui.opacity.addEventListener('input', () => {
+    const pct = Number(ui.opacity.value);
+    mutateSelected((e) => { e.opacity = pct / 100; e.hidden = pct === 0; });
+  });
+  //   相対：この手順に入った時点の高さから、全棟を同じ量だけ動かす
+  ui.rel.addEventListener('input', () => {
+    const v = Number(ui.rel.value);
+    mutateSelected((e, info) => {
+      e.dy = (relBase.get(info.gmlId) ?? 0) + v;
+      if (e.hidden) { e.hidden = false; e.opacity = 1; }
+    });
+  });
+  //   絶対：つまみの位置＝目指す総高さ。全棟がその高さに揃う
+  ui.dy.addEventListener('input', () => setSelectedHeight(Number(ui.dy.value)));
+  el('buildingEditReset').addEventListener('click', () => {
+    resetSelected();
+    // 戻したら相対スライダーの基準も取り直す（つまみが±0を指すように）
+    setStep('height');
+  });
+  el('selectionUnlock').addEventListener('click', () => clearSelectionGroup());
 
   const dom = renderer.domElement;
   dom.addEventListener('pointerdown', onPointerDown);
@@ -1626,6 +1791,11 @@ function setEditEnabled(on) {
   dom.addEventListener('pointerup', onPointerUp);
   dom.addEventListener('pointercancel', onPointerUp);
   dom.addEventListener('dblclick', onDoubleClick);
+  // Esc で矩形の1点目を取り消す（打った点を消す手段が無いと詰む）
+  window.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !rectPending) return;
+    rectPending = null; rectCursor = null; hideRectBox(); syncUI();
+  });
   syncUI();
 })();
 
@@ -1675,6 +1845,7 @@ function selectionGroupSize() {
 export {
   editState, edits, setEditEnabled, resetSelected, resetAll,
   registerSelectionGroup, clearSelectionGroup, selectionGroupSize, setSetbackBusy,
+  setStep, setSetbackStepHooks, clearSelection, columns, setColumnHook, setPicking,
   applyEditsToModel, updateSelectionBox, applyEditsEverywhere, defaultEdit,
   // ★ 壁面後退（buildingsetback.js）へ貸し出す道具。
   //   あちらは「gml_id → batchid」と「その建物の階高」を必要とするが、どちらも

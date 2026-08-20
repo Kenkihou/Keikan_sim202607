@@ -416,7 +416,8 @@
              もの」と視覚的に区別する役目を持っているため。 */
         #app1-munsell-btn,
         #app1-profile-toggle,
-        #app1-streetview-toggle {
+        #app1-streetview-toggle,
+        #app1-buildingedit-toggle {
             background: transparent;
             border: none;
             border-bottom: none;
@@ -425,7 +426,8 @@
         }
         #app1-munsell-btn:hover,
         #app1-profile-toggle:hover,
-        #app1-streetview-toggle:hover {
+        #app1-streetview-toggle:hover,
+        #app1-buildingedit-toggle:hover {
             background: rgba(255, 255, 255, 0.1);
             border-color: transparent;
         }
@@ -433,7 +435,8 @@
            （枠付きの立体表現は使わない＝押し込みアニメーションもここでは無し）。 */
         #app1-munsell-btn.active,
         #app1-profile-toggle.active,
-        #app1-streetview-toggle.active {
+        #app1-streetview-toggle.active,
+        #app1-buildingedit-toggle.active {
             background: rgba(255, 255, 255, 0.16);
             border-color: transparent;
             box-shadow: none;
@@ -513,11 +516,15 @@
                left の 120px は「時刻パネルの右端 − 画面中央」の固定値（時刻パネル側の
                -126px オフセットと対で決まる）。ここへ、このパネル自身の半幅を足す。 */
             left: 50%;
-            /* ★ストリートビュー（👣）のボタンを地形断面の右に足したぶん、黒帯を
-               56px（ボタン44px＋隙間12px）伸ばしてある。左端の位置は動かさずに右へ
-               伸ばしたいので、増えた幅の半分（28px）だけ中心をずらす。 */
-            transform: translateX(calc(-50% + 296px));
-            width: 352px;
+            /* ★ボタンを右に足すたびに、黒帯を 56px（ボタン44px＋隙間12px）ずつ
+               伸ばしてある。左端の位置は動かさずに右へ伸ばしたいので、
+               増えた幅の半分（28px）だけ中心をずらす。
+                 👣ストリートビュー … 296px → 352px（中心 +268 → +296）
+                 🏢建物編集        … 352px → 408px（中心 +296 → +324）
+               ⚠️ ボタンを足すときは【必ず幅も一緒に広げる】こと。幅を据え置くと、
+                 中のスライダーが押し潰されて目盛りが読めなくなる。 */
+            transform: translateX(calc(-50% + 324px));
+            width: 408px;
             background: rgba(15, 15, 25, 0.85);
             padding: 14px 20px;
             border-radius: 10px;
@@ -533,10 +540,12 @@
             gap: 12px;          /* 左端のアイコンとスライダーの間隔（時刻パネルと揃える） */
         }
 
-        /* 2枚並べると 776px 必要になる。それも置けないほど狭い画面では、
+        /* 2枚並べると、時刻パネルの左端から切り抜きパネルの右端まで 1018px 要る
+           （🏢を足して切り抜き側が 408px になったぶん、以前より広い）。
+           それも置けないほど狭い画面では、
            時刻パネルを中央に戻し、切り抜きパネルはツールバーの上へ回す
            （下から: 時刻パネル 20〜93px → ツールバー 100〜155px → ここ 163px〜）。 */
-        @media (max-width: 800px) {
+        @media (max-width: 1020px) {
             #app1-time-slider-container {
                 transform: translateX(-50%);
             }
@@ -554,9 +563,18 @@
         /* ツールチップの矢印がアイコンに重ならないよう、SVG は中央に置くだけにする */
         #app1-profile-toggle svg,
         #app1-streetview-toggle svg { display: block; }
+        /* 🏢 建物編集。ストビューと同じ体裁に揃える（並びで浮かないように） */
+        #app1-buildingedit-toggle svg { display: block; }
+        #app1-buildingedit-toggle { color: #e8eef8; }
+        #app1-buildingedit-toggle.active { color: #ffd23c; }
         /* 黒帯の上で沈まないよう、少し明るい色にしておく（SVGなので currentColor が効く） */
         #app1-streetview-toggle { color: #e8eef8; }
         #app1-streetview-toggle.active { color: #ffd23c; }
+        /* ⛰ 地形断面も、動いている間はアイコンを黄色くする。
+           ⚠️ 3つのボタン（⛰ 👣 🏢）で見え方を揃えること。1つだけ色が変わらないと
+             「効いていない」ように見える。 */
+        #app1-profile-toggle { color: #e8eef8; }
+        #app1-profile-toggle.active { color: #ffd23c; }
 
         /* ラベルは中央基準で置かれてスライダーの左右にはみ出すので、その安全地帯を確保する */
         .slider-ui-inner.clip {
@@ -1245,6 +1263,28 @@
                 <ellipse cx="15.9" cy="14.6" rx="3.0" ry="4.3" fill="currentColor"
                          transform="rotate(10 15.9 14.6)" />
                 <ellipse cx="17.6" cy="19.6" rx="1.25" ry="1.05" fill="currentColor" />
+            </svg>
+        </button>
+        <!-- PLATEAU 建物の編集（高さの変更・壁面後退）。地球モード中だけ押せる。
+             実体は 04 側の js/buildingedit.js。ここはボタンだけで、押すと iframe の
+             toggleEarthBuildingEdit を呼ぶ（👣 と同じ作法）。
+             ⚠️ かつては 04 の左上パネルにチェックボックスを置いていたが、
+               地球モードに入ってさらにパネルを開いてチェック、という二段構えが
+               分かりにくかったので、他の機能と同じくここのボタンへ揃えた。 -->
+        <button type="button" id="app1-buildingedit-toggle" class="sim-panel-btn"
+                data-tooltip="PLATEAU 建物を編集する">
+            <svg viewBox="0 0 24 24" width="23" height="23" aria-hidden="true" focusable="false">
+                <!-- 街区のビル3棟。中央の1棟だけ嵩上げされている＝高さを編集する道具 -->
+                <rect x="2.5" y="12" width="5.5" height="9" fill="none"
+                      stroke="currentColor" stroke-width="1.6" />
+                <rect x="9.5" y="5" width="5" height="16" fill="none"
+                      stroke="currentColor" stroke-width="1.6" />
+                <rect x="16" y="14" width="5.5" height="7" fill="none"
+                      stroke="currentColor" stroke-width="1.6" />
+                <!-- 嵩上げを示す上向きの矢 -->
+                <path d="M12 4 L12 1 M10 2.6 L12 0.8 L14 2.6" fill="none"
+                      stroke="currentColor" stroke-width="1.5"
+                      stroke-linecap="round" stroke-linejoin="round" />
             </svg>
         </button>
     </div>

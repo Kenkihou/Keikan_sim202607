@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>屋根ジェネレーター（練習）</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    /* 01 のモデリングモードに合わせて白地。3D の背景も #f5f5f5 で揃える。 */
+    background: #ffffff; color: #333; overflow: hidden;
+    font-family: sans-serif;
+    font-size: 13px; line-height: 1.5;
+  }
+  #view { position: fixed; inset: 0; }
+  #view canvas { display: block; }
+
+  /* ---------- 操作パネル（画面右） ---------- */
+  #panel, #hint {
+    position: fixed; right: 12px; z-index: 10; width: 260px;
+    padding: 10px 12px; border-radius: 5px;
+    background: rgba(255, 255, 255, 0.9);
+    border: 1px solid #ccc; color: #333;
+  }
+  #panel { top: 12px; max-height: calc(100vh - 24px); overflow-y: auto; }
+  /* ★ 球や壁に当てたときの説明は、モデルに被せずここに出す。
+       ⚠️ モデルのそばに出すと、肝心の屋根が文字で隠れる。 */
+  #hint { top: 0; display: none; }
+  #hint b { color: #007acc; }
+  #panel h1 {
+    margin: 0 0 8px; font-size: 13px; font-weight: 700; color: #dbe9fb;
+    padding-bottom: 6px; border-bottom: 1px solid rgba(148, 163, 184, 0.25);
+  }
+  .sec { margin-top: 10px; padding-top: 8px; border-top: 1px solid #ddd; }
+  .sec:first-of-type { border-top: none; padding-top: 0; }
+  .cap { font-size: 11px; color: #777; margin-bottom: 4px; }
+  .muted { color: #777; font-size: 11px; }
+
+  button {
+    font: inherit; font-size: 12px; color: #cdd8e6; cursor: pointer;
+    background: rgba(148, 163, 184, 0.14);
+    border: 1px solid rgba(148, 163, 184, 0.3);
+    border-radius: 6px; padding: 4px 10px;
+    transition: background .15s, border-color .15s;
+  }
+  button:hover { background: rgba(148, 163, 184, 0.28); }
+  button.on {
+    background: #2b6cb0; border-color: #63b3ed; color: #fff;
+  }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; }
+
+  input[type=range] { width: 100%; accent-color: #007acc; }
+  .val { font-variant-numeric: tabular-nums; color: #007acc; font-weight: 700; }
+
+  /* 読み値。「：」の位置を揃えたいので3列のグリッドにする。
+     ⚠️ 1行の文字列を空白で揃えても揃わない。字幅が違ううえ、値の桁数も変わる。 */
+  #readout {
+    display: grid; grid-template-columns: auto auto 1fr;
+    row-gap: 4px; align-items: baseline;
+    font-size: 13px; color: #222; font-variant-numeric: tabular-nums;
+  }
+  #readout .k { text-align: right; color: #555; }
+  #readout .v { font-weight: 700; }
+  #warn {
+    display: none; margin-top: 6px; padding: 6px 8px; border-radius: 6px;
+    background: rgba(216, 64, 47, 0.18); border: 1px solid rgba(216, 64, 47, 0.5);
+    color: #a3271b; font-size: 12px;
+  }
+  /* 押し引きしている辺の寸法。モデルのすぐ横に出して、視線を動かさずに読めるように */
+  #sizeTag {
+    position: fixed; z-index: 20; display: none; pointer-events: none;
+    transform: translate(-50%, -50%);
+    padding: 3px 9px; border-radius: 6px; white-space: nowrap;
+    color: #fff; background: rgba(0, 0, 0, 0.75);
+    border: 1px solid rgba(0, 0, 0, 0.25);
+    font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.35);
+  }
+  /* 稜線の色の凡例。棟と谷を見分けるのがこの試作の肝なので、色を明示する */
+  .legend { display: flex; align-items: center; gap: 6px; margin-top: 3px; font-size: 11px; }
+  .swatch { width: 18px; height: 3px; border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<div id="view"></div>
+
+<div id="panel">
+  <div class="cap">勾配（すべての屋根で共通）</div>
+  <input type="range" id="slope" min="0" max="60" step="5" value="40" />
+  <div><span class="val" id="slopeVal">4.0 寸</span></div>
+
+  <div class="sec">
+    <div class="cap">軒の出（軒先）</div>
+    <input type="range" id="eaveOut" min="0" max="1200" step="50" value="600" />
+    <div><span class="val" id="eaveOutVal">600 mm</span></div>
+    <div class="cap" style="margin-top:8px">ケラバの出（妻側）</div>
+    <input type="range" id="rakeOut" min="0" max="1200" step="50" value="600" />
+    <div><span class="val" id="rakeOutVal">600 mm</span></div>
+  </div>
+
+  <div class="sec">
+    <div id="readout"></div>
+    <div id="warn"></div>
+  </div>
+</div>
+
+<div id="hint"></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://esm.sh/three@0.185.0",
+    "three/": "https://esm.sh/three@0.185.0/"
+  }
+}
+</script>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

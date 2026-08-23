@@ -77,6 +77,31 @@ jobs:
             fi
           done
 
+          # 🏠 屋根ジェネレーター（練習用）。ビルド不要の静的ファイルだけ。
+          #    three.js は index.html の importmap から CDN で読むので同梱しない。
+          #    ⚠️ 地球シミュレーターと違い、ファイルを1つずつ [ -f ] で守らずに
+          #      そのままコピーする。守ると欠けていても成功してしまうし、js/ を
+          #      丸ごとコピーしていれば、ファイルが増えてもコピー漏れが起きない。
+          mkdir -p combined_dist/roof-lab
+          cp 05_roof-lab/index.html combined_dist/roof-lab/
+          cp -r 05_roof-lab/js combined_dist/roof-lab/
+
+      # 4.4 屋根ジェネレーターの必須ファイルが揃っているか検証
+      - name: Verify roof-lab files
+        run: |
+          missing=0
+          for file in index.html js/main.js js/roofcalc.js; do
+            if [ ! -e "combined_dist/roof-lab/$file" ]; then
+              echo "::error::屋根ジェネレーターに必須のファイルが見つかりません: $file"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            ls -la combined_dist/roof-lab/
+            exit 1
+          fi
+          echo "屋根ジェネレーターの必須ファイルはすべて揃っています。"
+
       # 4.5 地球シミュレーターの必須ファイルが揃っているか検証
       #     ⚠️ 上のコピーは [ -f ... ] で守っているので、どれか1つが欠けていても
       #     デプロイ自体は失敗しない（＝気づかないまま一部データが無いサイトが公開されてしまう）。

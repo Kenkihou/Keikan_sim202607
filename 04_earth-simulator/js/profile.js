@@ -11,15 +11,23 @@
 //
 //   依存の向き: config / core にだけ依存する（ui.js がこちらを import する）。
 // =============================================================================
-import { THREE, el, focusLocal, EARTH_R } from './core.js';
+import { THREE, el, focusLocal } from './core.js';
+import { roadNames, loadRoadNames, riverNames, loadRiverNames } from './roadnames.js';
+import { localToLonLat, NORMAL_R } from './geo.js';
 import {
   DEG2RAD, ORIGIN_LAT, ORIGIN_LON, ORIGIN_HEIGHT, ORIGIN_ELEVATION, SEA_LEVEL_Y,
   PROFILE_LENGTH, PROFILE_DEM_ZOOM, PROFILE_DEM_URL, PROFILE_SAMPLES,
   PROFILE_EXAGGERATIONS, PROFILE_DEFAULT_EXAGGERATION,
   PROFILE_SOIL_COLOR, PROFILE_LINE_COLOR, PROFILE_SEA_COLOR,
-  CITY_ROADS_URL, MOUNTAIN_URL, CITY_WARD_BOUNDARY_URL, CITY_TEMPLES_URL,
+  MOUNTAIN_URL, CITY_WARD_BOUNDARY_URL, CITY_TEMPLES_URL,
   PROFILE_MOUNTAIN_BAND_M, PROFILE_MOUNTAIN_COLOR,
   PROFILE_ROAD_MERGE_M, PROFILE_LABEL_MIN_GAP_PX, PROFILE_ROAD_COLOR,
+  PROFILE_MOUNTAIN_SOIL_COLOR, PROFILE_MOUNTAIN_RISE_M, PROFILE_MOUNTAIN_WINDOW_M,
+  PROFILE_MOUNTAIN_MIN_RUN_M, PROFILE_ROAD_SURFACE_COLOR, PROFILE_ROAD_EDGE_COLOR,
+  PROFILE_ROAD_DEPTH_M, PROFILE_ROAD_MIN_PX, ROAD_WIDTH_M, ROAD_WIDTH_DEFAULT_M,
+  PROFILE_RIVER_COLOR, PROFILE_RIVER_BED_COLOR, PROFILE_RIVER_LABEL_COLOR,
+  PROFILE_RIVER_DEPTH_RATIO, PROFILE_RIVER_DEPTH_MIN_M, PROFILE_RIVER_DEPTH_MAX_M,
+  PROFILE_RIVER_BED_RATIO, PROFILE_RIVER_MIN_PX, PROFILE_RIVER_MERGE_M,
   PROFILE_WARD_PALETTE, PROFILE_WARD_BAND_OPACITY,
   PROFILE_WARD_OUTSIDE_LABEL, PROFILE_WARD_OUTSIDE_COLOR,
   PROFILE_TEMPLE_BAND_M, PROFILE_TEMPLE_COLOR,
@@ -50,6 +58,7 @@ const profileState = {
   error: null,
   reqId: 0,            // 取得の世代番号（ドラッグ中に古い応答が後着しても捨てるため）
   showRoads: true,
+  showRivers: true,
   showMountains: true,
   showTemples: true,
   showWards: true,
@@ -65,22 +74,13 @@ const profileState = {
 //     読み込んでコミット済みのファイルを使う。理由は CITY_ROADS_URL の解説を参照
 //     （Overpass はレート制限があり、断面線を動かすたびに叩く用途には向かない）。
 // =========================================================================
-const roadsData = { loaded: false, error: null, ways: [] };   // [{name, pts:[[lon,lat],...]}]
+//   ★ 通り名の実データは roadnames.js が持つ（ストリートビューの路面ラベル＝
+//     streetnames.js と同じ 600KB のファイルを見るので、読み込み口をそちらへ寄せた）。
+const roadsData = roadNames;                                  // [{name, pts:[[lon,lat],...]}]
 const peaksData = { loaded: false, error: null, peaks: [] };  // [{name, ele, lon, lat}]
 
-async function loadRoads() {
-  if (!CITY_ROADS_URL) return;
-  try {
-    const res = await fetch(CITY_ROADS_URL);
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const json = await res.json();
-    roadsData.ways = (json.features || []).map((f) => ({ name: f.name, pts: f.pts }));
-    roadsData.loaded = true;
-    if (profileState.enabled) drawPanel();
-  } catch (e) {
-    roadsData.error = String(e.message || e);
-    console.warn('通り名データの読み込みに失敗:', e);
-  }
+function loadRoads() {
+  loadRoadNames().then(() => { if (profileState.enabled) drawPanel(); });
 }
 
 async function loadPeaks() {
@@ -105,6 +105,14 @@ async function loadPeaks() {
     console.warn('山名データの読み込みに失敗:', e);
   }
 }
+// 河川（断面に水色の帯と川底を描く）。実データは roadnames.js が持つ
+//   （ストリートビューの3Dラベルと同じファイルなので、読み込み口を共有する）。
+const riversData = riverNames;
+
+function loadRivers() {
+  loadRiverNames().then(() => { if (profileState.enabled) drawPanel(); });
+}
+
 const wardsData = { loaded: false, error: null, wards: [] };   // [{name, rings:[[[lon,lat],...]]}]
 const templesData = { loaded: false, error: null, temples: [] }; // [{name, religion, lon, lat}]
 
@@ -138,6 +146,7 @@ async function loadTemples() {
   }
 }
 loadRoads();
+loadRivers();
 loadPeaks();
 loadWards();
 loadTemples();
@@ -158,6 +167,60 @@ function thinByGap(items, toX, minGapPx) {
   return out;
 }
 
+// =========================================================================
+// 「山」の区間を、断面そのものから見分ける
+//
+//   ★ 絶対標高で切らない。盆地の外の高い平坦地（亀岡側の 100m 台など）まで
+//     山に見えてしまう。【まわり ±PROFILE_MOUNTAIN_WINDOW_M の最低点より
+//     PROFILE_MOUNTAIN_RISE_M 以上高く盛り上がっているか】で決める。
+//   ★ 短い凹凸は均す（橋・堤防・小さな段差で塗りが細切れになるのを防ぐ）。
+//   戻り値は sample と同じ長さの Uint8Array（1＝山）。
+// =========================================================================
+let mountainMaskFor = null;   // どの samples に対して作ったマスクか
+let mountainMask = null;
+
+function computeMountainMask(samples) {
+  const n = samples.length;
+  const mask = new Uint8Array(n);
+  const spacing = PROFILE_LENGTH / (n - 1);                    // 1サンプルの間隔[m]
+  const win = Math.max(1, Math.round(PROFILE_MOUNTAIN_WINDOW_M / spacing));
+  const minRun = Math.max(1, Math.round(PROFILE_MOUNTAIN_MIN_RUN_M / spacing));
+  // まわりの最低点。単純な窓の最小値（n は数百なので素直に回して十分速い）。
+  for (let i = 0; i < n; i++) {
+    const v = samples[i];
+    if (!Number.isFinite(v)) continue;
+    let lo = Infinity;
+    for (let j = Math.max(0, i - win); j <= Math.min(n - 1, i + win); j++) {
+      const u = samples[j];
+      if (Number.isFinite(u) && u < lo) lo = u;
+    }
+    if (lo !== Infinity && v - lo >= PROFILE_MOUNTAIN_RISE_M) mask[i] = 1;
+  }
+  // 短い切れ目・短い塊を均す（0の島 → 1、1の島 → 0 の順で1回ずつ）
+  const smooth = (target) => {
+    let i = 0;
+    while (i < n) {
+      if (mask[i] !== target) { i++; continue; }
+      let j = i;
+      while (j < n && mask[j] === target) j++;
+      if (j - i < minRun && i > 0 && j < n) for (let k = i; k < j; k++) mask[k] = 1 - target;
+      i = j;
+    }
+  };
+  smooth(0);
+  smooth(1);
+  return mask;
+}
+
+function getMountainMask(samples) {
+  if (!samples) return null;
+  if (mountainMaskFor !== samples) {
+    mountainMask = computeMountainMask(samples);
+    mountainMaskFor = samples;
+  }
+  return mountainMask;
+}
+
 // 断面線（緯度 latDeg）と各通りのポリラインの交点を求める。
 //   同じ名前の通りが近接して複数回交わる（交差点・蛇行）場合は1本にまとめる。
 function computeRoadCrossings(latDeg, lonW, lonE) {
@@ -171,7 +234,7 @@ function computeRoadCrossings(latDeg, lonW, lonE) {
       const t = (latDeg - lat0) / (lat1 - lat0);
       const lon = lon0 + (lon1 - lon0) * t;
       if (lon < lonW || lon > lonE) continue;
-      raw.push({ name: way.name, lon });
+      raw.push({ name: way.name, lon, highway: way.highway });
     }
   }
   // 同名かつ近接（PROFILE_ROAD_MERGE_M 以内）の交点を1つにまとめる
@@ -181,6 +244,32 @@ function computeRoadCrossings(latDeg, lonW, lonE) {
   for (const c of raw) {
     const last = merged[merged.length - 1];
     if (last && last.name === c.name && c.lon - last.lon <= mergeDeg) continue; // 直前と同名近接
+    merged.push(c);
+  }
+  return merged;
+}
+
+// 断面線と河川の交点。道路と同じ要領だが、幅（width）も持ち帰る。
+function computeRiverCrossings(latDeg, lonW, lonE) {
+  if (!riversData.loaded) return [];
+  const raw = [];
+  for (const r of riversData.rivers) {
+    const pts = r.pts;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const [lon0, lat0] = pts[i], [lon1, lat1] = pts[i + 1];
+      if ((lat0 - latDeg) * (lat1 - latDeg) > 0 || lat0 === lat1) continue;
+      const t = (latDeg - lat0) / (lat1 - lat0);
+      const lon = lon0 + (lon1 - lon0) * t;
+      if (lon < lonW || lon > lonE) continue;
+      raw.push({ name: r.name, lon, width: r.width, waterway: r.waterway });
+    }
+  }
+  raw.sort((a, b) => a.lon - b.lon);
+  const mergeDeg = PROFILE_RIVER_MERGE_M / (111320 * Math.cos(latDeg * DEG2RAD));
+  const merged = [];
+  for (const c of raw) {
+    const last = merged[merged.length - 1];
+    if (last && last.name === c.name && c.lon - last.lon <= mergeDeg) continue;
     merged.push(c);
   }
   return merged;
@@ -283,9 +372,9 @@ function updateWardBand() {
 const buildingSectionState = { loops: null, meshCount: 0, buildingCount: 0 };
 
 // --- WGS84楕円体でのECEF変換 -------------------------------------------------
-//   ★ アプリの他所（core.js の EARTH_R）は簡易球体近似だが、建物タイルの座標は
-//     楕円体ベースの真のECEF/CESIUM_RTCなので、ここだけは正確な楕円体で変換する
-//     （球体近似のままだと高さ方向に数十m規模のズレが出かねない）。
+//   ★ 建物タイルの座標は楕円体ベースの真の ECEF / CESIUM_RTC なので、正確な
+//     楕円体で変換する（球体近似だと高さ方向に数十m規模のズレが出かねない）。
+//     水平方向の局所ENU変換は geo.js に切り出してある。
 const WGS84_A = 6378137.0;
 const WGS84_F = 1 / 298.257223563;
 const WGS84_E2 = WGS84_F * (2 - WGS84_F);
@@ -618,7 +707,7 @@ function fillLoops(g, ptsList, xOf, toY, fillColor, { hatch } = {}) {
 function drawBuildingSection(g, toX, toY) {
   const loops = buildingSectionState.loops;
   if (!loops || !loops.length || !lastGeom) return;
-  const lonAtX = (localX) => (ORIGIN_LON - localX / (EARTH_R * Math.cos(ORIGIN_LAT))) * RAD2DEG;
+  const lonAtX = (localX) => localToLonLat(localX, 0).lon;   // 断面線の緯度での東西位置
   const { viewI0, viewI1 } = lastGeom;
   const [fullLonW, fullLonE] = profileLonRange();
   const idxFromLon = (lon) => (lon - fullLonW) / (fullLonE - fullLonW) * (PROFILE_SAMPLES - 1);
@@ -711,7 +800,7 @@ function viewLonRange() {
   const { i0, i1 } = viewIndexRange();
   const lonW = fullW + (fullE - fullW) * (i0 / (PROFILE_SAMPLES - 1));
   const lonE = fullW + (fullE - fullW) * (i1 / (PROFILE_SAMPLES - 1));
-  const lengthM = (lonE - lonW) * Math.cos(profileState.latDeg * DEG2RAD) * EARTH_R * DEG2RAD;
+  const lengthM = (lonE - lonW) * Math.cos(profileState.latDeg * DEG2RAD) * NORMAL_R * DEG2RAD;
   return { lonW, lonE, i0, i1, lengthM };
 }
 
@@ -911,7 +1000,8 @@ function drawPanel() {
   const minEl = finite.length ? Math.min(...finite) : 0;
 
   const padT = PANEL_PAD_T +
-    ((profileState.showRoads || profileState.showMountains || profileState.showTemples) ? LABEL_HEADROOM : 0);
+    ((profileState.showRoads || profileState.showMountains || profileState.showTemples
+      || profileState.showRivers) ? LABEL_HEADROOM : 0);
   const bandH = (profileState.showWards && profileState.wardBand) ? WARD_BAND_GAP + WARD_BAND_H : 0;
   const padB = PANEL_PAD_B + bandH;
 
@@ -995,9 +1085,38 @@ function drawPanel() {
   g.lineTo(x0, yBottom);
   g.closePath();
   g.fillStyle = PROFILE_SOIL_COLOR;
-  g.globalAlpha = 0.85;
+  g.globalAlpha = 0.92;      // 塗りを濃くして山との対比を出す
   g.fill();
   g.globalAlpha = 1;
+
+  // --- 山の区間だけ土の色を変える ---
+  //   ★ 一律の茶色だと、市街地の平地も背後の山も同じに見えて地形が読めない。
+  //     判定はまわりからの盛り上がり（computeMountainMask）。
+  const mask = getMountainMask(s);
+  if (mask) {
+    g.fillStyle = PROFILE_MOUNTAIN_SOIL_COLOR;
+    g.globalAlpha = 0.92;
+    let i = viewI0;
+    while (i <= viewI1) {
+      if (!mask[i]) { i++; continue; }
+      const a = i;
+      while (i <= viewI1 && mask[i]) i++;
+      const b = i - 1;                       // a..b が山の区間
+      g.beginPath();
+      let ly = yBottom;
+      for (let k = a; k <= b; k++) {
+        const v = s[k];
+        const y = Number.isFinite(v) ? toY(v) : ly;
+        if (Number.isFinite(v)) ly = y;
+        if (k === a) g.moveTo(toX(k), y); else g.lineTo(toX(k), y);
+      }
+      g.lineTo(toX(b), yBottom);
+      g.lineTo(toX(a), yBottom);
+      g.closePath();
+      g.fill();
+    }
+    g.globalAlpha = 1;
+  }
 
   // --- 地盤ライン（青）---
   g.beginPath();
@@ -1012,6 +1131,14 @@ function drawPanel() {
   g.lineWidth = 1.6;
   g.stroke();
 
+  // --- 道路の断面（地表に敷く舗装の帯）---
+  //   ★ 幅は OSM の道路種別から決める（config.js の ROAD_WIDTH_M）。
+  //   ⚠️ 全長30kmの表示では 1px が 25m 前後あり、幅6mの道は 0.2px で見えない。
+  //     細くても【必ず 2px は描く】ことで、拡大していないときも位置が分かるようにする
+  //     （拡大するほど実際の幅に近づく）。
+  if (profileState.showRivers) drawRiverSections(g, s, toX, toY, viewI0, viewI1);
+  if (profileState.showRoads) drawRoadSurfaces(g, s, toX, toY, viewI0, viewI1);
+
   // --- 建物断面（断面線上の読み込み済みタイルから生成）---
   drawBuildingSection(g, toX, toY);
 
@@ -1021,7 +1148,7 @@ function drawPanel() {
   //   注目地点は断面線から南北に離れていることがあるので、あくまで「東西方向の位置」。
   const [fullLonW, fullLonE] = profileLonRange();
   const lonToIndex = (lon) => (lon - fullLonW) / (fullLonE - fullLonW) * (PROFILE_SAMPLES - 1);
-  const focusLonDeg = (ORIGIN_LON - focusLocal.x / (EARTH_R * Math.cos(ORIGIN_LAT))) * RAD2DEG;
+  const focusLonDeg = localToLonLat(focusLocal.x, 0).lon;
   const focusIdx = lonToIndex(focusLonDeg);
   if (focusIdx >= viewI0 && focusIdx <= viewI1) {
     const fx = toX(focusIdx);
@@ -1034,7 +1161,8 @@ function drawPanel() {
 
   // --- 通り名・山名・寺社（断面線との交点／近傍にラベル）---
   const view = viewLonRange();
-  if (profileState.showRoads || profileState.showMountains || profileState.showTemples) {
+  if (profileState.showRoads || profileState.showMountains || profileState.showTemples
+      || profileState.showRivers) {
     drawLabels(g, padT, yBottom, view, fullLonW, fullLonE, s, toX, toY);
   }
 
@@ -1109,6 +1237,79 @@ function drawPanel() {
   publishPanelHeight();
 }
 
+/* 河川の断面（水色の帯＋川底）を描く。
+   ★ 川底は「幅なりに掘り込む」台形。深さの実データは無いので幅から見積もる
+     （一律の深さより地形として自然に見える）。
+   ⚠️ 道路より先に描くこと。橋のところで道路が水面の上に乗る順になる。 */
+function drawRiverSections(g, s, toX, toY, viewI0, viewI1) {
+  const [fullLonW, fullLonE] = profileLonRange();
+  const lonToIndex = (lon) => (lon - fullLonW) / (fullLonE - fullLonW) * (PROFILE_SAMPLES - 1);
+  const { lonW, lonE, lengthM } = viewLonRange();
+  const crossings = computeRiverCrossings(profileState.latDeg, lonW, lonE);
+  if (!crossings.length) return;
+  const pxPerM = (toX(viewI1) - toX(viewI0)) / Math.max(1, lengthM);
+  const pxPerVM = toY(0) - toY(1);        // 高さ1mが画面上で何px（鉛直強調込み）
+  for (const c of crossings) {
+    const idx = lonToIndex(c.lon);
+    const i = Math.round(Math.max(0, Math.min(PROFILE_SAMPLES - 1, idx)));
+    const v = s ? s[i] : NaN;
+    if (!Number.isFinite(v)) continue;
+    const wM = Math.max(1, c.width || 6);
+    const wPx = Math.max(PROFILE_RIVER_MIN_PX, wM * pxPerM);
+    const depthM = Math.min(PROFILE_RIVER_DEPTH_MAX_M,
+      Math.max(PROFILE_RIVER_DEPTH_MIN_M, wM * PROFILE_RIVER_DEPTH_RATIO));
+    const dPx = Math.max(2, depthM * pxPerVM);
+    const x = toX(idx), y = toY(v);
+    const halfTop = wPx / 2, halfBed = halfTop * PROFILE_RIVER_BED_RATIO;
+    // 掘り込んだ河床（台形）を水色で塗る
+    g.beginPath();
+    g.moveTo(x - halfTop, y);
+    g.lineTo(x - halfBed, y + dPx);
+    g.lineTo(x + halfBed, y + dPx);
+    g.lineTo(x + halfTop, y);
+    g.closePath();
+    g.fillStyle = PROFILE_RIVER_COLOR;
+    g.globalAlpha = 0.92;
+    g.fill();
+    g.globalAlpha = 1;
+    // 川底と岸の線（細い川でも輪郭で分かるように）
+    g.strokeStyle = PROFILE_RIVER_BED_COLOR;
+    g.lineWidth = 1;
+    g.stroke();
+  }
+}
+
+/* 道路の断面（舗装の帯）を地表に沿って描く。
+   通り名ラベルと同じ交点（computeRoadCrossings）を使うので、位置は必ず一致する。 */
+function drawRoadSurfaces(g, s, toX, toY, viewI0, viewI1) {
+  const [fullLonW, fullLonE] = profileLonRange();
+  const lonToIndex = (lon) => (lon - fullLonW) / (fullLonE - fullLonW) * (PROFILE_SAMPLES - 1);
+  const { lonW, lonE, lengthM } = viewLonRange();
+  const crossings = computeRoadCrossings(profileState.latDeg, lonW, lonE);
+  if (!crossings.length) return;
+  // 1m が画面上で何pxか（拡大するほど大きくなる）
+  const pxPerM = (toX(viewI1) - toX(viewI0)) / Math.max(1, lengthM);
+  const depthPx = Math.max(2, PROFILE_ROAD_DEPTH_M * (toY(0) - toY(1)));
+  for (const c of crossings) {
+    const idx = lonToIndex(c.lon);
+    const i = Math.round(Math.max(0, Math.min(PROFILE_SAMPLES - 1, idx)));
+    const v = s ? s[i] : NaN;
+    if (!Number.isFinite(v)) continue;
+    const wM = ROAD_WIDTH_M[c.highway] || ROAD_WIDTH_DEFAULT_M;
+    const wPx = Math.max(PROFILE_ROAD_MIN_PX, wM * pxPerM);
+    const x = toX(idx), y = toY(v);
+    g.fillStyle = PROFILE_ROAD_SURFACE_COLOR;
+    g.fillRect(x - wPx / 2, y, wPx, depthPx);
+    // 路面の線（帯が細いときでも「道がある」ことが分かるように）
+    g.strokeStyle = PROFILE_ROAD_EDGE_COLOR;
+    g.lineWidth = 1;
+    g.beginPath();
+    g.moveTo(x - wPx / 2, y + 0.5);
+    g.lineTo(x + wPx / 2, y + 0.5);
+    g.stroke();
+  }
+}
+
 // 通り名・山名のラベル。どちらも「地表から斜め上に伸ばした案内線＋回転文字」で示す
 // （交点そのものにラベルを横書きすると、密集地区で真横に文字が重なって読めなくなるため）。
 //   view … 今表示している範囲 {lonW,lonE}（範囲ドラッグで拡大中はその部分だけ）。
@@ -1179,6 +1380,13 @@ function drawLabels(g, padT, yBottom, view, fullLonW, fullLonE, s, toX, toY) {
     const crossings = thinByGap(computeRoadCrossings(profileState.latDeg, lonW, lonE),
       (c) => xFromLon(c.lon), LABEL_MIN_GAP_PX);
     for (const c of crossings) drawTick(c.lon, groundY(c.lon), PROFILE_ROAD_COLOR, c.name);
+  }
+  if (profileState.showRivers) {
+    const rivers = thinByGap(computeRiverCrossings(profileState.latDeg, lonW, lonE),
+      (c) => xFromLon(c.lon), LABEL_MIN_GAP_PX);
+    for (const c of rivers) {
+      drawTick(c.lon, groundY(c.lon), PROFILE_RIVER_LABEL_COLOR, c.name);
+    }
   }
 }
 

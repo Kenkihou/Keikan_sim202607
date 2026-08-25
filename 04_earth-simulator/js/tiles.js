@@ -27,6 +27,7 @@ import {
   ELEVATION_TINT_STOPS, ELEVATION_TINT_RANGE, ELEVATION_TINT_DEFAULT_STEP,
   ELEVATION_TINT_LINE_STRENGTH,
 } from './config.js';
+import { lonLatRadToLocal } from './geo.js';
 import {
   CAP_COLOR, buildingClipPlanes, terrainClipPlanes, clipMeshes,
   registerClipMeshes, unregisterClipMeshes, computeClipMeshWorld,
@@ -995,9 +996,10 @@ function tilesBusy() {
 }
 
 // 緯度経度[rad]を注目地点に設定する。カメラも（現在の見る向き・距離を保ったまま）そこへ移す。
-//   ローカル座標への変換（原点まわりの局所ENU近似。市内スケールなら十分正確）:
-//     north[m] = (lat - ORIGIN_LAT) * R,  east[m] = (lon - ORIGIN_LON) * R * cos(lat)
-//     scene では +Z=北 / +X=西 なので  z = north,  x = -east
+//   ローカル座標への変換は geo.js（楕円体の曲率半径を使う局所ENU）。
+//   ⚠️ 球の簡易式（north = Δlat * EARTH_R）を使ってはいけない。地形・建物は
+//     ReorientationPlugin で本物のECEF由来のENUに載っているので、南北が 0.34% ずれる
+//     （原点から3kmで約10m、15kmで約50m）。
 
 // 注目地点を移したときに、前の場所のタイルを速やかに片付けるためのバースト退避。
 //   ライブラリの退避は rAF スケジュール＆1パス unloadPercent 分ずつなので、
@@ -1013,9 +1015,7 @@ function runEvictBurst() {
 }
 
 function setFocusLatLon(latRad, lonRad, moveCamera = true) {
-  const north = (latRad - ORIGIN_LAT) * EARTH_R;
-  const east = (lonRad - ORIGIN_LON) * EARTH_R * Math.cos(latRad);
-  const nx = -east, nz = north;
+  const { x: nx, z: nz } = lonLatRadToLocal(lonRad, latRad);
   if (moveCamera) {
     const off = camera.position.clone().sub(controls.target); // 今の視点オフセットを保つ
     controls.target.set(nx, focusLocal.y, nz);

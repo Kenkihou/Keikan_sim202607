@@ -2,6 +2,12 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "earth",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "--directory", "04_earth-simulator", "8734"],
+      "port": 8734
+    },
+    {
       "name": "builder",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "01_building-builder", "run", "dev", "--", "--no-open"],

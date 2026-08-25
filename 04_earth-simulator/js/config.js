@@ -118,6 +118,7 @@ const CITY_REGISTRY = {
     bbox: { west: 135.5590, south: 34.8749, east: 135.8784, north: 35.3212 },
     boundaryUrl: 'boundary-kyoto.json',
     roadsUrl: 'roads-kyoto.json',
+    riversUrl: 'rivers-kyoto.json',
     // 道路データ（PLATEAU tran）の MVT（2Dベクタータイル）。詳しくは下の ROAD_MVT を参照。
     roadMvt: {
       areaCode: '26100',
@@ -136,6 +137,7 @@ const CITY_REGISTRY = {
     bbox: { west: 135.3435, south: 34.5868, east: 135.5993, north: 34.7688 },
     boundaryUrl: 'boundary-osaka.json',
     roadsUrl: 'roads-osaka.json',
+    riversUrl: 'rivers-osaka.json',
     roadMvt: {
       areaCode: '27100',
       fallbackYear: 2025,
@@ -169,13 +171,21 @@ export const CITY_BOUNDARY_URL = CITY.boundaryUrl || null;
 export const BOUNDARY_DIM = 0.72;
 export const BOUNDARY_LINE_COLOR = 'rgba(255,255,255,0.55)';
 
-// 通り名（東西断面に重ねるラベル用）。OpenStreetMap の Overpass API から
-//   highway=motorway/trunk/primary/secondary/tertiary（名前ありのみ）を取得し、
-//   Douglas-Peucker で 15m 間引きしたもの（京都市 595KB・5,262本／大阪市 555KB・5,542本）。
+// 通り名（東西断面に重ねるラベル用と、ストリートビューの路面ラベル用）。
+//   OpenStreetMap の Overpass API から【名前のある道路】を取得し、Douglas-Peucker で
+//   15m 間引きしたもの（京都市 874KB・7,858本／大阪市 1.2MB・11,751本）。作り直しは
+//   fetch_roads.py（このフォルダ）を手で走らせる。
+//   ★ 拾う種類は motorway/trunk/primary/secondary/tertiary に加えて
+//     unclassified/residential/living_street/pedestrian まで。幹線だけだと
+//     御幸町通・麩屋町通のような京都の南北の細い通りや、寺町通の商店街区間が
+//     丸ごと抜ける（OSM ではそれらは residential 等で引かれているため）。
 //   ライブでの取得はしない（Overpass公開APIはフェアユース前提でレート制限があり、
 //   断面線を動かすたびに数百KB〜1MBを毎回叩くのは適さない。既存の mountain.geojson /
 //   boundary-*.json と同じく「開発時に一度取得してコミットする」方式にした）。
 export const CITY_ROADS_URL = CITY.roadsUrl || null;
+// 河川（断面図に「水色の帯＋川底」を描く）。作り直しは fetch_roads.py（道路と一緒に出る）。
+//   幅は OSM の width タグがあればその値、無ければ種別ごとの既定（river 18m など）。
+export const CITY_RIVERS_URL = CITY.riversUrl || null;
 
 // ---- 道路データ（PLATEAU tran）の MVT（2Dベクタータイル）--------------------
 //   ⚠️ 上の CITY_ROADS_URL とは別物。あちらは断面図に通り名を出すための OSM の線データ。
@@ -283,6 +293,41 @@ export const PROFILE_ROAD_MERGE_M = 80;
 // ラベルどうしが重ならないよう、画面上でこの間隔[px]未満なら間引く（密集地区向け）。
 export const PROFILE_LABEL_MIN_GAP_PX = 26;
 export const PROFILE_ROAD_COLOR = '#cbd5e1';
+
+// --- 断面の「土」の塗り分け ---------------------------------------------------
+//   一律の茶色だと、市街地の平地も背後の山も同じに見えて地形が読めない。
+//   ★ 山かどうかは【まわりからの盛り上がり】で決める（絶対標高では決めない）。
+//     絶対標高で切ると、盆地の外の高い平坦地（亀岡側など）まで山になってしまう。
+// ★ 平地の土（暖かい茶）と対比が付くよう、山は【暗い緑灰】にする。
+//   ⚠️ 最初は #7a6a55（灰茶）にしていたが、平地の #9c6b3e と近すぎて塗り分けが
+//     ほとんど見えなかった（実測の描画色 #8e7251 と #7d6b54）。色相ごと変える。
+export const PROFILE_MOUNTAIN_SOIL_COLOR = '#4a5347';  // 山の土（暗い緑灰＝岩盤の感じ）
+export const PROFILE_MOUNTAIN_RISE_M = 30;   // まわりの最低点からこれ以上高ければ山[m]
+export const PROFILE_MOUNTAIN_WINDOW_M = 1500; // 「まわり」を見る半幅[m]
+export const PROFILE_MOUNTAIN_MIN_RUN_M = 250; // これより短い山・谷は均す[m]
+// 道路の断面（地表に敷く舗装の帯）。幅は OSM の道路種別から決める[m]。
+export const PROFILE_ROAD_SURFACE_COLOR = '#1b1f26';   // 舗装（ほぼ黒＝土と最大の対比）
+export const PROFILE_ROAD_EDGE_COLOR = '#e6edf6';     // 路面の線（明るく）
+export const PROFILE_ROAD_DEPTH_M = 3.5;     // 舗装として描く厚み[m]
+export const PROFILE_ROAD_MIN_PX = 4;        // 縮尺が粗くても最低これだけの太さで描く[px]
+export const ROAD_WIDTH_M = {
+  motorway: 22, trunk: 18, primary: 16, secondary: 12, tertiary: 9,
+  unclassified: 6, residential: 5, living_street: 4, pedestrian: 4,
+};
+export const ROAD_WIDTH_DEFAULT_M = 6;
+
+// --- 河川の断面（水色の帯＋川底）---------------------------------------------
+export const PROFILE_RIVER_COLOR = '#3aa7e0';        // 水面
+export const PROFILE_RIVER_BED_COLOR = '#17516e';    // 川底・岸の線
+export const PROFILE_RIVER_LABEL_COLOR = '#7fd4ff';  // 川名ラベル
+// 川底の深さ[m]は川幅から見積もる（幅の12%、0.8〜4m）。
+//   ★ 深さの実データは無い。幅なりに掘り込むほうが、一律の深さより地形として自然。
+export const PROFILE_RIVER_DEPTH_RATIO = 0.12;
+export const PROFILE_RIVER_DEPTH_MIN_M = 0.8;
+export const PROFILE_RIVER_DEPTH_MAX_M = 4;
+export const PROFILE_RIVER_BED_RATIO = 0.6;   // 川底の幅（水面幅に対する割合）＝法面の傾き
+export const PROFILE_RIVER_MIN_PX = 3;        // 縮尺が粗くても最低これだけの幅で描く[px]
+export const PROFILE_RIVER_MERGE_M = 60;      // 同名の近接した交点はまとめる[m]
 // 京都市固有の「景観・眺望規制」レイヤー・山名ラベルを有効にするか（他都市は対象データが無い）。
 export const HAS_REGULATION_LAYERS = CITY.hasRegulationLayers;
 

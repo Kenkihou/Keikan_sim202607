@@ -34,6 +34,7 @@ import {
   ROAD_LOAD_WIDTH, ROAD_MAX_TILE_SPAN, ROAD_RASTER_RESOLUTION, ORIGIN_LAT, ORIGIN_LON,
 } from './config.js';
 import { setRoadOverlayHook, getOverlayPlugin } from './tiles.js';
+import { localToLonLatRad, MERIDIAN_R, NORMAL_R } from './geo.js';
 
 const roadState = {
   enabled: false,
@@ -131,12 +132,11 @@ function getStyle(layerName, properties) {
 // -----------------------------------------------------------------------------
 const DEG = 180 / Math.PI;
 function focusMercatorBox() {
-  // tiles.js の setFocusLatLon と逆の変換（nx = -east, nz = north）
-  const lat = ORIGIN_LAT + focusLocal.z / EARTH_R;
-  const lon = ORIGIN_LON + (-focusLocal.x) / (EARTH_R * Math.cos(lat));
+  // tiles.js の setFocusLatLon と逆の変換（geo.js の局所ENU）
+  const { lat, lon } = localToLonLatRad(focusLocal.x, focusLocal.z);
   const half = ROAD_LOAD_WIDTH / 2;
-  const dLat = half / EARTH_R;
-  const dLon = half / (EARTH_R * Math.cos(lat));
+  const dLat = half / MERIDIAN_R;
+  const dLon = half / (NORMAL_R * Math.cos(lat));
   const toX = (lonRad) => (lonRad * DEG + 180) / 360;
   const toY = (latRad) => {
     const s = Math.min(Math.max(Math.sin(latRad), -0.9999), 0.9999);
@@ -148,9 +148,11 @@ function focusMercatorBox() {
   };
 }
 // 正規化メルカトルでの幅 → おおよその実距離[m]（緯度は注目地点のもので足りる）
+//   ★ こちらの EARTH_R は Web メルカトルの定義そのもの（球体・半径6378137）なので、
+//     楕円体の曲率半径に置き換えてはいけない。
 const MERC_CIRCUM = 2 * Math.PI * EARTH_R;
 function rangeSpanMeters(range) {
-  const lat = ORIGIN_LAT + focusLocal.z / EARTH_R;
+  const { lat } = localToLonLatRad(focusLocal.x, focusLocal.z);
   return (range[2] - range[0]) * MERC_CIRCUM * Math.cos(lat);
 }
 

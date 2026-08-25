@@ -19,7 +19,7 @@ import {
   ZONE_FILL_OPACITY, ZONE_LINE_WIDTH, ZONE_LINE_LIFT, ZONE_STACK_GAP,
   SEA_LEVEL_Y,
 } from './config.js';
-import { EARTH_R } from './core.js';
+import { lonLatToLocal as lonLatToLocalObj } from './geo.js';
 import { clipState, terrainClipPlanes, clipMeshes, computeClipMeshWorld, keepFinestLod,
   SECTION_SANE_Y_MIN, SECTION_SANE_Y_MAX } from './section.js';
 
@@ -57,12 +57,13 @@ const viewAreaLineMat = new LineMaterial({
 });
 viewAreaLineMat.resolution.set(window.innerWidth, window.innerHeight);
 
-// 経緯度[deg] → ローカル座標(x,z)。setFocusLatLon と同じ局所ENU近似。
+// 経緯度[deg] → ローカル座標(x,z)。変換は geo.js（楕円体の曲率半径を使う局所ENU）。
+//   ⚠️ 以前は球の簡易式だった。眺望規制は原点から10km以上離れた視点場を扱うので、
+//     南北 0.34% の誤差がそのまま数十mのずれになる（15kmで約50m）。
+//   戻りは配列 [x, z]（この形で mountains.js / main.js からも使われている）。
 function lonLatToLocal(lonDeg, latDeg) {
-  const lat = latDeg * DEG2RAD, lon = lonDeg * DEG2RAD;
-  const north = (lat - ORIGIN_LAT) * EARTH_R;
-  const east = (lon - ORIGIN_LON) * EARTH_R * Math.cos(lat);
-  return [-east, north];   // scene は +X=西 / +Z=北
+  const { x, z } = lonLatToLocalObj(lonDeg, latDeg);
+  return [x, z];           // scene は +X=西 / +Z=北
 }
 
 async function loadViewAreas() {

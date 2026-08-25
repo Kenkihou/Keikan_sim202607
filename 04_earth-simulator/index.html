@@ -546,6 +546,34 @@
              いまは 01 の 🏢 ボタンが window.toggleEarthBuildingEdit() を呼ぶ。 -->
       </div>
 
+      <!-- ---------- 空と太陽 ---------- -->
+      <!-- スカイドーム（グラデーションの空）と、時刻から求めた実際の太陽の向き。sky.js が受け持つ。
+           ★ 箱庭（切り抜き）表示のときは空を出さない。模型を眺める画面なので暗いままでよい。 -->
+      <button type="button" class="disclosure" aria-expanded="false" aria-controls="skySection">空と太陽</button>
+      <div id="skySection" class="disclosure-body">
+        <label><input type="checkbox" id="skyOn" checked /> 空を描く（全体表示のとき）</label>
+        <label><input type="checkbox" id="skyShadow" checked /> 影を落とす（箱庭表示のとき）</label>
+        <div class="clip-row" style="margin-top:6px">
+          <span class="sub-title">時刻</span>
+          <input type="range" id="skyHour" min="0" max="1440" step="5" value="780" />
+          <span id="skyHourOut" style="font-variant-numeric:tabular-nums">13:00</span>
+        </div>
+        <div class="clip-row" style="margin-top:4px">
+          <span class="sub-title">日付</span>
+          <select id="skySeason" style="flex:1"></select>
+        </div>
+        <div class="clip-row" style="margin-top:4px">
+          <span class="sub-title">明るさ</span>
+          <input type="range" id="skyBright" min="40" max="160" step="5" value="100" />
+        </div>
+        <div class="stats-line" id="skyReadout"></div>
+        <div class="muted" style="font-size:11px">
+          太陽の向きは緯度経度と日付・時刻から計算しています（日本標準時）。
+          明るさは箱庭表示でも時刻に従います。影は箱庭の箱の中だけに落とします
+          （市域全体に広げると1画素が数十mになり、影の形が出ないため）。
+        </div>
+      </div>
+
       <!-- ---------- 道路 ---------- -->
       <!-- PLATEAU の道路モデル（tran、MVTベクタータイル）を地形に投影して光らせる。roads.js が受け持つ。
            市域全体をカバーする LOD1 の道路面（ポリゴン）を、航空写真／地図と同じ

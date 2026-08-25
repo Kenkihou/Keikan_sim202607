@@ -11,24 +11,42 @@
 //     ⑤ ✕ で元の視点へ戻る（入る前のカメラをそのまま復元する）。
 //
 //   【歩ける範囲】
-//     ★地形の上ならどこでも歩ける。道路の内側に閉じ込めるのはやめた。
+//     ★地形の上ならどこでも歩ける。道路の内側にも建物の外にも閉じ込めない。
 //       道路の判定は「MVTを焼いた canvas の画素」を読む方式で、歩いている間も細かい
 //       タイルが届くたびに縁が少しずれる。そのため道路の上に降りたのに縁の外へ
 //       取り残される、という事故が起きていた（救済のための例外処理も要っていた）。
-//     ふさぐのは【建物】だけ。判定は canBeAt()（地形があるか）と
-//     blockedByBuilding()（進む先に建物の壁があるか）の2つに閉じ込めてある。
+//     ★建物の壁でふさぐのもやめた。三人称なのでカメラは体の後ろにあり、体を
+//       止めてもカメラだけが壁を抜けて建物の中へ入ってしまう（＝止めても直らない）。
+//       代わりに【入るのは許して、入った建物を透かす】。中から外も、外から中も
+//       見通せるので、壁に埋まって何も見えないという状態がそもそも起きない。
+//     判定は canBeAt()（地形があるか）だけ。
+//
+//   【建物を透かす仕組み】
+//     キャラクターとカメラのそれぞれについて「今どの建物の中に居るか」を調べ、
+//     その gml_id を buildingedit.js の setSeeThroughBuildings() へ渡す。
+//     透過は建物編集の透過度スライダーと同じ仕組み（頂点の editAlpha）を使うので、
+//     描画コールは増えない。ユーザーが設定した透過度は上書きせず、濃いほうを採る。
 //
 //   【01（モデリング）へ移すときの想定】
 //     canBeAt() が地形の有無しか見ていないので、そのまま持って行ける。
 // =============================================================================
 import {
   THREE, scene, camera, controls, renderer, el, requestRender,
-  EARTH_R, focusLocal,
+  focusLocal,
 } from './core.js';
-import { ORIGIN_LAT, ORIGIN_LON, ORIGIN_ELEVATION } from './config.js';
+import { ORIGIN_ELEVATION } from './config.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { getTerrainTiles, wardTiles } from './tiles.js';
+import { localToLonLat } from './geo.js';
 import { setRoadHighlightStrength } from './roads.js';
+import {
+  setSeeThroughBuildings, setSeeThroughOpaque, gmlIdFromHit, getSeeThroughFloors,
+  syncSeeThroughEdges, setFloorSlabHeight, floorCoversAt, sectionCoversAt,
+} from './buildingedit.js';
+import {
+  updateStreetNames, hideStreetNames, updatePickLabels, hidePickLabels,
+} from './streetnames.js';
+import { updateFloorLabel, hideFloorLabel } from './floorlabel.js';
 
 const DEG = 180 / Math.PI;
 
@@ -74,14 +92,12 @@ const streetViewState = {
 let saved = null;
 
 // -----------------------------------------------------------------------------
-// 座標の変換（tiles.js の setFocusLatLon と逆向き。roads.js と同じ式）
-//   ワールドは +Z=北 / +X=西 なので、north = z, east = -x。
+// 座標の変換
+//   ★ 球の簡易式（tiles.js / roads.js と同じ EARTH_R 版）ではなく、楕円体の
+//     曲率半径を使う geo.js を通す。簡易式は南北を 0.34% 長く見積もるので、
+//     原点から3km離れると読み取りの緯度も追従地図の現在地も約10mずれる。
 // -----------------------------------------------------------------------------
-function worldToLonLat(x, z) {
-  const lat = ORIGIN_LAT + z / EARTH_R;
-  const lon = ORIGIN_LON + (-x) / (EARTH_R * Math.cos(lat));
-  return { lat: lat * DEG, lon: lon * DEG };
-}
+const worldToLonLat = (x, z) => localToLonLat(x, z);
 
 // -----------------------------------------------------------------------------
 // 地形へのレイキャスト
@@ -115,15 +131,31 @@ function visibleTerrainMeshes() {
 }
 
 /* 画面座標(px) → 地形上の点。当たらなければ null。 */
-function pickGround(clientX, clientY) {
-  const meshes = visibleTerrainMeshes();
-  if (!meshes.length) return null;
+/* 画面の位置から着地点を拾う。地面だけでなく【建物の屋上】にも降りられる。
+     kind … 'terrain'（地面）／'roof'（建物の上向きの面）／'wall'（壁・軒天）
+   ⚠️ 地形と建物の両方へ撃って、いちばん手前の当たりを採ること。地形だけ見ると、
+     建物の上をクリックしても屋根を突き抜けた先の地面が返る。 */
+const _pickList = [];
+const _pickNrm = new THREE.Vector3();
+const ROOF_NORMAL_MIN = 0.5;   // 面の法線Yがこれ以上なら「上を向いている＝立てる面」
+function pickLanding(clientX, clientY) {
+  _pickList.length = 0;
+  for (const m of visibleTerrainMeshes()) _pickList.push(m);
+  const terrainCount = _pickList.length;
+  for (const m of visibleBuildingMeshes()) _pickList.push(m);
+  if (!_pickList.length) return null;
   const r = renderer.domElement.getBoundingClientRect();
   _ndc.x = ((clientX - r.left) / r.width) * 2 - 1;
   _ndc.y = -((clientY - r.top) / r.height) * 2 + 1;
   _rc.setFromCamera(_ndc, camera);
-  const hits = _rc.intersectObjects(meshes, false);
-  return hits.length ? hits[0].point.clone() : null;
+  const hits = _rc.intersectObjects(_pickList, false);
+  if (!hits.length) return null;
+  const h = hits[0];
+  const isTerrain = _pickList.indexOf(h.object) < terrainCount;
+  if (isTerrain) return { point: h.point.clone(), kind: 'terrain' };
+  if (!h.face) return { point: h.point.clone(), kind: 'wall' };
+  _pickNrm.copy(h.face.normal).transformDirection(h.object.matrixWorld);
+  return { point: h.point.clone(), kind: _pickNrm.y >= ROOF_NORMAL_MIN ? 'roof' : 'wall' };
 }
 
 /* ある x,z の地面の高さ。真上から下向きに撃つ。見つからなければ null。
@@ -148,29 +180,16 @@ function groundYAt(x, z, near = null) {
 }
 
 // -----------------------------------------------------------------------------
-// 建物との当たり判定
+// 建物と、その中に居るかどうか
 //
-//   ★ 歩ける範囲は【地形の上ならどこでも】。道路の内側に閉じ込めるのはやめた。
-//     代わりに建物へは入れないようにする。判定はキャラクターの当たり半径
-//     （glb の実寸から測る）を持たせた「進行方向への線」で行う。
-//
-//   ⚠️ 「その足元が建物の footprint の中か」を毎フレーム点で調べる作りにはしない。
-//     走りは 13.5m/s あり、dt が 0.1s まで伸びると1フレームで 1.35m 進む。点で見ると
-//     薄い壁をまたいで内側へ抜けてしまう（すり抜け）。始点から終点までを線で見れば
-//     途中の壁を必ず捉えられる。
+//   ★ 建物の壁で歩みを止めるのはやめた（以前は当たり半径を持たせた線分で判定して
+//     いた）。三人称なのでカメラは体の後ろにあり、体を止めてもカメラだけが壁を
+//     抜けて建物の中へ入る＝止めても直らない問題だったため。
+//     今は【入るのを許して、入った建物を透かす】。
 //
 //   ⚠️ 地形と同じく、見えているメッシュだけを見ること（粗い段のタイルも読み込んだまま
 //     グループに残っていて、Raycaster は visible を見ない）。
 // -----------------------------------------------------------------------------
-// 当たり判定に使う高さ[m]（足元から）。腰と胸の2段で見る。
-//   足元ちょうどで見ると、縁石や地形にわずかに埋まった壁の底に引っかかって進めなくなる。
-const HIT_HEIGHTS = [0.5, 1.2];
-// キャラクターの当たり半径[m]。glb の実寸が測れるまでの控えの値。
-const DEFAULT_RADIUS = 0.5;
-// 実寸に掛ける余裕。壁の手前で早めに止めて、めり込んで出られなくなるのを防ぐ。
-const COLLISION_MARGIN = 1.4;
-const MIN_RADIUS = 0.4;
-const MAX_RADIUS = 0.9;
 
 const _bldgMeshes = [];
 function visibleBuildingMeshes() {
@@ -187,26 +206,248 @@ function visibleBuildingMeshes() {
   return _bldgMeshes;
 }
 
-/* (fromX,fromZ) から (toX,toZ) へ進む途中で建物にぶつかるか。 */
+/* その点(x, y, z)を含んでいる建物の gml_id を out（Set）へ入れる。
+   ★ 判定は2段。
+     ① 上向きに1本撃つ。頭上に面が無ければ外に居るのは確実なので、ここで打ち切る
+        （屋外を歩いている間はほぼここで終わる＝ふだんのコストはレイ1本）。
+        当たった建物が、次の段で調べる候補になる。
+     ② 候補ごとに【水平に撃って、その建物の面を何回横切るか】を数える。奇数なら
+        その高さでの輪郭の内側＝躯体の中。多角形の内外判定そのもの。
+        向きによる取りこぼし（壁と平行に走る・角をかすめる）を避けるため3方向撃ち、
+        2方向以上が「内側」と言ったら中とする。
+
+     ⚠️ 「足元近くに床面があるか」で判定してはいけない（最初はそれで書いていた）。
+       PLATEAU の LOD2 は底面を持たない棟があり、その場合いちばん下の面は屋根に
+       なるので、中に立っていても「床が高すぎる＝外」と判定される。
+       実測120棟でこの方式は85棟しか当たらなかった。
+     ⚠️ ①だけでも足りない。それだと駅の高架屋根・アーケード・庇の下がすべて
+       「建物の中」になり、通りを歩いているだけで建物が透け始める。水平の交差数なら
+       庇の下は「壁を横切らない＝偶数」で正しく外になる。
+   ★ 重なった複数の棟に同時に入っていることもある（out に複数入る）。
+   ★ out は Map（gml_id → 当たったメッシュ）。稜線と床を「いま見えているその棟の
+     メッシュ」から作りたいので、どのメッシュに当たったかも一緒に渡す。 */
+const _up = new THREE.Vector3(0, 1, 0);
 const _from = new THREE.Vector3();
-const _dir = new THREE.Vector3();
-function blockedByBuilding(fromX, fromZ, toX, toZ, footY) {
-  const dx = toX - fromX, dz = toZ - fromZ;
-  const dist = Math.hypot(dx, dz);
-  if (dist < 1e-6) return false;
+const _HORIZ = [
+  new THREE.Vector3(1, 0, 0),
+  new THREE.Vector3(0, 0, 1),
+  new THREE.Vector3(Math.SQRT1_2, 0, Math.SQRT1_2),
+];
+const HORIZ_FAR = 400;   // 交差を数える距離[m]（これより大きい建物は無い）
+const _cross = new Map();
+
+function collectBuildingsContaining(x, y, z, out) {
   const meshes = visibleBuildingMeshes();
-  if (!meshes.length) return false;
-  _dir.set(dx / dist, 0, dz / dist);
-  // 進む距離＋体の半径ぶん先まで見る（壁にめり込む前に止める）
-  const far = dist + (chara.radius || DEFAULT_RADIUS);
-  for (const h of HIT_HEIGHTS) {
-    _rc.set(_from.set(fromX, footY + h, fromZ), _dir);
-    _rc.far = far;
+  if (!meshes.length) return;
+  _rc.set(_from.set(x, y, z), _up);
+  _rc.far = 400;                       // 高層でも突き抜ける高さ
+  const up = _rc.intersectObjects(meshes, false);
+  _rc.far = Infinity;                  // 他の用途（地形）へ持ち越さないこと
+  if (!up.length) return;
+  const overhead = new Map();   // gml_id → 当たったメッシュ
+  for (const h of up) { const id = gmlIdFromHit(h); if (id && !overhead.has(id)) overhead.set(id, h.object); }
+  if (!overhead.size) return;
+
+  _cross.clear();                      // gml_id → 「内側」と出た向きの数
+  for (const dir of _HORIZ) {
+    _rc.set(_from.set(x, y, z), dir);
+    _rc.far = HORIZ_FAR;
     const hits = _rc.intersectObjects(meshes, false);
-    _rc.far = Infinity;   // 他の用途（地形）へ持ち越さないこと
-    if (hits.length) return true;
+    _rc.far = Infinity;
+    const n = new Map();               // この向きでの交差回数
+    for (const h of hits) {
+      const id = gmlIdFromHit(h);
+      if (!id || !overhead.has(id)) continue;
+      n.set(id, (n.get(id) || 0) + 1);
+    }
+    for (const [id, c] of n) if (c % 2 === 1) _cross.set(id, (_cross.get(id) || 0) + 1);
   }
-  return false;
+  for (const [id, votes] of _cross) if (votes >= 2) out.set(id, overhead.get(id));
+}
+
+// -----------------------------------------------------------------------------
+// 仮想フロア（建物の中に居るときだけ、床を持ち上げて上の階から外を眺める）
+//
+//   ★ PLATEAU の建物は【中身が空の箱】で、床も階も無い。そこで「地盤面から
+//     階高×(n-1) だけ持ち上げた高さを歩く」ことにする。2階・3階からの見え方を
+//     確かめるのが目的なので、これで足りる。
+//   ★ 階高はその建物の属性から出す（bldg:storeysAboveGround と measuredHeight。
+//     どちらか欠けていれば 3.0m と仮定）。建物編集の床面積の集計と同じ計算を使う
+//     ので、同じ建物に対して両者が違う階高を出すことはない。
+//   ★ 建物から出たら床は地面へ戻す（街の上に浮いたままにしない）。急に落とすと
+//     何が起きたか分からないので、少しの時間をかけて下ろす。
+// -----------------------------------------------------------------------------
+const FLOOR_TYPICAL_H = 3.5;   // 階数が分からないとき、模型の高さをこの階高で割る[m]
+const FLOOR_MIN_H = 2.4;       // これより低い階高は不自然なので、属性の階数を信用しない
+const FLOOR_MAX_LEVEL = 60;    // 選べる階の上限（超高層でもここまで）
+const FLOOR_LERP = 5;          // 床を上下させる速さ[1/s]（エレベーターの上下）
+// 落下の加速度[m/s^2]。実際の 9.8 だと1層ぶんが間延びして見えるので少し強めにする。
+const FLOOR_GRAVITY = 20;
+// ★「建物の外へ出た」と見なすまでの猶予[ms]。
+//   ⚠️ これが無いと階が不安定になる。中の判定は交差数の偶奇なので、壁ぎわや
+//     タイルのLOD入れ替わりの一瞬だけ「外」と出ることがあり、そのたびに1階へ
+//     落とされていた（2階へ上げてもすぐ戻る、という形で露見した）。
+const FLOOR_GRACE_MS = 800;
+const floorState = {
+  level: 1,        // 今いる段（1=地盤面、maxLevel=屋上）
+  maxLevel: 1,     // 屋上ぶんを含めた段数
+  h: 3,            // 1段ぶんの高さ[m]（= 足元から屋上までを階数で割ったもの）
+  assumed: true,   // 階数が属性から出せず、模型の高さから割り出したか
+  now: 0,          // 実際に持ち上がっている高さ[m]（なめらかに追従する）
+  insideMs: 0,     // 最後に「建物の中」と判定できた時刻
+  landOnRoof: false, // 屋上へ降りた直後（段数が分かり次第、最上段に合わせる）
+  falling: false,  // 床が無くて落下中（エレベーターの上下とは別扱い）
+  vel: 0,          // 落下の速さ[m/s]
+};
+
+const floorInside = () => performance.now() - floorState.insideMs < FLOOR_GRACE_MS;
+
+function floorTargetOffset() {
+  return (floorInside() && floorState.maxLevel >= 2) ? (floorState.level - 1) * floorState.h : 0;
+}
+
+/* 足元の真上にある「その建物の屋根」の高さ。見つからなければ null。
+   ★ 建物全体の最高点ではなく【今立っている場所の真上】を測る。
+     ⚠️ 全体の最高点だと、粗いタイルで複数棟がひとつの batch にまとまっている
+       場合に隣の高い棟の頂部を拾い、京都市役所で「29階」のようなあり得ない
+       段数が出る。LOD2 は棟の場所ごとに屋根の高さが違うので、その意味でも
+       「真上の屋根」を測るのが正しい。 */
+function roofYAbove(x, z, ids) {
+  if (!ids || !ids.size) return null;
+  const meshes = visibleBuildingMeshes();
+  if (!meshes.length) return null;
+  _rc.set(_from.set(x, 4000, z), _down);
+  const hits = _rc.intersectObjects(meshes, false);
+  let top = null;
+  for (const h of hits) {
+    const id = gmlIdFromHit(h);
+    if (!id || !ids.has(id)) continue;
+    if (top === null || h.point.y > top) top = h.point.y;
+  }
+  return top;
+}
+
+/* ▲▼ボタン。1階ぶん上下する。 */
+function changeFloor(delta) {
+  const next = Math.max(1, Math.min(floorState.maxLevel, floorState.level + delta));
+  if (next === floorState.level) return;
+  floorState.level = next;
+  floorState.falling = false;   // 自分で操作したぶんはエレベーター（落下ではない）
+  floorState.vel = 0;
+  refreshFloorUi();
+  requestRender();
+}
+
+/* いま立っている位置に床が無いとき、落ちる先の段をさがす。
+   下の段から順に断面を切って、その位置を覆っている最初の段を返す（無ければ1階）。
+   ⚠️ 1段ごとに切り直すので、落ち始めの1回だけ呼ぶこと。 */
+function floorLevelBelow(x, z) {
+  for (let lv = floorState.level - 1; lv >= 2; lv--) {
+    if (sectionCoversAt(groundY + (lv - 1) * floorState.h, x, z)) return lv;
+  }
+  return 1;
+}
+
+/* 落下を始める。 */
+function startFall(toLevel) {
+  if (floorState.falling && floorState.level <= toLevel) return;
+  floorState.level = Math.max(1, toLevel);
+  floorState.falling = true;
+  floorState.vel = 0;
+  refreshFloorUi();
+}
+
+/* 今の建物に合わせて階の表示を作り直す。 */
+function refreshFloorUi() {
+  if (!ui.floorRow) return;
+  const on = streetViewState.active && floorState.maxLevel >= 2;
+  ui.floorRow.style.display = on ? 'flex' : 'none';
+  if (!on) return;
+  const up = (floorState.level - 1) * floorState.h;
+  const name = floorState.level >= floorState.maxLevel ? '屋上' : floorState.level + '階';
+  ui.floorVal.textContent = name
+    + (up > 0.05 ? '（+' + up.toFixed(1) + 'm' + (floorState.assumed ? '・推定' : '') + '）' : '');
+  ui.floorUp.disabled = floorState.level >= floorState.maxLevel;
+  ui.floorDown.disabled = floorState.level <= 1;
+}
+
+/* 透かしている建物から、選べる階数と階高を決める。 */
+function refreshFloorRange(roofY) {
+  const info = getSeeThroughFloors();
+  if (!info) {
+    // ★ ここで level を 1 に戻さないこと。壁ぎわやタイル入れ替えの一瞬の
+    //   「外」判定で階が落ちてしまう。床を下ろすのは猶予つきの floorInside() に任せ、
+    //   選んだ階は建物を出ても覚えておく（入り直したら同じ階に戻る）。
+    //   maxLevel も猶予の間は畳まない（畳むと floorTargetOffset が 0 になり、
+    //   結局その一瞬で床が落ちてしまう）。
+    if (!floorInside()) floorState.maxLevel = 1;
+    refreshFloorUi();
+    return;
+  }
+  floorState.insideMs = performance.now();
+
+  // 足元から屋根までの高さ。真上の屋根が測れなければ、その棟の最高点で代用する。
+  const top = (roofY !== null && roofY > groundY + 0.3) ? roofY : info.topY;
+  const H = Math.max(0, top - groundY);
+
+  // ★ 階数は「属性の階数」を優先し、無ければ模型の高さから割り出す。
+  //   割り出した階数で H を等分するので、いちばん上の段は【必ず屋根の高さ】になる
+  //   （屋上に立てる）。階高を 3m 固定にすると屋上にぴたりと乗れない。
+  let n = Number(info.storeys);
+  const attrOk = Number.isFinite(n) && n >= 1 && H / n >= FLOOR_MIN_H;
+  if (!attrOk) n = Math.max(1, Math.round(H / FLOOR_TYPICAL_H));
+  n = Math.max(1, Math.min(FLOOR_MAX_LEVEL - 1, n));
+  floorState.h = H / n;
+  floorState.assumed = !attrOk;
+  // 段数 = 各階 + 屋上。屋根が足元のすぐ上（LOD2 の低い部分など）なら屋上だけ。
+  floorState.maxLevel = H > 0.3 ? n + 1 : 1;
+  // ★ 低いところへ歩いて移ったら、その場所の屋上まで下がる（宙に浮かせない）。
+  if (floorState.level > floorState.maxLevel) floorState.level = floorState.maxLevel;
+  // 屋上へ降りてきた直後は、段数が分かったこの時点で最上段（屋上）に合わせる。
+  if (floorState.landOnRoof && floorState.maxLevel >= 2) {
+    floorState.level = floorState.maxLevel;
+    floorState.landOnRoof = false;
+  }
+  refreshFloorUi();
+}
+
+// 今そこに居る建物（キャラクターとカメラ）を調べて透かす。
+//   毎フレームやるとレイキャストが増えるので、少し動いたときだけ調べ直す。
+const SEE_THROUGH_MOVE = 0.5;    // これだけ動いたら調べ直す[m]
+const SEE_THROUGH_MS = 200;      // 止まっていても、この間隔では調べ直す
+// ★調べ直す間隔の下限。走り（13.5m/s）だと 0.5m は 37ms ごとに来てしまい、
+//   建物の中に居るとき（レイ4本＝実測5.5ms）だけ負荷が跳ねる。
+const SEE_THROUGH_MIN_MS = 100;
+const _seeLast = { x: 1e9, z: 1e9, cx: 1e9, cz: 1e9, ms: 0 };
+const _seeSet = new Map();   // gml_id → 当たったメッシュ
+const _camSet = new Map();   // カメラが入っている建物（透かしを止めてよいかの判断に使う）
+let camInsideBuilding = false;
+function updateSeeThrough(nowMs, force = false) {
+  const camPos = camera.position;
+  if (!force && nowMs - _seeLast.ms < SEE_THROUGH_MIN_MS) return;
+  if (!force
+      && Math.hypot(stand.x - _seeLast.x, stand.z - _seeLast.z) < SEE_THROUGH_MOVE
+      && Math.hypot(camPos.x - _seeLast.cx, camPos.z - _seeLast.cz) < SEE_THROUGH_MOVE
+      && nowMs - _seeLast.ms < SEE_THROUGH_MS) return;
+  _seeLast.x = stand.x; _seeLast.z = stand.z;
+  _seeLast.cx = camPos.x; _seeLast.cz = camPos.z;
+  _seeLast.ms = nowMs;
+
+  _seeSet.clear();
+  // ★ キャラクター側は【地盤面の高さ】で判定する。持ち上がった足元で判定すると、
+  //   屋上まで上がった瞬間に「建物の外」となって床が落ち、落ちるとまた中に入るので
+  //   上下を無限に繰り返す（実測でそうなった）。地盤面で見れば「その棟の輪郭の
+  //   上に立っているか」が高さによらず安定して決まる。
+  collectBuildingsContaining(stand.x, groundY + 1.5, stand.z, _seeSet);
+  _camSet.clear();
+  collectBuildingsContaining(camPos.x, camPos.y, camPos.z, _camSet);
+  camInsideBuilding = _camSet.size > 0;
+  for (const [id, mesh] of _camSet) if (!_seeSet.has(id)) _seeSet.set(id, mesh);
+  setSeeThroughBuildings(_seeSet);
+  // 稜線の姿勢を元メッシュに合わせ直す（タイルの姿勢は後から入ることがある）
+  syncSeeThroughEdges();
+  // 足元の真上にある屋根の高さから段数を決め直す
+  refreshFloorRange(roofYAbove(stand.x, stand.z, _seeSet));
 }
 
 /* ★そこに居てよいか（降りる先・歩く先の両方でこれを使う）。
@@ -217,7 +458,7 @@ function canBeAt(x, z) {
 }
 
 // 建物の面がこの高さ[m]（足元から）より下に来ていたら「体がぶつかる高さに躯体がある」
-// ＝その場に立てないと見なす。歩行側の HIT_HEIGHTS より少し高く取っている。
+// ＝その場に立てないと見なす。
 const SOLID_BELOW = 2.5;
 
 /* 降りる先に立てるか（建物の中なら false）。着地のときだけ使う。
@@ -287,8 +528,6 @@ const chara = {
   current: null,
   facing: 0,           // 今向いている方位[rad]（進行方向へ滑らかに追従させる）
   loading: null,
-  // 当たり判定用の寸法。glb の実寸（バウンディングボックス）から測って入れる。
-  radius: DEFAULT_RADIUS,   // 水平方向の当たり半径[m]
 };
 
 function loadCharacter() {
@@ -304,19 +543,6 @@ function loadCharacter() {
       model.scale.setScalar(s);
       // 足元が原点に来るように下げる
       model.position.y = -box.min.y * s;
-
-      // ★バウンディングボックスから当たり判定の寸法を決める。
-      //   幅と奥行きの【大きいほう】を採り、さらに余裕を足して大きめに見積もる。
-      //   ⚠️ 小さく取ると壁の直前まで進めてしまい、その1フレームで壁の内側へ
-      //     わずかに入り込む。いったん入ると壁は内側からも塞ぐので出られなくなる。
-      //     手前で止まるほうが安全なので、体の実寸より太らせておく。
-      const bw = (box.max.x - box.min.x) * s;
-      const bd = (box.max.z - box.min.z) * s;
-      const r = (Math.max(bw, bd) / 2) * COLLISION_MARGIN;
-      // 上限は路地や門をくぐれる範囲に収める（太らせすぎると通れない道が出る）
-      chara.radius = Number.isFinite(r) && r > 0.05
-        ? Math.min(Math.max(r, MIN_RADIUS), MAX_RADIUS)
-        : DEFAULT_RADIUS;
 
       const root = new THREE.Group();
       root.add(model);
@@ -419,6 +645,22 @@ function buildUi() {
       font-size: 12px; font-family: inherit;
     }
     #svCharaToggle:hover { background: rgba(255,255,255,0.2); }
+    /* 建物の中に居るときだけ出る「何階から見るか」。
+       ⚠️ スライダーにしないこと。判定が一瞬でも切れると値が書き戻され、
+         つまみを掴んでいる最中に飛ぶ。1階ずつのボタンなら取り違えようがない。 */
+    #svFloorRow {
+      margin-top: 6px; pointer-events: auto; display: none;
+      align-items: center; gap: 4px; font-size: 11px;
+    }
+    #svFloorRow button {
+      width: 26px; padding: 3px 0; cursor: pointer; border-radius: 5px;
+      background: rgba(255,255,255,0.14); color: #fff;
+      border: 1px solid rgba(255,255,255,0.28); font-size: 12px; line-height: 1;
+      font-family: inherit;
+    }
+    #svFloorRow button:hover:not(:disabled) { background: rgba(255,255,255,0.24); }
+    #svFloorRow button:disabled { opacity: 0.35; cursor: default; }
+    #svFloorVal { flex: 1; text-align: right; }
     /* カーナビ風の追従地図（右下）。原点を決める地図（#pickerWrap）とは別物で、
        ストリートビュー中はあちらを隠してこちらだけ出す。 */
     #svMap {
@@ -474,7 +716,23 @@ function buildUi() {
   readoutBody.id = 'svReadoutBody';
   const charaToggle = document.createElement('button');
   charaToggle.id = 'svCharaToggle'; charaToggle.type = 'button';
-  readout.append(readoutBody, charaToggle);
+
+  // 建物の中に居るときだけ出す「何階から見るか」。外に出ると自動で引っ込む。
+  const floorRow = document.createElement('div');
+  floorRow.id = 'svFloorRow';
+  const floorLabel = document.createElement('span');
+  floorLabel.textContent = '階';
+  const floorDown = document.createElement('button');
+  floorDown.id = 'svFloorDown'; floorDown.type = 'button';
+  floorDown.textContent = '▼'; floorDown.title = '1階下がる';
+  const floorUp = document.createElement('button');
+  floorUp.id = 'svFloorUp'; floorUp.type = 'button';
+  floorUp.textContent = '▲'; floorUp.title = '1階上がる';
+  const floorVal = document.createElement('span');
+  floorVal.id = 'svFloorVal'; floorVal.textContent = '1階';
+  floorRow.append(floorLabel, floorDown, floorUp, floorVal);
+
+  readout.append(readoutBody, charaToggle, floorRow);
 
   const map = document.createElement('div');
   map.id = 'svMap';
@@ -491,7 +749,10 @@ function buildUi() {
 
   document.body.append(enter, exit, stick, hint, readout, map);
   ui = { enter, exit, stick, knob, hint, readout, readoutBody, charaToggle,
-         map, mapCanvas, mapSize };
+         floorRow, floorUp, floorDown, floorVal, map, mapCanvas, mapSize };
+
+  floorUp.addEventListener('click', () => changeFloor(+1));
+  floorDown.addEventListener('click', () => changeFloor(-1));
   applyMapSize();
 
   // 01 の中（iframe）で開かれているときは、👣は親のパネル側にあるのでこちらは隠す。
@@ -542,7 +803,10 @@ function updateReadout() {
     `<div><b>仰角</b>${pitchDeg >= 0 ? '+' : ''}${pitchDeg.toFixed(0)}°</div>` +
     `<div><b>画角</b>${camera.fov.toFixed(0)}°</div>` +
     `<div><b>標高</b>${elev.toFixed(1)} m</div>` +
-    `<div><b>目線</b>地面 +${EYE_HEIGHT.toFixed(1)} m</div>`;
+    (floorState.now > 0.05
+      ? `<div><b>床</b>地盤 +${floorState.now.toFixed(1)} m`
+        + `（${floorState.level >= floorState.maxLevel ? '屋上' : floorState.level + '階'}）</div>` : '') +
+    `<div><b>目線</b>床 +${EYE_HEIGHT.toFixed(1)} m</div>`;
 }
 
 // -----------------------------------------------------------------------------
@@ -686,12 +950,13 @@ function startPlacing() {
   if (cb && !cb.checked) { cb.checked = true; cb.dispatchEvent(new Event('change', { bubbles: true })); }
   setRoadHighlightStrength('picking');
   loadCharacter();                       // 4MB あるので、選んでいる間に裏で読み始める
-  setHint('地面をクリックすると、そこに降ります　／　Esc で中止');
+  setHint('地面か建物の屋上をクリックすると、そこに降ります　／　Esc で中止');
   requestRender();
 }
 
 function stopPlacing() {
   streetViewState.placing = false;
+  hidePickLabels();
   ui.enter.classList.remove('armed');
   renderer.domElement.style.cursor = '';
   hideMarker();
@@ -701,24 +966,33 @@ function stopPlacing() {
   requestRender();
 }
 
+/* そこに降りてよいか。地面なら「建物の中でないこと」、建物なら「上向きの面」。 */
+function canLandOn(hit) {
+  if (!hit) return false;
+  if (hit.kind === 'roof') return true;                        // 屋上には降りられる
+  if (hit.kind === 'wall') return false;                       // 壁・軒天は不可
+  return !insideBuilding(hit.point.x, hit.point.z);            // 地面（建物の中は不可）
+}
+
 function onPlacingMove(e) {
   if (!streetViewState.placing) return;
-  const p = pickGround(e.clientX, e.clientY);
-  if (!p) { hideMarker(); requestRender(); return; }
-  showMarker(p, !insideBuilding(p.x, p.z));
+  const hit = pickLanding(e.clientX, e.clientY);
+  if (!hit) { hideMarker(); requestRender(); return; }
+  showMarker(hit.point, canLandOn(hit));
   requestRender();
 }
 
 function onPlacingClick(e) {
   if (!streetViewState.placing) return;
-  const p = pickGround(e.clientX, e.clientY);
-  if (!p) return;
-  // 地形の上ならどこでも降りられる。建物の中（真上に建物がある場所）だけは断る。
-  if (insideBuilding(p.x, p.z)) {
-    setHint('そこは建物の中です。建物のない場所を選んでください');
+  const hit = pickLanding(e.clientX, e.clientY);
+  if (!hit) return;
+  if (!canLandOn(hit)) {
+    setHint(hit.kind === 'wall'
+      ? 'そこは建物の壁です。地面か建物の屋上を選んでください'
+      : 'そこは建物の中です。地面か建物の屋上を選んでください');
     return;
   }
-  enterStreetView(p);
+  enterStreetView(hit.point, hit.kind === 'roof');
 }
 
 // -----------------------------------------------------------------------------
@@ -726,7 +1000,7 @@ function onPlacingClick(e) {
 // -----------------------------------------------------------------------------
 const yawPitch = { yaw: 0, pitch: 0 };
 
-function enterStreetView(point) {
+function enterStreetView(point, onRoof = false) {
   stopPlacing();
   saved = {
     pos: camera.position.clone(),
@@ -743,9 +1017,18 @@ function enterStreetView(point) {
 
   // ★基準はクリックで当たった面そのもの。それが「その瞬間に画面で見えていた地面」なので、
   //   別途撃ち直すより確実（撃ち直すと重なった別の段に当たることがある）。
-  groundY = point.y;
+  //   ★ 建物の屋上へ降りたときは、地盤は真下の地形、持ち上がりはその差ぶん。
+  //     こうしておけば、あとは仮想フロアの仕組みがそのまま使える。
+  const terrainY = onRoof ? groundYAt(point.x, point.z) : null;
+  groundY = (terrainY !== null) ? terrainY : point.y;
+  floorState.level = 1; floorState.maxLevel = 1;
+  floorState.now = Math.max(0, point.y - groundY);
+  floorState.insideMs = 0;
+  floorState.falling = false; floorState.vel = 0;
+  // 屋上に降りたら、段数が分かった時点で「屋上」の段に合わせる（refreshFloorRange）
+  floorState.landOnRoof = floorState.now > 0.5;
   // キャラクターを立たせる。カメラはこの人の周りを回る（三人称）。
-  stand.set(point.x, groundY, point.z);
+  stand.set(point.x, groundY + floorState.now, point.z);
   // 入った瞬間の向きは、それまで見ていた方向をそのまま引き継ぐ（急に別の方角を向かない）
   const dir = saved.target.clone().sub(saved.pos);
   yawPitch.yaw = Math.atan2(-dir.x, -dir.z);
@@ -784,6 +1067,15 @@ function exitStreetView() {
   moveKnob(0, 0);
   wasRunning = false; updateStickLook(false);
   if (chara.root) chara.root.visible = false;
+  setSeeThroughBuildings(null);   // 透かした建物を元の見え方へ戻す
+  floorState.level = 1; floorState.maxLevel = 1; floorState.now = 0;
+  floorState.insideMs = 0; floorState.landOnRoof = false;
+  floorState.falling = false; floorState.vel = 0;
+  setSeeThroughOpaque(false);
+  setFloorSlabHeight(null);
+  hideFloorLabel();
+  refreshFloorUi();
+  hideStreetNames();
   setRoadHighlightStrength('normal');
   if (saved) {
     camera.position.copy(saved.pos);
@@ -926,10 +1218,28 @@ function onStickUp(e) {
 // -----------------------------------------------------------------------------
 const _fwd = new THREE.Vector3();
 const _right = new THREE.Vector3();
+const _standGround = new THREE.Vector3();   // 路面ラベルへ渡す「地盤面での足元」
 let lastMs = 0;
 let groundY = 0;    // いま立っている地面の高さ。地形が細かくなるにつれて追従させる。
 
+const _pickCenter = new THREE.Vector3();
+const _camRight = new THREE.Vector3();
+
+/* 着地点を選んでいる間だけ、通り名と川名を街の上に置く（地図のような見せ方）。
+   ★ 上空から見下ろしている視点なので、歩行中の路面標示（逆遠近）とは別の描き方。
+     文字の向きはカメラの右向きに合わせて、上下逆さまにならないようにする。 */
+function updatePickingLabels() {
+  // 画面の中心が見ているあたり＝注視点。カメラ距離で文字の大きさも決まる。
+  _pickCenter.copy(controls.target);
+  const camDist = camera.position.distanceTo(controls.target);
+  _camRight.setFromMatrixColumn(camera.matrixWorld, 0);   // カメラのX軸＝右向き
+  _camRight.y = 0;
+  if (_camRight.lengthSq() < 1e-6) _camRight.set(1, 0, 0); else _camRight.normalize();
+  updatePickLabels(_pickCenter, camDist, _camRight, groundYAt);
+}
+
 function updateStreetView(nowMs) {
+  if (streetViewState.placing) updatePickingLabels();
   if (!streetViewState.active) { lastMs = nowMs; return; }
   // 0 未満にしないこと。負の dt はそのまま「逆向きに歩く」ことになる。
   const dt = Math.max(0, Math.min(0.1, (nowMs - lastMs) / 1000 || 0));
@@ -952,23 +1262,12 @@ function updateStreetView(nowMs) {
     const dx = (_fwd.x * -uy + _right.x * ux) * step;
     const dz = (_fwd.z * -uy + _right.z * ux) * step;
     if (running !== wasRunning) { wasRunning = running; updateStickLook(running); }
-    // ★歩けるのは地形の上ならどこでも。ふさぐのは建物だけ。
-    //   両方向だめでも軸ごとに試すのは、壁に斜めに突き当たったときにピタッと
-    //   止まらず壁に沿って滑れるようにするため（当たらない方向だけ進む）。
-    const ok = (px, pz) => canBeAt(px, pz) && !blockedByBuilding(x, z, px, pz, groundY);
-    if (ok(x + dx, z + dz)) { x += dx; z += dz; }
-    else if (ok(x + dx, z)) { x += dx; }
-    else if (ok(x, z + dz)) { z += dz; }
-    // ★どの向きにも進めなかったとき、それが【建物にはまり込んでいるせい】なら
-    //   塞ぐのをやめて出られるようにする。
-    //   ⚠️ この救済が無いと詰む。壁は内側からも当たるので、何かの拍子に躯体の中へ
-    //     入ってしまうと全方向が塞がれ、モードを抜ける以外に手が無くなる。
-    //     判定は重いので、三方向すべて塞がれた稀なときだけ調べる。
-    else if (insideBuilding(x, z)) {
-      if (canBeAt(x + dx, z + dz)) { x += dx; z += dz; }
-      else if (canBeAt(x + dx, z)) { x += dx; }
-      else if (canBeAt(x, z + dz)) { z += dz; }
-    }
+    // ★歩けるのは地形の上ならどこでも。建物の壁ではもう止めない
+    //   （入ったら透かす方式にした。モジュール冒頭の解説を参照）。
+    //   軸ごとに試すのは、地形の縁に斜めに突き当たったときに滑れるようにするため。
+    if (canBeAt(x + dx, z + dz)) { x += dx; z += dz; }
+    else if (canBeAt(x + dx, z)) { x += dx; }
+    else if (canBeAt(x, z + dz)) { z += dz; }
     moved = (x !== stand.x || z !== stand.z);
     // 進んだ向きへ体を向ける（急に振り向かないよう、少しずつ回す）
     if (moved) {
@@ -984,7 +1283,68 @@ function updateStreetView(nowMs) {
   //   降りた瞬間の高さのまま固定すると、地面に埋まったり浮いたりする。
   const gy = groundYAt(x, z, groundY);
   if (gy !== null) groundY = gy;
-  stand.set(x, groundY, z);
+  // --- 仮想フロア ---------------------------------------------------------
+  //   ★ 床が足元に無ければ落ちる。床は「その高さで建物を切った断面」なので、
+  //     セットバックした上層の外側や中庭の吹き抜けでは、その場で支えを失う。
+  const onRoofLevel = floorState.maxLevel >= 2 && floorState.level >= floorState.maxLevel;
+  const settledNow = Math.abs(floorState.now - floorTargetOffset()) < 0.05;
+  if (!floorState.falling && floorState.now > 0.05) {
+    if (!floorInside()) {
+      // ★ 建物の外へ出た＝地面まで落ちる。ここは【止まっているかどうかを問わない】。
+      //   ⚠️ settled を条件にすると、この場合は永久に成立しない（外に出た時点で
+      //     行き先が 0 になり、下りている最中はいつも「動いている」ため）。その結果
+      //     落下として扱われず、階だけ 7 のまま残り、地面から入り直した瞬間に
+      //     7階へ引き上げられていた。
+      startFall(1);
+    } else if (settledNow && !onRoofLevel && floorState.level > 1 && !floorCoversAt(x, z)) {
+      startFall(floorLevelBelow(x, z));               // 床の穴・外周の外
+    }
+  }
+  const want = floorTargetOffset();
+  if (floorState.falling) {
+    floorState.vel += FLOOR_GRAVITY * dt;
+    floorState.now -= floorState.vel * dt;
+    if (floorState.now <= want) { floorState.now = want; floorState.falling = false; floorState.vel = 0; }
+  } else if (Math.abs(want - floorState.now) < 0.01) {
+    floorState.now = want;
+  } else {
+    floorState.now += (want - floorState.now) * Math.min(1, FLOOR_LERP * dt);
+  }
+  stand.set(x, groundY + floorState.now, z);
+  // 上の階に居るときは床を描く（宙に浮いて見えないように）。高さは足元に合わせる。
+  //   ★ 屋上に着いたら床は消す。そこは建物の実際の上面なので、複製した床を
+  //     重ねる必要がない（重ねると本物の屋根が見えなくなる）。
+  //   ⚠️ 消す判定は【上下の動きが終わってから】。段を選んだ瞬間に消すと、
+  //     上がっている途中の 0.3 秒ほど足元に何も無くなる。
+  const settled = Math.abs(floorState.now - want) < 0.05;
+  const onRoof = onRoofLevel && settled;
+  // ★ 床は【行き先の高さ】に置く。断面はその高さで切ったものなので、上り下りの
+  //   最中に足元へ追従させると、形と高さが食い違ったまま動くことになる。
+  setFloorSlabHeight(!onRoof && want > 0.05 ? groundY + want : null);
+  // 床に「+15.0 m ／ 6階相当」を貼る（路面の通り名と同じ路面標示の見せ方）。
+  //   ★ 屋上は建物の実際の上面なので、そこにも貼る（床は描かないが位置は同じ）。
+  if (settled && floorState.now > 0.05) {
+    updateFloorLabel(stand, yawPitch.yaw,
+      '+' + floorState.now.toFixed(1) + ' m',
+      onRoofLevel ? '屋上' : floorState.level + '階相当');
+  } else {
+    hideFloorLabel();
+  }
+  // ★ 屋上に立っているあいだは建物を透かさない（外に立っているので中を見る必要がない）。
+  //   ⚠️ ただしカメラが躯体の中に潜っているときは透かしたまま。三人称なのでカメラは
+  //     体の後ろにあり、見上げると屋根の下へ回り込む。そこで不透明に戻すと画面が
+  //     壁で埋まる。
+  setSeeThroughOpaque(onRoof && !camInsideBuilding);
+
+  // 今その中に居る建物を透かす（少し動いたときだけ調べ直す）
+  updateSeeThrough(nowMs);
+
+  // 目の前の路面に通り名と矢印を描く（作り直すのは少し動いたときだけ。streetnames.js）。
+  //   地面の高さを測る関数を渡す＝「見えているタイルだけを見る」判定を共有するため。
+  //   ⚠️ 渡すのは【地盤面の位置】。ラベルは地形の上に描かれるので、仮想フロアで
+  //     持ち上がった足元を渡すと、目線の高さの見積もりがその分だけ狂う。
+  _standGround.set(stand.x, groundY, stand.z);
+  updateStreetNames(_standGround, yawPitch.yaw, groundYAt);
 
   // 立ち／歩き／走りの切り替え。壁に当たって進めていないときは立ちに戻す。
   playClip(!moved ? 'idle' : (running ? 'run' : 'walk'));

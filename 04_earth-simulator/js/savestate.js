@@ -12,6 +12,7 @@
 //     復元しやすいように、ローカル座標も参考値として併記する。
 // =============================================================================
 import { EARTH_R } from './core.js';
+import { localToLonLat, lonLatToLocal } from './geo.js';
 import { ORIGIN_LAT, ORIGIN_LON, DEG2RAD, CITY_ID, CITY_LABEL } from './config.js';
 import { edits, applyEditsEverywhere, defaultEdit, resetAll } from './buildingedit.js';
 import {
@@ -23,21 +24,30 @@ import {
 
 const RAD2DEG = 1 / DEG2RAD;
 
-/* ローカル座標(x,z)[m] → 緯度経度[度]。
-   scene は +Z=北 / +X=西 なので、東向き成分は -x になる。 */
+/* ローカル座標(x,z)[m] → 緯度経度[度]。変換は geo.js（楕円体の局所ENU）。 */
 function localToLatLng(x, z) {
-  const lat = ORIGIN_LAT + z / EARTH_R;
-  const lng = ORIGIN_LON + (-x) / (EARTH_R * Math.cos(lat));
-  return { lat: +(lat * RAD2DEG).toFixed(8), lng: +(lng * RAD2DEG).toFixed(8) };
+  const { lat, lon } = localToLonLat(x, z);
+  return { lat: +lat.toFixed(8), lng: +lon.toFixed(8) };
 }
 
 /* 緯度経度[度] → ローカル座標(x,z)[m]。localToLatLng の逆。 */
 function latLngToLocal(latDeg, lngDeg) {
-  const lat = latDeg * DEG2RAD, lng = lngDeg * DEG2RAD;
-  const z = (lat - ORIGIN_LAT) * EARTH_R;
-  const x = -((lng - ORIGIN_LON) * EARTH_R * Math.cos(lat));
-  return { x, z };
+  return lonLatToLocal(lngDeg, latDeg);
 }
+
+/* 旧形式（version 1.0 以前）のセーブを読むための、球体近似版の逆変換。
+   ⚠️ 消さないこと。1.0 の緯度経度は【球体近似で書き出された値】なので、
+     楕円体で読み直すと保存時と違う場所（原点から3kmで約10m）に復元されてしまう。
+     書き出した式で読み戻すのが正しい。 */
+function latLngToLocalLegacySphere(latDeg, lngDeg) {
+  const lat = latDeg * DEG2RAD, lng = lngDeg * DEG2RAD;
+  return {
+    z: (lat - ORIGIN_LAT) * EARTH_R,
+    x: -((lng - ORIGIN_LON) * EARTH_R * Math.cos(lat)),
+  };
+}
+// 今読み込んでいるセーブの形式（applyEarthState が設定する）
+let loadedVersion = null;
 
 const r2 = (v) => (Number.isFinite(v) ? +v.toFixed(2) : null);
 const r3 = (v) => (Number.isFinite(v) ? +v.toFixed(3) : null);
@@ -120,7 +130,8 @@ function collectEarthState() {
   const 置いた箱 = collectBlocks();
   if (!建物の高さ変更.length && !壁面後退.length && !置いた箱.length) return null;
   return {
-    version: '1.0',
+    // 1.1 で座標変換を楕円体（geo.js）へ変更。1.0 の値は球体近似で書かれている。
+    version: '1.1',
     都市: { id: CITY_ID, label: CITY_LABEL },
     原点: { lat: +(ORIGIN_LAT * RAD2DEG).toFixed(8), lng: +(ORIGIN_LON * RAD2DEG).toFixed(8) },
     建物の高さ変更,
@@ -136,7 +147,9 @@ function collectEarthState() {
    ⚠️ ローカル座標の方を使ってはいけない。都市の原点が変われば同じ数値が
      別の場所を指す。緯度経度から毎回ひき直す。 */
 function toLocal(rec) {
-  if (Number.isFinite(rec.lat) && Number.isFinite(rec.lng)) return latLngToLocal(rec.lat, rec.lng);
+  const conv = (loadedVersion === null || loadedVersion === '1.0')
+    ? latLngToLocalLegacySphere : latLngToLocal;
+  if (Number.isFinite(rec.lat) && Number.isFinite(rec.lng)) return conv(rec.lat, rec.lng);
   if (Number.isFinite(rec.x) && Number.isFinite(rec.z)) return { x: rec.x, z: rec.z };
   return null;
 }
@@ -235,6 +248,7 @@ function waitForGround() {
    ⚠️ 追記ではなく置き換え。ロードは「今の作業を上書きする」操作なので、
      前の検討内容が混ざって残ると、どれが読み込んだ内容か分からなくなる。 */
 function applyEarthState(state) {
+  loadedVersion = state && typeof state.version === 'string' ? state.version : null;
   resetAll();
   clearSetback();
   removeAllBlocks();

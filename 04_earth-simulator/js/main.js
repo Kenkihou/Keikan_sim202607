@@ -40,7 +40,10 @@ import { updateHud, setClipSizeFromParent, getClipSize, setPickerCenter } from '
 import { rebuildBuildingSection, profileState, setEnabled as setProfileEnabled, setSectionLat } from './profile.js';
 // 建物を1棟ずつ編集する（クリック選択・透過・非表示・高さ変更）。
 // 読み込むだけで UI と操作を自前で組み立てる（tiles.js へはフックを差し込む方式）。
-import { editState as buildingEditState, resetAll as resetBuildingEdits, updateSelectionBox } from './buildingedit.js';
+import {
+  editState as buildingEditState, resetAll as resetBuildingEdits, updateSelectionBox,
+  seeThroughEdgeMat,
+} from './buildingedit.js';
 // 建物を「後退面より外側だけ」削る／「両側を残して切って片側ずつ高さを変える」。
 // 読み込むだけで UI と、タイルへのフックを自前で組み立てる。
 import { updateSetbackGuide } from './buildingsetback.js';
@@ -58,6 +61,8 @@ import { roofTextState, updateRoofText } from './rooftext.js';
 import { roadsBusy, initRoadUi, refreshRoadRange } from './roads.js';
 // 足跡を道路に落として、その場に立って歩き回るモード（👣ボタン）。
 import { streetViewState, initStreetView, updateStreetView } from './streetview.js';
+// 空（スカイドーム）と太陽。読み込むだけで HUD の操作も自前で組み立てる。
+import { updateSky, skyState } from './sky.js';
 import {
   mountainGroup, mountainState, buildMountains, updateMountainVisibility,
 } from './mountains.js';
@@ -77,6 +82,7 @@ function onResize() {
   for (const m of groundLineMats) m.resolution.set(window.innerWidth, window.innerHeight);
   for (const m of soilContourMats) m.resolution.set(window.innerWidth, window.innerHeight);
   viewAreaLineMat.resolution.set(window.innerWidth, window.innerHeight);
+  seeThroughEdgeMat.resolution.set(window.innerWidth, window.innerHeight);
   for (const m of zoneLineMats) m.resolution.set(window.innerWidth, window.innerHeight);
   for (const t of wardTiles) t.setResolutionFromRenderer(camera, renderer);
   const tt = getTerrainTiles();
@@ -155,6 +161,7 @@ function animate() {
   if (!streetViewState.active) controls.update();
   camera.updateMatrixWorld();
   updateFog();                              // 霧の距離を今のカメラ距離に合わせる
+  updateSky();                              // 空の色と太陽の向き（設定が変わったときだけ計算）
   updateLoadPhase();                        // 第1段（1枚だけ）が済んだら第2段（500m四方）へ
   updateLoadRegion();                       // 注目地点まわりだけ読み込むよう矩形を更新
   updateClipPlanes();                       // 中心の切り抜き（クリップ面・断面板の位置）

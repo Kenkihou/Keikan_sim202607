@@ -10,7 +10,7 @@
 //     置き直す（断面や眺望ポリゴンと同じ作法）。
 // =============================================================================
 import {
-  THREE, scene, el, focusLocal, EARTH_R, markUserModelDirty, markSectionDirty,
+  THREE, scene, el, focusLocal, markUserModelDirty, markSectionDirty,
   camera, controls, renderer, hideLoading, requestRender, resetCamera,
 } from './core.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
@@ -23,6 +23,7 @@ import {
   USER_MODEL_GIZMO_MOVE_SNAP, USER_MODEL_GIZMO_ROTATE_SNAP,
 } from './config.js';
 import { buildTerrainHeightGrid, sampleGrid } from './viewareas.js';
+import { localToLonLatRad } from './geo.js';
 import { setFocusLatLon, isTerrainReady } from './tiles.js';
 import { setPickerCenter } from './ui.js';
 // 断面（箱庭・東西30km）に自作モデルも切られるようにする。
@@ -81,8 +82,7 @@ function saveBackToSession() {
     e: userModelState.offsetEast, n: userModelState.offsetNorth,
   }));
   // 今の注目地点（＝モデルを置いた場所）も返す。親の lastPlacedLocation に入る。
-  const lat = ORIGIN_LAT + focusLocal.z / EARTH_R;
-  const lon = ORIGIN_LON - focusLocal.x / (EARTH_R * Math.cos(lat));
+  const { lat, lon } = localToLonLatRad(focusLocal.x, focusLocal.z);
   writeSession(USER_MODEL_FOCUS_KEY, JSON.stringify({
     lat: lat * RAD2DEG, lng: lon * RAD2DEG,
   }));
@@ -253,8 +253,7 @@ gizmo.addEventListener('objectChange', () => {
 // ドラッグを離したとき：モデルの居る場所を新しい注目地点にする
 function commitGizmoDrag() {
   const x = userModelGroup.position.x, z = userModelGroup.position.z;
-  const lat = ORIGIN_LAT + z / EARTH_R;
-  const lon = ORIGIN_LON - x / (EARTH_R * Math.cos(lat));
+  const { lat, lon } = localToLonLatRad(x, z);
   userModelState.offsetEast = 0;   // ずれではなく注目地点そのものが動いた
   userModelState.offsetNorth = 0;
   setFocusLatLon(lat, lon, false); // カメラは動かさない（見ている絵をそのまま保つ）

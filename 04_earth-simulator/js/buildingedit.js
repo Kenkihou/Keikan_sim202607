@@ -29,6 +29,9 @@
 import {
   THREE, scene, el, camera, controls, renderer, requestRender, markSectionDirty,
 } from './core.js';
+import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
+import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
+import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { computeClipMeshWorld, clipMeshes, buildingClipPlanes } from './section.js';
 import { wardTiles, setBuildingEditHook } from './tiles.js';
 // 箱を置く道具。建物編集と同じボタンで出し入れするので、こちらから面倒を見る。
@@ -59,6 +62,62 @@ const defaultEdit = () => ({
   storeys: null, height: null, measuredHeight: NaN, footprint: NaN,
 });
 const isPristine = (e) => e.opacity === 1 && !e.hidden && e.dy === 0;
+
+// -------------------------------------------------------------------------
+// 「今その中に居る建物」を透かす（ストリートビュー用の一時的な見せ方）
+//   ★ edits（ユーザーの編集）とは別に持つ。歩いて出入りするたびに変わる一時的な
+//     状態なので、セーブに残ってはいけないし、透かしを解いたときは【ユーザーが
+//     設定した透過度】に戻す必要がある。だから edits には触れず、別集合で持って
+//     描画時に「濃いほう（小さいほう）」を採る。
+//   透かす濃さ。0=完全に透明。中の様子と外の街並みの両方が見える程度に。
+//   （0.16→0.35→0.60 と実際に歩いて調整した値。薄すぎると建物が消えたように見える）
+const SEE_THROUGH_ALPHA = 0.6;
+const seeThrough = new Set();   // 一時的に透かしている gml_id
+// 透かしを一時的に止める（屋上に立っているとき）。集合や稜線はそのままにして、
+// 塗りだけ元に戻す。集合から外してしまうと、稜線も階数の情報も消えてしまう。
+let seeThroughOpaque = false;
+// その棟を「実際に見ている」メッシュ（内外判定のレイが当たったもの）。
+//   稜線と床をどのタイルから作るかを決めるのに使う。
+const seeThroughMeshes = new Map();   // gml_id → Mesh | null
+
+// 透かした建物は【面を薄くするぶん、稜線を描いて形が分かるようにする】。
+//   面だけ薄くすると建物が消えたようになり、どこに躯体があるのか分からなくなる。
+//   ★ 太さを指定できるよう Line2 系（LineMaterial）を使う。素の LineBasicMaterial は
+//     linewidth が WebGL でほぼ無視され、常に1pxになる（眺望規制の外周線と同じ理由）。
+//     px 指定なので画面サイズを教える必要がある → main.js の onResize が面倒を見る。
+const SEE_THROUGH_EDGE_WIDTH = 2;   // 稜線の太さ[px]
+const seeThroughEdgeMat = new LineMaterial({
+  color: 0x9fd8ff, linewidth: SEE_THROUGH_EDGE_WIDTH,
+  transparent: true, opacity: 0.85, depthWrite: false, dashed: false,
+});
+seeThroughEdgeMat.resolution.set(window.innerWidth, window.innerHeight);
+const seeThroughEdgeGroup = new THREE.Group();   // 稜線はタイルの外（scene直下）に置く
+seeThroughEdgeGroup.frustumCulled = false;
+scene.add(seeThroughEdgeGroup);
+const seeThroughEdges = new Map();   // gml_id → { parts: [{line, mesh, box}] }
+
+// 上の階へ上がったときに描く「床」。
+//   ★ 形は【その棟の底面（または屋根面）の三角形を、そのまま水平に寝かせたもの】。
+//     PLATEAU の LOD1 は footprint を垂直に押し出した角柱なので、底面の形＝どの
+//     高さの床の形でもある。L字でも中庭付きでも正しい形が出る（外接矩形で代用
+//     すると壁からはみ出す）。
+//   ★ ジオメトリは XZ だけワールド座標で持ち、高さは position.y で毎フレーム
+//     合わせる。こうすると、歩いて地盤の高さが変わっても足元と床がずれない。
+const floorSlabMat = new THREE.MeshBasicMaterial({
+  color: 0xccd6e2, side: THREE.DoubleSide,
+  polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2,
+});
+const floorSlabs = new Map();   // gml_id → { mesh, rings } | null
+// 透かしている棟の「上端の高さ」と「階高」。ストリートビューの仮想フロア
+// （2階・3階から外を眺める）で、上限の階と1階ぶんの高さを決めるのに使う。
+const seeThroughInfo = new Map();   // gml_id → { boxes[], floorH, storeys, assumed }
+
+/* その建物を実際に描くときの不透明度。ユーザー設定と透かしの濃いほうを採る。 */
+function effectiveOpacity(gmlId, edit) {
+  const base = edit.hidden ? 1 : edit.opacity;   // 非表示はジオメトリを潰す側で表現される
+  const fade = !seeThroughOpaque && gmlId !== null && seeThrough.has(gmlId);
+  return fade ? Math.min(base, SEE_THROUGH_ALPHA) : base;
+}
 
 const editState = {
   enabled: false,     // 編集モード（ONのときだけクリックで選択・ドラッグできる）
@@ -591,16 +650,17 @@ function restoreGeometry(parts) {
 }
 
 // 集めた頂点に編集を当てる。
-function applyEditToParts(modelScene, parts, edit) {
+function applyEditToParts(modelScene, parts, edit, gmlId = null) {
   if (!parts || !parts.length) return;
   if (edit.hidden) applyCollapse(parts);
   else if (edit.dy !== 0) applyHeight(parts, edit.dy);
   else restoreGeometry(parts);
-  applyOpacity(modelScene, parts, edit.hidden ? 1 : edit.opacity);
+  applyOpacity(modelScene, parts, effectiveOpacity(gmlId, edit));
 }
 // 1棟ぶんの編集を、あるタイルに当てる。
 function applyEditToModel(modelScene, batchId, edit) {
-  applyEditToParts(modelScene, collectBuildingVerts(modelScene, batchId), edit);
+  applyEditToParts(modelScene, collectBuildingVerts(modelScene, batchId), edit,
+                   gmlIdOf(modelScene, batchId));
 }
 
 // 高さ変更に付ける表示物を作り直す。
@@ -691,7 +751,9 @@ const rebuildColumnFor = (gmlId) => rebuildColumnsFor([gmlId]);
 // タイルが届いたときに、そのタイルに含まれる編集済みの建物へまとめて当て直す。
 //   ★ これが無いと、カメラを動かしてタイルが入れ替わった瞬間に編集が消える。
 function applyEditsToModel(modelScene) {
-  if (!edits.size) return;
+  // ★ 透かしている建物も対象。歩いている先のタイルは後から届くので、ここで当て直さないと
+  //   「中に入っているのに、その棟のタイルが読み直された瞬間だけ不透明に戻る」が起きる。
+  if (!edits.size && !seeThrough.size) return;
   const index = gmlIndexOf(modelScene);
   if (!index.size) return;
   const wanted = new Map();   // batchId -> gmlId
@@ -702,11 +764,21 @@ function applyEditsToModel(modelScene) {
     wanted.set(batchId, gmlId);
     if (edit.dy !== 0 && !edit.hidden) needDecor.push(gmlId);
   }
+  for (const gmlId of seeThrough) {
+    const batchId = index.get(gmlId);
+    if (batchId !== undefined) wanted.set(batchId, gmlId);
+  }
   if (!wanted.size) return;
   const got = collectBuildingVertsMulti(modelScene, new Set(wanted.keys()));
+  const reEdge = new Set();
   for (const [b, parts] of got) {
-    applyEditToParts(modelScene, parts, edits.get(wanted.get(b)) || defaultEdit());
+    const gmlId = wanted.get(b);
+    applyEditToParts(modelScene, parts, edits.get(gmlId) || defaultEdit(), gmlId);
+    if (seeThrough.has(gmlId)) reEdge.add(gmlId);
   }
+  // ★ 届いたタイルが透かしている棟を含むなら、稜線もそのメッシュから作り直す
+  //   （LODが変わると形が変わるので、古い稜線が残ると輪郭が二重に見える）。
+  if (reEdge.size) refreshSeeThroughEdges(reEdge);
   // 届いたタイルの方が細かければ、柱・矢印もそちらから作り直す。
   //   高さが同じでも LOD が変われば footprint が変わるので、ここは必ず作り直す。
   if (needDecor.length) rebuildColumnsFor(needDecor, { force: true });
@@ -716,7 +788,7 @@ setBuildingEditHook(applyEditsToModel);
 // 読み込み済みの全タイルへ、指定した建物すべての編集を当て直す。
 //   同じ建物が複数のタイル（LOD違い・隣接タイル）に入っていることがあるので全部見る。
 //   ★ 棟ごとに全タイルを回すのではなく、タイルごとに1回走査して全棟をさばく。
-function applyEditsEverywhere(gmlIds) {
+function applyEditsEverywhere(gmlIds, { geometryChanged = true } = {}) {
   const set = gmlIds instanceof Set ? gmlIds : new Set(gmlIds);
   if (!set.size) return;
   for (const t of wardTiles) {
@@ -730,12 +802,17 @@ function applyEditsEverywhere(gmlIds) {
       if (!wanted.size) return;
       const got = collectBuildingVertsMulti(modelScene, new Set(wanted.keys()));
       for (const [b, parts] of got) {
-        applyEditToParts(modelScene, parts, edits.get(wanted.get(b)) || defaultEdit());
+        const gmlId = wanted.get(b);
+        applyEditToParts(modelScene, parts, edits.get(gmlId) || defaultEdit(), gmlId);
       }
     });
   }
-  rebuildColumnsFor(set);
-  markSectionDirty();   // 断面（箱庭・縦断図）にも形の変化を反映する
+  // 透かしの出入りは【形を変えない】。柱・矢印の作り直しと断面の再計算は要らない
+  //   （歩くたびに走らせると、建物に出入りするだけで断面が毎回組み直される）。
+  if (geometryChanged) {
+    rebuildColumnsFor(set);
+    markSectionDirty();   // 断面（箱庭・縦断図）にも形の変化を反映する
+  }
   requestRender();
 }
 const applyEditEverywhere = (gmlId) => applyEditsEverywhere([gmlId]);
@@ -1842,7 +1919,505 @@ function selectionGroupSize() {
   return g ? g.size : 0;
 }
 
+// =========================================================================
+// 「中に居る建物を透かす」公開API（ストリートビューから使う）
+// =========================================================================
+// ---- 透かした建物の稜線 --------------------------------------------------
+//   建物メッシュは棟ごとに分かれていないので、その棟の三角形だけを _batchid で
+//   拾い直して1つのジオメトリにまとめ、EdgesGeometry で稜線を出す。
+//
+//   ★ 稜線は【元メッシュのローカル座標で作り、姿勢は行列をコピーして合わせる】。
+//     ⚠️ ワールド座標に焼いてはいけない。この関数はタイルが届いた瞬間（読み込み
+//       フック）からも呼ばれるが、そのときタイル側の姿勢（ReorientationPlugin が
+//       与える変換）はまだ入っていないことがあり、localToWorld が ECEF 座標を返す。
+//       実測で、稜線が数百万m先に作られて消えた。
+//     ⚠️ かといって元メッシュの【子】にもしないこと。LineSegments2 は Mesh の派生
+//       なので、タイルの下に置くと「建物メッシュ」として扱われてしまう
+//       （実測: ストリートビューの内外判定のレイキャストが稜線に当たって
+//       LineSegments2.raycast がカメラを要求し例外。透過シェーダの差し込み先にも
+//       混ざる）。scene 直下の専用グループに置き、行列だけ毎回合わせる。
+//   ⚠️ 見えているメッシュだけを見ること。LOD違いの同じ棟が両方読み込まれていると
+//     稜線が二重に出る。
+const EDGE_ANGLE_DEG = 12;   // これ以上折れている稜だけ描く（面内の三角形分割は出さない）
+const _ev = new THREE.Vector3();
+const _wm = new THREE.Matrix4();
+const _chain = [];
+
+/* そのオブジェクトのワールド行列を、親をたどって【その場で組み立てる】。
+   ⚠️ matrixWorld（キャッシュ）を当てにしてはいけない。3D Tiles のタイル群は
+     matrixWorldAutoUpdate を切って自前で姿勢を入れており、描画が走る前や
+     タイルが届いた直後は matrixWorld がまだ単位行列のことがある。実測で、
+     稜線や床が ECEF 座標（数百万m先）に作られた。
+     updateWorldMatrix(true,...) も親が matrixWorldAutoUpdate=false だと
+     親をたどってくれないので当てにならない。 */
+/* そのオブジェクトが【いま scene にぶら下がっているか】。
+   ⚠️ forEachLoadedModel は「読み込み済み」を全部渡してくるが、3D Tiles は表示して
+     いないタイルを scene から外したまま保持している。外れているタイルは姿勢
+     （ReorientationPlugin の変換）も掛からないので、頂点を読むと ECEF 座標のまま
+     出てくる。実測で、透かした棟の上端が 364万m と出て階数がめちゃくちゃになった。
+     幾何を読むときは必ずこれで濾すこと。 */
+function inScene(obj) {
+  for (let o = obj; o; o = o.parent) if (o === scene) return true;
+  return false;
+}
+
+function worldMatrixOf(obj, out) {
+  _chain.length = 0;
+  for (let o = obj; o; o = o.parent) _chain.push(o);
+  out.identity();
+  for (let i = _chain.length - 1; i >= 0; i--) {
+    const o = _chain[i];
+    if (o.matrixAutoUpdate) o.updateMatrix();
+    out.multiply(o.matrix);
+  }
+  _chain.length = 0;
+  return out;
+}
+
+/* その棟の稜線・床を作る元にするメッシュを選ぶ。
+   ★ 選ぶ基準は【内外判定のレイが実際に当たったメッシュ】。そのタイルの中で、
+     同じ棟の batchid を持つメッシュをすべて返す。
+   ⚠️ 「頂点数がいちばん多い段」を選ぶ作りにしてはいけない（最初はそうしていた）。
+     同じ gml_id が複数のタイルに入っており、粗い段では【複数棟が1つの batch に
+     まとめられている】ことがある。実測で、10×24m の棟に対して粗い段の batch は
+     35×38m あり、頂点数も倍だったため、そちらが選ばれて稜線が街区大に膨らんだ。
+     レイが当たったメッシュなら、いま画面に見えているその棟そのものになる。
+   ⚠️ 同じ棟が複数の段で同時に「見えている」ことがある（TilesFadePlugin は
+     切り替わりの間、前の段を重ねて表示する）。全部から作ると稜線が二重になる。 */
+function bestMeshesFor(gmlId) {
+  const seen = seeThroughMeshes.get(gmlId);
+  const root = seen && inScene(seen) ? seen.__clipRoot : null;
+  const collect = (modelScene) => {
+    const batchId = gmlIndexOf(modelScene).get(gmlId);
+    if (batchId === undefined) return [];
+    const meshes = [];
+    modelScene.traverse((mesh) => {
+      if (!mesh.isMesh || !mesh.visible || mesh.isLineSegments2) return;
+      for (let p = mesh.parent; p; p = p.parent) if (!p.visible) return;
+      if (!inScene(mesh)) return;          // 表示されていないタイル（座標が ECEF のまま）
+      const g = mesh.geometry;
+      const pos = g && g.attributes.position, bid = g && g.attributes._batchid;
+      if (!pos || !bid) return;
+      for (let i = 0; i < bid.count; i++) {
+        if (bid.getX(i) === batchId) { meshes.push({ mesh, batchId }); break; }
+      }
+    });
+    return meshes;
+  };
+  if (root) {
+    const m = collect(root);
+    if (m.length) return m;
+  }
+  // レイの当たりが分からないとき（タイルが入れ替わった直後など）は、
+  // その棟をいちばん小さく囲んでいる段を採る＝まとめ描きの粗い段を避ける。
+  let best = null;
+  for (const t of wardTiles) {
+    t.forEachLoadedModel((modelScene) => {
+      const meshes = collect(modelScene);
+      if (!meshes.length) return;
+      const box = new THREE.Box3();
+      for (const { mesh, batchId } of meshes) {
+        const pos = mesh.geometry.attributes.position, bid = mesh.geometry.attributes._batchid;
+        for (let i = 0; i < pos.count; i++) {
+          if (bid.getX(i) !== batchId) continue;
+          box.expandByPoint(_ev.fromBufferAttribute(pos, i));
+        }
+      }
+      const size = box.getSize(_ev);
+      const vol = Math.max(1e-3, size.x * size.y * size.z);
+      if (!best || vol < best.vol) best = { meshes, vol };
+    });
+  }
+  return best ? best.meshes : [];
+}
+
+/* その棟の稜線（メッシュごとに1本）と、高さを測るための箱を作る。 */
+function buildingEdgeParts(gmlId) {
+  const parts = [];
+  for (const { mesh, batchId } of bestMeshesFor(gmlId)) {
+    const g = mesh.geometry;
+    const pos = g.attributes.position, bid = g.attributes._batchid;
+    const idx = g.index;
+    const triCount = (idx ? idx.count : pos.count) / 3;
+    const verts = [];
+    const box = new THREE.Box3();
+    for (let f = 0; f < triCount; f++) {
+      const a = idx ? idx.getX(f * 3) : f * 3;
+      if (bid.getX(a) !== batchId) continue;      // 3頂点は同じ棟なので1つ見れば足りる
+      const b = idx ? idx.getX(f * 3 + 1) : f * 3 + 1;
+      const c = idx ? idx.getX(f * 3 + 2) : f * 3 + 2;
+      for (const i of [a, b, c]) {
+        _ev.fromBufferAttribute(pos, i);          // ローカル座標のまま使う
+        verts.push(_ev.x, _ev.y, _ev.z);
+        box.expandByPoint(_ev);
+      }
+    }
+    if (verts.length < 9) continue;
+    const solid = new THREE.BufferGeometry();
+    solid.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3));
+    const edges = new THREE.EdgesGeometry(solid, EDGE_ANGLE_DEG);
+    solid.dispose();
+    const lg = new LineSegmentsGeometry();
+    lg.setPositions(edges.attributes.position.array);   // 2点で1本の並び
+    edges.dispose();
+    const line = new LineSegments2(lg, seeThroughEdgeMat);
+    line.frustumCulled = false;
+    line.renderOrder = 995;
+    line.matrixAutoUpdate = false;      // 姿勢は元メッシュから毎回コピーする
+    line.raycast = () => {};            // 飾りなので、どのレイキャストにも当てない
+    seeThroughEdgeGroup.add(line);
+    parts.push({ line, mesh, box });
+  }
+  syncEdgeMatrices(parts);
+  return parts;
+}
+
+/* 稜線の姿勢を元メッシュに合わせ直す。タイルの姿勢は後から入ることがあるので、
+   作った直後だけでなく、定期的に（ストリートビューの見回し更新のたびに）呼ぶ。 */
+function syncEdgeMatrices(parts) {
+  for (const { line, mesh } of parts) {
+    if (!inScene(mesh)) { line.visible = false; continue; }
+    line.visible = true;
+    line.matrix.copy(worldMatrixOf(mesh, _wm));
+    line.matrixWorldNeedsUpdate = true;
+  }
+}
+
+/* 透かしている稜線ぜんぶの姿勢を合わせ直す（streetview から毎回呼ばれる）。 */
+function syncSeeThroughEdges() {
+  for (const entry of seeThroughEdges.values()) syncEdgeMatrices(entry.parts);
+}
+
+// ---- 仮想フロアの床（建物モデルの【水平断面】） ---------------------------
+//   ★ その高さの水平面で建物を切った断面を、そのまま床にする。底面を写すやり方だと、
+//     セットバックした上層や塔屋のある棟で床が実際より広く出てしまう
+//     （＝壁の外にはみ出した床の上を歩けてしまう）。
+//   手順は3つ。
+//     ① 切る … 三角形ごとに平面 y と交わる辺を求め、線分の集まりにする
+//     ② 繋ぐ … 端点を突き合わせて閉じた輪（外形と中庭の穴）にする
+//     ③ 貼る … 外形＋穴を三角形分割して面にする（THREE.ShapeUtils）
+//   ⚠️ 断面は【床が有るか無いか】の判定にも使う。輪の中に居なければ床が無い＝落ちる。
+const SECTION_TOL = 0.05;      // 端点を同じ点とみなす距離[m]
+const SECTION_MIN_AREA = 0.5;  // これより小さい輪は捨てる[m2]（数値誤差のかけら）
+const _sa = new THREE.Vector3(), _sb = new THREE.Vector3(), _sc = new THREE.Vector3();
+
+/* ① その棟を平面 y で切って、線分（[x1,z1,x2,z2]）の集まりにする。 */
+function sliceBuildingAt(gmlId, y) {
+  const segs = [];
+  for (const { mesh, batchId } of bestMeshesFor(gmlId)) {
+    const g = mesh.geometry;
+    const pos = g.attributes.position, bid = g.attributes._batchid;
+    worldMatrixOf(mesh, _wm);
+    const idx = g.index;
+    const triCount = (idx ? idx.count : pos.count) / 3;
+    for (let f = 0; f < triCount; f++) {
+      const ia = idx ? idx.getX(f * 3) : f * 3;
+      if (bid.getX(ia) !== batchId) continue;
+      const ib = idx ? idx.getX(f * 3 + 1) : f * 3 + 1;
+      const ic = idx ? idx.getX(f * 3 + 2) : f * 3 + 2;
+      _sa.fromBufferAttribute(pos, ia).applyMatrix4(_wm);
+      _sb.fromBufferAttribute(pos, ib).applyMatrix4(_wm);
+      _sc.fromBufferAttribute(pos, ic).applyMatrix4(_wm);
+      // 3辺のうち平面をまたぐものの交点（ふつう2つ）
+      let n = 0, x1 = 0, z1 = 0, x2 = 0, z2 = 0;
+      for (let e = 0; e < 3 && n < 2; e++) {
+        const p = e === 0 ? _sa : (e === 1 ? _sb : _sc);
+        const q = e === 0 ? _sb : (e === 1 ? _sc : _sa);
+        const dp = p.y - y, dq = q.y - y;
+        if ((dp > 0 && dq > 0) || (dp < 0 && dq < 0) || dp === dq) continue;
+        const t = dp / (dp - dq);
+        if (t < 0 || t > 1) continue;
+        const x = p.x + (q.x - p.x) * t, z = p.z + (q.z - p.z) * t;
+        if (n === 0) { x1 = x; z1 = z; } else { x2 = x; z2 = z; }
+        n++;
+      }
+      if (n === 2 && (Math.abs(x1 - x2) > 1e-6 || Math.abs(z1 - z2) > 1e-6)) {
+        segs.push([x1, z1, x2, z2]);
+      }
+    }
+  }
+  return segs;
+}
+
+/* ② 線分をつないで閉じた輪にする。 */
+function stitchLoops(segs) {
+  const key = (x, z) => Math.round(x / SECTION_TOL) + ',' + Math.round(z / SECTION_TOL);
+  const ends = new Map();       // 端点 → その端点を持つ線分の番号
+  segs.forEach((s, i) => {
+    for (const k of [key(s[0], s[1]), key(s[2], s[3])]) {
+      let a = ends.get(k);
+      if (!a) ends.set(k, a = []);
+      a.push(i);
+    }
+  });
+  const used = new Array(segs.length).fill(false);
+  const loops = [];
+  for (let i = 0; i < segs.length; i++) {
+    if (used[i]) continue;
+    used[i] = true;
+    const s = segs[i];
+    const loop = [[s[0], s[1]], [s[2], s[3]]];
+    let cx = s[2], cz = s[3];
+    for (let guard = 0; guard < segs.length + 2; guard++) {
+      const list = ends.get(key(cx, cz));
+      let next = -1;
+      if (list) for (const j of list) if (!used[j]) { next = j; break; }
+      if (next < 0) break;
+      used[next] = true;
+      const t = segs[next];
+      // つながった側の反対の端へ進む
+      const sameStart = Math.hypot(t[0] - cx, t[1] - cz) <= Math.hypot(t[2] - cx, t[3] - cz);
+      cx = sameStart ? t[2] : t[0];
+      cz = sameStart ? t[3] : t[1];
+      loop.push([cx, cz]);
+      if (Math.hypot(cx - loop[0][0], cz - loop[0][1]) <= SECTION_TOL) break;   // 閉じた
+    }
+    if (loop.length < 4) continue;
+    let area2 = 0;
+    for (let k = 0, m = loop.length - 1; k < loop.length; m = k++) {
+      area2 += (loop[m][0] * loop[k][1]) - (loop[k][0] * loop[m][1]);
+    }
+    if (Math.abs(area2) / 2 < SECTION_MIN_AREA) continue;   // 数値誤差のかけらは捨てる
+    loops.push(loop);
+  }
+  return loops;
+}
+
+/* 点が輪の内側か（XZ平面での多角形内外判定）。 */
+function pointInLoop(loop, x, z) {
+  let inside = false;
+  for (let i = 0, j = loop.length - 1; i < loop.length; j = i++) {
+    const xi = loop[i][0], zi = loop[i][1], xj = loop[j][0], zj = loop[j][1];
+    if ((zi > z) !== (zj > z) && x < (xj - xi) * (z - zi) / (zj - zi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+const loopArea = (l) => {
+  let a2 = 0;
+  for (let i = 0, j = l.length - 1; i < l.length; j = i++) a2 += (l[j][0] * l[i][1]) - (l[i][0] * l[j][1]);
+  return Math.abs(a2) / 2;
+};
+
+/* ③ 外形と穴を仕分けて三角形に貼る。戻りは {mesh, rings} または null。
+     rings … [{outer, holes}]（床の有無の判定にも使う） */
+function classifyRings(loops) {
+  const sorted = loops.slice().sort((a, b) => loopArea(b) - loopArea(a));   // 大きい順＝外形が先
+  const rings = [];
+  for (const loop of sorted) {
+    const owner = rings.find((r) => pointInLoop(r.outer, loop[0][0], loop[0][1]));
+    if (owner) owner.holes.push(loop);      // 大きい輪の内側にある＝穴（中庭など）
+    else rings.push({ outer: loop, holes: [] });
+  }
+  return rings;
+}
+
+/* 外形の中に入っていて、穴には入っていないか。 */
+function pointInRings(rings, x, z) {
+  for (const r of rings) {
+    if (!pointInLoop(r.outer, x, z)) continue;
+    let inHole = false;
+    for (const h of r.holes) if (pointInLoop(h, x, z)) { inHole = true; break; }
+    if (!inHole) return true;
+  }
+  return false;
+}
+
+function buildSectionMesh(loops) {
+  if (!loops.length) return null;
+  const rings = classifyRings(loops);
+  const verts = [];
+  for (const r of rings) {
+    const contour = r.outer.map(([x, z]) => new THREE.Vector2(x, z));
+    const holes = r.holes.map((h) => h.map(([x, z]) => new THREE.Vector2(x, z)));
+    let tris = null;
+    try { tris = THREE.ShapeUtils.triangulateShape(contour, holes); } catch (e) { tris = null; }
+    if (!tris) continue;
+    const all = contour.concat(...holes);
+    for (const t of tris) {
+      for (const i of t) { const v = all[i]; if (v) verts.push(v.x, 0, v.y); }
+    }
+  }
+  if (verts.length < 9) return null;
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3));
+  geom.computeVertexNormals();
+  const slab = new THREE.Mesh(geom, floorSlabMat);
+  slab.frustumCulled = false;
+  slab.renderOrder = 994;      // 稜線より先に描く
+  slab.raycast = () => {};     // 飾りなので、どのレイキャストにも当てない
+  seeThroughEdgeGroup.add(slab);
+  return { mesh: slab, rings };
+}
+
+function disposeSlab(entry) {
+  if (!entry || !entry.mesh) return;
+  seeThroughEdgeGroup.remove(entry.mesh);
+  entry.mesh.geometry.dispose();
+}
+
+/* 仮想フロアの床を、その高さ[m]の断面として出す。null を渡すと引っ込める。 */
+let floorSlabY = null;
+function setFloorSlabHeight(worldY) {
+  if (worldY === null || !seeThrough.size) {
+    for (const e of floorSlabs.values()) if (e && e.mesh) e.mesh.visible = false;
+    floorSlabY = null;
+    return;
+  }
+  // 高さが変わったら切り直す（同じ高さのままなら作り置きを使う）
+  if (floorSlabY === null || Math.abs(worldY - floorSlabY) > 0.05) {
+    for (const [gmlId, e] of floorSlabs) { disposeSlab(e); floorSlabs.delete(gmlId); }
+    floorSlabY = worldY;
+  }
+  for (const gmlId of seeThrough) {
+    let e = floorSlabs.get(gmlId);
+    if (e === undefined) {
+      e = buildSectionMesh(stitchLoops(sliceBuildingAt(gmlId, worldY))) || null;
+      floorSlabs.set(gmlId, e);      // 作れなかったら null を覚えて二度と試さない
+    }
+    if (!e) continue;
+    e.mesh.visible = true;
+    // わずかに浮かせる。断面と壁がぴたり同じ高さになる箇所でちらつくのを防ぐ。
+    e.mesh.position.y = worldY + 0.03;
+  }
+  for (const [gmlId, e] of floorSlabs) {
+    if (e && e.mesh && !seeThrough.has(gmlId)) e.mesh.visible = false;
+  }
+}
+
+/* いま出している床が、その位置を覆っているか（覆っていなければ落ちる）。 */
+function floorCoversAt(x, z) {
+  if (floorSlabY === null) return false;
+  for (const [gmlId, e] of floorSlabs) {
+    if (!e || !seeThrough.has(gmlId)) continue;
+    if (pointInRings(e.rings, x, z)) return true;
+  }
+  return false;
+}
+
+/* 出していない高さでも、そこに床（＝断面）が有るかを調べる。
+   落ちる先の階を探すのに使う。切り直すので、続けて何度も呼ばないこと。 */
+function sectionCoversAt(worldY, x, z) {
+  for (const gmlId of seeThrough) {
+    const rings = classifyRings(stitchLoops(sliceBuildingAt(gmlId, worldY)));
+    if (pointInRings(rings, x, z)) return true;
+  }
+  return false;
+}
+
+/* その建物の属性（階数・高さ）を batchTable から拾う。floorHeightOf に渡す形。 */
+/* その建物の属性（階数・高さ）を batchTable から拾う。floorHeightOf に渡す形。 */
+function buildingAttrsOf(gmlId) {
+  for (const t of wardTiles) {
+    let found = null;
+    t.forEachLoadedModel((modelScene) => {
+      if (found) return;
+      const b = gmlIndexOf(modelScene).get(gmlId);
+      if (b === undefined) return;
+      found = {
+        storeys: btValue(modelScene.batchTable, 'bldg:storeysAboveGround', b),
+        height: btValue(modelScene.batchTable, 'bldg:measuredHeight', b),
+      };
+    });
+    if (found) return found;
+  }
+  return null;
+}
+
+/* 今そこに居る建物の、仮想フロアに必要な情報（いちばん高い棟を採る）。
+   ⚠️ 高さは【呼ばれた時点で】メッシュの姿勢を当てて測る。作った時点の値を控えて
+     おくと、姿勢がまだ入っていないタイルで ECEF 座標のまま固定されてしまう。 */
+const _wbox = new THREE.Box3();
+function getSeeThroughFloors() {
+  let best = null;
+  for (const info of seeThroughInfo.values()) {
+    let topY = -Infinity, baseY = Infinity;
+    for (const { mesh, box } of info.parts) {
+      if (!inScene(mesh)) continue;               // タイルが捨てられた／表示されていない
+      _wbox.copy(box).applyMatrix4(worldMatrixOf(mesh, _wm));
+      if (_wbox.max.y > topY) topY = _wbox.max.y;
+      if (_wbox.min.y < baseY) baseY = _wbox.min.y;
+    }
+    if (!Number.isFinite(topY)) continue;
+    if (!best || topY > best.topY) {
+      best = { topY, baseY, floorH: info.floorH, storeys: info.storeys, assumed: info.assumed };
+    }
+  }
+  return best;
+}
+
+/* 稜線を今の seeThrough 集合に合わせる。rebuild に入れた棟は作り直す。 */
+function refreshSeeThroughEdges(rebuild = null) {
+  for (const [gmlId, entry] of seeThroughEdges) {
+    if (seeThrough.has(gmlId) && !(rebuild && rebuild.has(gmlId))) continue;
+    for (const { line } of entry.parts) {
+      seeThroughEdgeGroup.remove(line);
+      line.geometry.dispose();
+    }
+    seeThroughEdges.delete(gmlId);
+    seeThroughInfo.delete(gmlId);
+    disposeSlab(floorSlabs.get(gmlId));
+    floorSlabs.delete(gmlId);
+  }
+  for (const gmlId of seeThrough) {
+    if (seeThroughEdges.has(gmlId)) continue;
+    const parts = buildingEdgeParts(gmlId);
+    if (!parts.length) continue;
+    seeThroughEdges.set(gmlId, { parts });
+    const fh = floorHeightOf(buildingAttrsOf(gmlId));
+    seeThroughInfo.set(gmlId, {
+      parts, floorH: fh.h, storeys: fh.storeys, assumed: fh.assumed,
+    });
+  }
+}
+
+/* 屋上に立っているあいだなど、透かすのをやめて元の見え方に戻す。
+   （建物の外に立っているので中を透かす意味がない、というときに使う） */
+function setSeeThroughOpaque(on) {
+  const v = !!on;
+  if (v === seeThroughOpaque) return;
+  seeThroughOpaque = v;
+  if (seeThrough.size) applyEditsEverywhere([...seeThrough], { geometryChanged: false });
+}
+
+/* 透かす建物を入れ替える。渡した集合が「今そこに居る建物」のすべて。
+   変化がなければ何もしない（毎フレーム同じ集合で呼んでよい）。 */
+function setSeeThroughBuildings(ids) {
+  // Map（gml_id → 当たったメッシュ）でも Set でも受ける
+  const next = new Map();
+  if (ids instanceof Map) for (const [k, v] of ids) next.set(k, v);
+  else if (ids) for (const k of ids) next.set(k, null);
+  const changed = [];
+  for (const id of next.keys()) if (!seeThrough.has(id)) changed.push(id);
+  for (const id of seeThrough) if (!next.has(id)) changed.push(id);
+  // 当たったメッシュは毎回入れ替える（タイルが差し替わっても追随する）
+  seeThroughMeshes.clear();
+  for (const [k, v] of next) seeThroughMeshes.set(k, v);
+  if (!changed.length) return false;
+  seeThrough.clear();
+  for (const id of next.keys()) seeThrough.add(id);
+  // 形は変わらないので、柱の作り直しと断面の再計算はしない
+  applyEditsEverywhere(changed, { geometryChanged: false });
+  refreshSeeThroughEdges();
+  return true;
+}
+
+/* レイキャストの当たり(intersection)から、その三角形が属する建物の gml_id を引く。
+   建物メッシュは棟ごとに分かれておらず、_batchid 属性でしか区別できない。 */
+function gmlIdFromHit(hit) {
+  const g = hit && hit.object && hit.object.geometry;
+  const bid = g && g.attributes._batchid;
+  if (!bid || !hit.face) return null;
+  // 三角形の3頂点は同じ建物に属するので、代表して1つ目を見ればよい
+  return gmlIdOf(hit.object.__clipRoot, bid.getX(hit.face.a));
+}
+
 export {
+  setSeeThroughBuildings, setSeeThroughOpaque, gmlIdFromHit,
+  getSeeThroughFloors, syncSeeThroughEdges,
+  setFloorSlabHeight, floorCoversAt, sectionCoversAt,
+  // 稜線は px 指定の太さなので、画面サイズが変わったら resolution を伝えること（main.js）
+  seeThroughEdgeMat,
   editState, edits, setEditEnabled, resetSelected, resetAll,
   registerSelectionGroup, clearSelectionGroup, selectionGroupSize, setSetbackBusy,
   setStep, setSetbackStepHooks, clearSelection, columns, setColumnHook, setPicking,

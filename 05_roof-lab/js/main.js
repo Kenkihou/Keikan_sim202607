@@ -18,8 +18,13 @@ import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import {
   SHAPES, EDGE_KEYS, buildRoof, outlineEdges, findValleyProblem, shiftAxisOf,
-  maxRidgeY, edgeInfo, k3,
+  maxRidgeY, edgeInfo, k3, ridgeAxisOf,
 } from './roofcalc.js';
+import {
+  initUnderlay, refreshUnderlay, underlaySnap,
+  askPlanFile,
+  gizmoPick, planMoveBase, planMoveY, planMoveTo, otherFloorCorners,
+} from './underlay.js';
 
 const el = (id) => document.getElementById(id);
 
@@ -61,7 +66,77 @@ const state = {
   //   ⚠️ 枝分かれとは同時に使わない（外形が矩形1枚で表せなくなるため）。
   extras: [],
   picked: null,      // いま触っている軒 { ri, key }。表示のためだけに持つ
+  // ★ 屋根の切り欠き。上から見て長方形の穴。無ければ null。
+  //   穴に面するところは【鉛直】に下りて、底は屋上の高さ（軒高）。
+  //   平場のように周りが勾配なりに下るのとは別物。
+  notch: null,
+  // ★ DXF の読込用レイヤから起こした壁の模型。無ければ null。
+  //   { walls:[{x0,z0,x1,z1,t,ext}], opens:[{...,lo,hi}], stair, foot }
+  walls: null,
 };
+
+// -----------------------------------------------------------------------------
+// 箱（パーツ）
+// -----------------------------------------------------------------------------
+//   ★ 高さの違う塊ごとに、いままでのモデル【まるごと1式】を持つ。
+//     ひとつの箱の中では今までどおり、外形の合併に対して屋根が1枚かかる。
+//     ＝「同じ高さで隣り合う部分はまとめて1つの屋根」が自然に出る。
+//   ⚠️ state.base などの参照はコード中に100か所以上ある。書き換えると
+//     取りこぼしが必ず出るので、【state 側を今の箱への覗き窓にする】。
+//     こうすれば既存のコードは1行も変えずに、指す先だけが箱ごとに切り替わる。
+const PART_FIELDS = ['shapeId', 'eaveY', 'gables', 'shifts', 'flatT', 'parapet',
+  'outs', 'branches', 'base', 'extras', 'picked', 'baseY', 'roofed', 'notch',
+  'walls', 'hole'];
+
+// 標準の階高[m]。読み込んだ階は、まずこの高さで壁だけ立ち上げる。
+const STOREY = 3.0;
+
+/* 箱＝ひとつの階（あるいは高さの違う塊）。
+     baseY … 床の高さ。1階は 0、上階は下の階の天端。
+     roofed … 屋根をかけるか。下階は壁だけ、最上階だけ屋根をかける。 */
+function makePart(baseY = 0, h = STOREY) {
+  return {
+    shapeId: 'rect', eaveY: baseY + h, baseY, roofed: false,
+    gables: {}, shifts: {}, flatT: 1, parapet: false,
+    outs: {}, branches: new Set(), base: null, extras: [], picked: null, notch: null,
+    walls: null, hole: null,
+    layout: { rects: [], gables: [], meta: [] }, result: null, eaves: [], top: 0,
+  };
+}
+
+const parts = [makePart()];
+let active = 0;
+
+for (const f of PART_FIELDS) {
+  Object.defineProperty(state, f, {
+    get: () => parts[active][f],
+    set: (v) => { parts[active][f] = v; },
+    enumerable: true, configurable: true,
+  });
+}
+
+/* その3Dの部品がどの箱のものかを覚えさせる。掴んだときに切り替えるため。 */
+function tagPart(i, marks) {
+  for (const [g, n] of marks) {
+    for (let k = n; k < g.children.length; k++) g.children[k].userData.part = i;
+  }
+}
+
+/* 掴んだ物から、その箱を今の箱にする。 */
+function focusPart(obj) {
+  const i = obj && obj.userData ? obj.userData.part : undefined;
+  if (i === undefined || i === active || !parts[i]) return;
+  active = i;
+  layout = parts[i].layout;
+  lastResult = parts[i].result;
+  lastEaves = parts[i].eaves;
+  lastTop = parts[i].top;
+  // ★ 高さの印と読み取りを、切り替えた箱のものに描き直す。
+  //   ⚠️ ここで作り直しても差し支えない。この直後に当たり判定をやり直すので、
+  //     掴む相手は新しく作られた方になる。
+  rebuild();
+  syncUI();
+}
 
 /* 形状を切り替える。切妻の指定は形が変わると意味を失うので捨てる。 */
 function setShape(id) {
@@ -77,12 +152,41 @@ function setShape(id) {
   syncUI();
 }
 
-/* 棟の端で枝分かれさせる／やめる。外形は変えない。 */
+/* 棟の端で枝分かれさせる／やめる。外形は変えない。
+   ⚠️ 分けると矩形が増えて番号が振り直され、切妻の指定はいったん捨てられる。
+     そのままだと【反対側の端に付けていた切妻が寄棟に戻る】。押した側とは
+     関係のない指定なので、辺の名前で控えて付け直す。
+     （球のクリックからも印からも、必ずここを通る） */
 function toggleBranch(edge) {
   if (!SHAPES[state.shapeId].branchable) return;
+  const mainOf = () => layout.meta.findIndex(
+    (x) => x && (x.role === 'center' || x.role === 'single'));
+  const keep = {};
+  const i0 = mainOf();
+  if (i0 >= 0) {
+    for (const key of EDGE_KEYS) {
+      if (key === edge) continue;                  // そこは棟の取り合いが変わる
+      const g = gableOf(i0, key);
+      if (g > 1e-3) keep[key] = g;
+    }
+  }
   if (state.branches.has(edge)) state.branches.delete(edge);
-  else state.branches.add(edge);
+  else {
+    // ⚠️ 東西と南北の枝は混ぜられない（棟が2方向に走ることになる）。
+    //   別の向きの枝が残っていたら捨ててから足す。
+    const ax = (e) => ((e === 'w' || e === 'e') ? 'x' : 'z');
+    for (const b of [...state.branches]) if (ax(b) !== ax(edge)) state.branches.delete(b);
+    state.branches.add(edge);
+  }
   applyLayout();
+  const i1 = mainOf();
+  if (i1 >= 0) {
+    for (const key of Object.keys(keep)) {
+      // 並べ直しが自分で決めた指定は触らない
+      if (gableOf(i1, key) > 1e-3) continue;
+      state.gables[gableKey(i1, key)] = keep[key];
+    }
+  }
   rebuild();
   syncUI();
 }
@@ -94,8 +198,16 @@ let layout = { rects: [], gables: {}, meta: [] };
    ★ 枝は「外形の短辺の半分」を幅に取る。中央はその半分だけ枝に食い込ませる。
      ⚠️ 食い込ませないと、枝と中央が接するだけで谷ができない。重ねて初めて
        「高い方を採った結果」として谷が現れる。 */
-function applyLayout() {
+function applyLayoutRawImpl() {
   const def = SHAPES[state.shapeId];
+  // ★ まだ何も作っていない箱は空のまま。
+  //   ⚠️ ここで返さないと、外形が無いときに形の定義（既定の 10×6m）へ
+  //     落ちてしまい、「何も無い状態から始める」ができない。
+  if (def.branchable && !state.base) {
+    layout = { rects: [], gables: {}, meta: [] };
+    state.gables = {}; state.picked = null;
+    return;
+  }
   // 張り出しの矩形につける目印。ei は state.extras の何番目かを指す。
   // ⚠️ 並びから ri-1 で逆算していると、枝分かれで矩形が増えたときに壊れる。
   const extraMeta = () => state.extras.map((_, ei) => ({ role: 'extra', ei }));
@@ -123,30 +235,47 @@ function applyLayout() {
     //   枝の幅を軒の出のぶんだけ広げておく必要がある。
     //   ⚠️ ここを短辺そのままにしていると、軒の出を付けた途端に枝の棟だけが
     //     低くなり、中央の妻と高さが合わなくなる。
-    const armW = Math.min(short + state.eaveOut, (r.x1 - r.x0) * 0.98);
+    // ★ 枝を出す向きは【棟の端がどちらの辺にあるか】で決まる。
+    //   ⚠️ ここを東西（w・e）だけで書いていたため、奥行きの方が長い建物
+    //     （棟が南北に走る）では、端をクリックしても何も起きなかった。
+    //     棟の端は s・n にあるのに、その2つを見ていなかった。
+    const alongX = state.branches.has('w') || state.branches.has('e');
+    const keys = alongX ? ['w', 'e'] : ['s', 'n'];
+    const span = alongX ? (r.x1 - r.x0) : (r.z1 - r.z0);
+    const armW = Math.min(short + state.eaveOut, span * 0.98);
     const rects = [], gables = {}, meta = [];
-    let cx0 = r.x0, cx1 = r.x1;
+    let c0 = alongX ? r.x0 : r.z0;
+    let c1 = alongX ? r.x1 : r.z1;
     const addArm = (edge) => {
       const i = rects.length;
-      const isW = edge === 'w';
-      rects.push({
-        x0: isW ? r.x0 : r.x1 - armW, z0: r.z0,
-        x1: isW ? r.x0 + armW : r.x1, z1: r.z1,
-      });
-      // 南北を切妻にすると、棟は南北へ走る（元の棟と直交する）
-      gables[`${i}:s`] = 1; gables[`${i}:n`] = 1;
+      const lo = (edge === 'w' || edge === 's');       // 座標の小さい側か
+      if (alongX) {
+        rects.push({
+          x0: lo ? r.x0 : r.x1 - armW, z0: r.z0,
+          x1: lo ? r.x0 + armW : r.x1, z1: r.z1,
+        });
+        // 南北を切妻にすると、枝の棟は南北へ走る（元の棟と直交する）
+        gables[`${i}:s`] = 1; gables[`${i}:n`] = 1;
+      } else {
+        rects.push({
+          x0: r.x0, z0: lo ? r.z0 : r.z1 - armW,
+          x1: r.x1, z1: lo ? r.z0 + armW : r.z1,
+        });
+        gables[`${i}:w`] = 1; gables[`${i}:e`] = 1;
+      }
       meta.push({ role: 'arm', edge });
       // ★ 中央の妻は【枝の棟の真下】で切る。枝の棟は外側の軒から armW/2 ではなく
       //   短辺の半分だけ内側に来る（内側には軒が出ないため）。
-      if (isW) cx0 = r.x0 + short / 2; else cx1 = r.x1 - short / 2;
+      if (lo) c0 = (alongX ? r.x0 : r.z0) + short / 2;
+      else c1 = (alongX ? r.x1 : r.z1) - short / 2;
     };
-    if (state.branches.has('w')) addArm('w');
-    if (state.branches.has('e')) addArm('e');
+    for (const k of keys) if (state.branches.has(k)) addArm(k);
     const ci = rects.length;
-    rects.push({ x0: cx0, z0: r.z0, x1: cx1, z1: r.z1 });
+    rects.push(alongX
+      ? { x0: c0, z0: r.z0, x1: c1, z1: r.z1 }
+      : { x0: r.x0, z0: c0, x1: r.x1, z1: c1 });
     // 枝が付いた側は、中央の屋根を切妻にして枝と突き合わせる
-    if (state.branches.has('w')) gables[`${ci}:w`] = 1;
-    if (state.branches.has('e')) gables[`${ci}:e`] = 1;
+    for (const k of keys) if (state.branches.has(k)) gables[`${ci}:${k}`] = 1;
     meta.push({ role: 'center' });
     // ★ 枝分かれ中でも張り出しは持ち続ける。
     //   ⚠️ ここで捨てていたため、棟を合成した途端に押し出した部分が消えていた。
@@ -165,6 +294,7 @@ function applyLayout() {
    ⚠️ 形ごとに大きさが違うので、決め打ちの距離だと切れたり小さすぎたりする。 */
 function fitCamera() {
   let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;
+  if (!rectsOf().length) return;
   for (const r of rectsOf()) {
     x0 = Math.min(x0, r.x0); z0 = Math.min(z0, r.z0);
     x1 = Math.max(x1, r.x1); z1 = Math.max(z1, r.z1);
@@ -179,6 +309,13 @@ function fitCamera() {
   camera.position.set(cx + d * 0.70, midY + d * 0.55, cz + d * 0.70);
   camera.updateProjectionMatrix();
   controls.update();
+}
+
+// ⚠️ applyLayout は layout を書き換える。書き換えたら必ず今の箱にも控える。
+//   控え忘れると、別の箱を触った瞬間に古い並びへ戻ってしまう。
+function applyLayout() {
+  applyLayoutRawImpl();
+  parts[active].layout = layout;
 }
 
 const rectsOf = () => layout.rects;
@@ -271,7 +408,9 @@ function wallTopY() {
       lo = Math.min(lo, state.eaveY - state.slope * (state.eaveOut - out));
     }
   });
-  return lo - ROOF_THICK;
+  // ⚠️ 屋根をかけない階は、載る屋根が無いので厚みを引かない。引いてしまうと
+  //   階と階の間に 0.3m の隙間が空く。
+  return state.roofed ? lo - ROOF_THICK : state.eaveY;
 }
 
 /* 矩形 r の辺 key のうち、【建物の外に面している】区間を返す。
@@ -403,8 +542,12 @@ function computeRoof() {
   const top = maxRidgeY(args);
   const hsMax = state.slope > 1e-6 ? (top - eaveBase) / state.slope : 0;
   const dMin = state.eaveOut;
+  // ★ 平場の高さは【壁の天端】。屋上の仕上げ面は考えない。
+  //   ⚠️ 屋根の仕上げ面（軒高）で張ると、切り欠きの底より 300mm 高くなって
+  //     揃わない。屋上として使う面はどちらも壁の天端に置く。
+  const deckY = state.eaveY - ROOF_THICK;
   const flat = (state.flatT >= 1 - 1e-9 || hsMax - dMin < 1e-3) ? null
-    : { y: state.eaveY, d: dMin + state.flatT * (hsMax - dMin) };
+    : { y: deckY, d: dMin + state.flatT * (hsMax - dMin) };
   if (state.parapet) {
     // ★ 完全な陸屋根。軒の出は無く、壁の内側いっぱいに水平な屋根が張る。
     //   ⚠️ 軒の基準を下げないこと。軒の出が無いので、下げると屋根が軒高より
@@ -413,12 +556,36 @@ function computeRoof() {
     const result0 = buildRoof({
       rects: flatE, slope: state.slope, eaveY: state.eaveY,
       gables: state.gables, shifts: state.shifts,
-      flat: { y: state.eaveY, d: 0 },
+      flat: { y: state.eaveY - ROOF_THICK, d: 0 },
     });
     return { rects, eaves: flatE, result: result0, top };
   }
   const result = buildRoof({ ...args, flat });
   return { rects, eaves, result, top };
+}
+
+// -----------------------------------------------------------------------------
+// 選択（屋根の操作を出す／しまう）
+// -----------------------------------------------------------------------------
+//   ★ 球・青い箱・回転マーク・軒先の黄色い帯・棟と谷の色は、すべて
+//     【いま指定している屋根の印】。触っていないときは出さない。
+//     出しっぱなしにすると、できあがった建物を眺めることができない。
+let selPart = -1;          // つまみを出している箱。-1 なら何も選んでいない
+
+/* クリックした先を見て、選択を切り替える。
+   ⚠️ 視点を回したときは変えないこと。呼ぶ側で「ほとんど動いていない」ことを見る。 */
+function updateSelection(ev) {
+  setRay(ev);
+  const hit = _rc.intersectObjects(
+    [...roofGroup.children, ...wallGroup.children].filter((c) => c.isMesh), false)[0];
+  const i = hit ? hit.object.userData.part : undefined;
+  const next = (i === undefined) ? -1 : i;
+  if (next === selPart) return;
+  selPart = next;
+  if (next >= 0 && next !== active) { active = next; layout = parts[next].layout; }
+  if (next < 0) { clearGroup(bandGroup); hoverWall = null; hoverEave = null; }
+  rebuild();
+  syncUI();
 }
 
 /* 屋根を描き直す。pre に computeRoof() の結果を渡せば計算をやり直さない。 */
@@ -428,17 +595,334 @@ function rebuild(pre) {
   clearGroup(lineGroup);
   clearGroup(handleGroup);
 
-  const { rects, eaves, result, top } = pre || computeRoof();
-  lastResult = result;
-  lastEaves = eaves;
-  lastTop = top;
+  const keep = active;
+  for (let i = 0; i < parts.length; i++) {
+    // 箱を切り替える。以降の計算・作図は、この箱のものだけを見る。
+    active = i;
+    layout = parts[i].layout;
+    if (!layout.rects.length) continue;
+    const marks = [[roofGroup, roofGroup.children.length],
+      [wallGroup, wallGroup.children.length],
+      [lineGroup, lineGroup.children.length],
+      [handleGroup, handleGroup.children.length]];
+    const { rects, eaves, result, top } = (pre && i === keep) ? pre : computeRoof();
+    lastResult = result; lastEaves = eaves; lastTop = top;
+    parts[i].result = result; parts[i].eaves = eaves; parts[i].top = top;
 
-  buildRoofMesh(result);
-  buildWalls(rects, result);
-  buildEdgeLines(result);
-  buildRidgeHandles(eaves, result);
-  buildFlatHandle(rects, eaves, result);
-  syncReadout(result);   // ⚠️ 稜線を作ったあとで呼ぶこと（谷の長さがここで決まる）
+    // ★ 屋根をかけるのは、そう指定した階だけ。下階は壁だけを立てる。
+    if (state.roofed) buildRoofMesh(result);
+    buildWallModel();
+    buildWalls(rects, result, !!state.walls);
+    buildHole();
+    const sel = (i === selPart);
+    if (state.roofed) {
+      buildEdgeLines(result, sel);
+      if (sel) {
+        buildRidgeHandles(eaves, result);
+        buildRotMarks(eaves, result);
+        buildFlatHandle(rects, eaves, result);
+        buildNotchHandles(rects);
+      }
+    } else {
+      buildFloorOutline(rects);
+    }
+    // ⚠️ 高さの印は【選んでいる箱】にだけ出す。全部の箱に出すと、
+    //   どれを掴んでいるのか分からなくなる。
+    if (sel) buildEaveHandle(rects, eaves);
+    tagPart(i, marks);
+  }
+  active = keep;
+  layout = parts[keep].layout;
+  lastResult = parts[keep].result;
+  lastEaves = parts[keep].eaves;
+  lastTop = parts[keep].top;
+  if (lastResult) syncReadout(lastResult);   // ⚠️ 稜線を作ったあとで呼ぶこと
+  refreshUnderlay();
+}
+
+/* 箱を足す。高さは今の箱と同じにしておき、あとから青い箱で変えてもらう。
+   ⚠️ 今の箱に重ねて置かない。重なったまま生まれると、掴もうとしても
+     手前の箱にばかり当たって触れない。 */
+/* 矩形 r を、隣り合う土台 b へ食い込ませる。
+   ★ 食い込む深さは【r 自身の幅】。こうすると谷が水平面上で 45 度になり、
+     05 の押し出しで作った形とまったく同じ屋根になる。 */
+function biteInto(r, b) {
+  const t = 1e-4, o = { ...r };
+  if (Math.abs(r.z0 - b.z1) < t) o.z0 = r.z0 - Math.min(r.x1 - r.x0, b.z1 - b.z0);
+  else if (Math.abs(r.z1 - b.z0) < t) o.z1 = r.z1 + Math.min(r.x1 - r.x0, b.z1 - b.z0);
+  else if (Math.abs(r.x0 - b.x1) < t) o.x0 = r.x0 - Math.min(r.z1 - r.z0, b.x1 - b.x0);
+  else if (Math.abs(r.x1 - b.x0) < t) o.x1 = r.x1 + Math.min(r.z1 - r.z0, b.x1 - b.x0);
+  return o;
+}
+
+/* この階の外形を、まるごと水平に動かす。
+   ★ 角が他の階の角に近づいたら吸い付く。角が合えば通りも合う。
+   ⚠️ 動かすのは【控えた元の位置】からの差。いまの位置から足していくと、
+     吸い付いたぶんが次のフレームで二重に効いてじりじり流れる。 */
+function moveFloor(dx, dz) {
+  const b0 = eaveHDrag.base0, ex0 = eaveHDrag.extras0;
+  let mx = dx, mz = dz;
+  // 吸い付き先（他の階の下絵の角）
+  const targets = otherFloorCorners();
+  if (targets.length) {
+    const corners = [];
+    for (const r of [b0, ...ex0]) {
+      corners.push({ x: r.x0, z: r.z0 }, { x: r.x1, z: r.z0 },
+        { x: r.x1, z: r.z1 }, { x: r.x0, z: r.z1 });
+    }
+    let bd = 0.35, best = null;
+    for (const c of corners) {
+      for (const t of targets) {
+        const d = Math.hypot(c.x + dx - t.x, c.z + dz - t.z);
+        if (d < bd) { bd = d; best = { x: t.x - c.x, z: t.z - c.z }; }
+      }
+    }
+    if (best) { mx = best.x; mz = best.z; }
+  }
+  const shift = (r) => ({ x0: r.x0 + mx, z0: r.z0 + mz, x1: r.x1 + mx, z1: r.z1 + mz });
+  state.base = shift(b0);
+  state.extras = ex0.map(shift);
+  applyLayout(); rebuild(); syncUI();
+  const c = footprintCentroid(rectsOf());
+  if (c) showTagAt(`移動 ${mx.toFixed(2)} / ${mz.toFixed(2)} m`, c.x, state.eaveY + 0.3, c.z);
+}
+
+// -----------------------------------------------------------------------------
+// 作図（長方形を描く／DXF から平面を起こす）
+// -----------------------------------------------------------------------------
+//   ★ 「モード」ではなく【平面のつくり方が2通りある】だけ。どちらで作っても
+//     できるものは同じ（厚さ 100mm の板）で、以後の操作は完全に共通。
+//   ⚠️ 読み込んだものを特別扱いしないこと。特別扱いすると「DXF から作った形は
+//     押し引きできない」という行き止まりが生まれる。
+const SLAB = 0.1;              // 描いた直後の板の厚み[m]
+
+let drawTool = null;           // 'rect' のあいだだけ、地面に長方形を描く
+let rectDraw = null;           // 描いている最中の長方形
+
+function setTool(t) {
+  drawTool = (drawTool === t) ? null : t;
+  rectDraw = null;
+  controls.enabled = !drawTool;
+  renderer.domElement.style.cursor = drawTool ? 'crosshair' : '';
+  el('toolRect').classList.toggle('on', drawTool === 'rect');
+  el('toolNote').innerHTML = drawTool === 'rect'
+    ? '地面を<b>ドラッグ</b>して長方形を描いてください。'
+    : '描いた形は<b>厚さ 100mm の板</b>になります。上面を持ち上げてください。';
+  clearGroup(bandGroup);
+}
+
+/* 地面との交点。作図はいつも地面（GL）の上で行う。 */
+const _gp = new THREE.Vector3();
+const _gpl = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+function groundPoint(ev) {
+  setRay(ev);
+  return _rc.ray.intersectPlane(_gpl, _gp) ? _gp : null;
+}
+
+/* 作図中の吸い付き。下絵の線が近ければそこへ、無ければ 0.5m 目盛りへ。 */
+function drawSnap(axis, v) {
+  const s = underlaySnap(axis, v);
+  return (s === null || s === undefined) ? snapV(v) : s;
+}
+
+// 上階の床板の厚み[m]。天井裏の懐はいったん見ない。
+const FLOOR_T = 0.1;
+
+/* 直前に読み込んだ DXF の階（床板＋壁）。まだ高さを与えていなければ捨てる。
+   ⚠️ 捨てる条件は【壁の階の高さが板のままか】。高さを与えたあとに捨てると、
+     2階を読み込んだ瞬間に1階が消える。 */
+let lastDxf = null;
+function dropUntouchedDxf() {
+  const rec = lastDxf;
+  lastDxf = null;
+  if (!rec) return;
+  const [a, b] = rec;
+  if (!parts.includes(b)) return;
+  if (b.eaveY - b.baseY > SLAB + 1e-6) return;      // もう高さを与えている
+  for (const p of [a, b]) {
+    const i = parts.indexOf(p);
+    if (i >= 0) parts.splice(i, 1);
+  }
+  if (!parts.length) parts.push(makePart());
+  active = Math.min(active, parts.length - 1);
+  layout = parts[active].layout;
+  selPart = -1;
+}
+
+/* 1階の床高さ[m]。パネルの数値欄から読む。 */
+function floorH() {
+  const v = Number((el('floorH') || {}).value);
+  return Number.isFinite(v) ? Math.max(0, v) / 1000 : 0;
+}
+
+const normRect = (d) => ({
+  x0: Math.min(d.x0, d.x1), x1: Math.max(d.x0, d.x1),
+  z0: Math.min(d.z0, d.z1), z1: Math.max(d.z0, d.z1),
+});
+
+/* 描いている最中の長方形を、地面に青い線で出す。 */
+function drawRectBand(r) {
+  clearGroup(bandGroup);
+  const y = 0.02;
+  const c = [[r.x0, r.z0], [r.x1, r.z0], [r.x1, r.z1], [r.x0, r.z1]];
+  const pos = [];
+  for (let i = 0; i < 4; i++) {
+    const a = c[i], b = c[(i + 1) % 4];
+    pos.push(a[0], y, a[1], b[0], y, b[1]);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  const l = new THREE.LineSegments(g, bandEdgeMat);
+  l.renderOrder = 30;
+  bandGroup.add(l);
+}
+
+/* この平面の真下にある板の天端。無ければ地面。
+   ★ 2階の平面図を読んでも、1階の上に載る。高さを聞かなくて済む。
+   ⚠️ 接しているだけの隣は「下」ではない。重なりを 50mm 要求する。 */
+function baseYUnder(rects) {
+  let y = 0;
+  for (const p of parts) {
+    if (!p.base) continue;
+    const mine = [p.base, ...p.extras];
+    const over = rects.some((r) => mine.some((q) => (
+      Math.min(r.x1, q.x1) - Math.max(r.x0, q.x0) > 0.05
+      && Math.min(r.z1, q.z1) - Math.max(r.z0, q.z0) > 0.05)));
+    if (over) y = Math.max(y, p.eaveY);
+  }
+  return y;
+}
+
+/* 矩形の並びを、ひとつの板として置く。
+   ★ 長方形を描いても DXF から起こしても、行き着く先はここ1か所。
+   ⚠️ 2枚目以降は土台へ【食い込ませて】から足す。接するだけでは谷ができない。 */
+function addSlab(rects) {
+  if (!rects || !rects.length) return;
+  const baseY = baseYUnder(rects);
+  // まだ何も描いていないときは、最初の空の箱をそのまま使う
+  const reuse = parts.length === 1 && !parts[0].base;
+  const p = reuse ? parts[0] : makePart(baseY, SLAB);
+  p.baseY = baseY; p.eaveY = baseY + SLAB;
+  const area = (r) => (r.x1 - r.x0) * (r.z1 - r.z0);
+  const sorted = rects.slice().sort((a, b) => area(b) - area(a));
+  p.shapeId = 'rect';
+  p.base = { ...sorted[0] };
+  p.extras = sorted.slice(1).map((r) => biteInto(r, p.base));
+  p.branches = new Set(); p.outs = {}; p.gables = {}; p.shifts = {};
+  p.roofed = false; p.picked = null; p.walls = null; p.notch = null; p.hole = null;
+  if (!reuse) parts.push(p);
+  active = parts.indexOf(p);
+  layout = p.layout;
+  // ★ 描いた直後は選んでおく。でないと、上面を持ち上げるつまみが出ない。
+  selPart = active;
+  applyLayout(); rebuild(); syncUI();
+  if (reuse) fitCamera();
+}
+
+/* 天端が同じ高さでつながっている板をまとめて、1枚の屋根をかける。
+   ★ 「どれとどれをまとめますか」を聞かない。天端が揃っていて触れているものは、
+     建物として同じ屋根の下にある。押した板から数珠つなぎに広げる。
+   ⚠️ 床（baseY）も見ること。同じ天端で床だけ違う板を混ぜると、壁が宙に浮く。 */
+function roofHere() {
+  const me = parts[active];
+  if (!me.base) return;
+  if (me.roofed) { me.roofed = false; rebuild(); syncUI(); return; }
+  const t = 1e-3;
+  const rs = (p) => [p.base, ...p.extras];
+  const touches = (a, b) => rs(a).some((r) => rs(b).some((q) => (
+    Math.min(r.x1, q.x1) - Math.max(r.x0, q.x0) > -0.05
+    && Math.min(r.z1, q.z1) - Math.max(r.z0, q.z0) > -0.05)));
+  const grp = [me];
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const p of parts) {
+      if (grp.includes(p) || !p.base) continue;
+      if (Math.abs(p.eaveY - me.eaveY) > t || Math.abs(p.baseY - me.baseY) > t) continue;
+      if (grp.some((q) => touches(q, p))) { grp.push(p); grew = true; }
+    }
+  }
+  const all = [];
+  for (const p of grp) for (const r of rs(p)) all.push({ ...r });
+  const area = (r) => (r.x1 - r.x0) * (r.z1 - r.z0);
+  all.sort((a, b) => area(b) - area(a));
+  me.base = all[0];
+  me.extras = all.slice(1).map((r) => biteInto(r, all[0]));
+  me.gables = {}; me.outs = {}; me.branches = new Set();
+  me.roofed = true;
+  for (const p of grp) if (p !== me) parts.splice(parts.indexOf(p), 1);
+  active = parts.indexOf(me);
+  layout = me.layout;
+  selPart = active;
+  applyLayout(); rebuild(); syncUI();
+}
+
+/* 下絵から作った板のうち、まだ高さを与えていないものを捨てる。
+   ★ かたまりを選び直したり、囲い直したり、ボタンを押し直したりするのは
+     【まだ外形を選んでいる最中】であって、階を足したいわけではない。
+   ⚠️ 捨てないと、作りかけの板の【上に】次の板が載る（真下にあるので
+     baseYUnder が拾ってしまう）。実際に 0.1m 浮いた2枚目ができていた。 */
+let planSlab = null;
+function dropUntouchedPlanSlab() {
+  const i = parts.indexOf(planSlab);
+  planSlab = null;
+  if (i < 0) return;
+  const p = parts[i];
+  if (p.roofed || p.eaveY - p.baseY > SLAB + 1e-6) return;   // もう高さを与えた
+  parts.splice(i, 1);
+  if (!parts.length) parts.push(makePart());
+  active = Math.min(active, parts.length - 1);
+  layout = parts[active].layout;
+  selPart = -1;
+}
+
+/* いま青いつまみが出ている板を消す。
+   ★ 消す相手を選ばせない。つまみが出ているものが「いま触っているもの」で、
+     それ以外を消したいことはまず無い。
+   ⚠️ 全部消えても箱そのものは1つ残す。空の箱が無いと、次に描いたときの
+     置き場が無くなる。 */
+function deleteActive() {
+  const p = parts[active];
+  if (!p || !p.base) return;
+  if (planSlab === p) planSlab = null;
+  parts.splice(active, 1);
+  if (!parts.length) parts.push(makePart());
+  active = Math.min(active, parts.length - 1);
+  layout = parts[active].layout;
+  // ⚠️ 番号がずれるので選択は外す。持ち越すと別の箱につまみが出る。
+  selPart = -1;
+  applyLayout(); rebuild(); syncUI();
+}
+
+window.addEventListener('keydown', (ev) => {
+  if (ev.key !== 'Delete' && ev.key !== 'Backspace') return;
+  // ⚠️ 文字を打っている最中は消さない。数値欄の後退キーが板を消してしまう。
+  const t = ev.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+  ev.preventDefault();
+  deleteActive();
+});
+
+function addPart() {
+  const b = state.base || { x0: -2, z0: -2, x1: 2, z1: 2 };
+  const p = makePart(state.baseY, state.eaveY - state.baseY);
+  p.roofed = state.roofed;
+  const w = b.x1 - b.x0;
+  p.base = { x0: b.x1 + 1, z0: b.z0, x1: b.x1 + 1 + Math.max(w, 2), z1: b.z1 };
+  parts.push(p);
+  active = parts.length - 1;
+  applyLayout();
+  rebuild();
+  syncUI();
+}
+
+/* 今の箱を消す。最後の1つは消さない（何も無くなると触る手掛かりが消える）。 */
+function removePart() {
+  if (parts.length <= 1) return;
+  parts.splice(active, 1);
+  active = Math.min(active, parts.length - 1);
+  layout = parts[active].layout;
+  rebuild();
+  syncUI();
 }
 
 /* 屋根の内側にできる【段差】の辺。
@@ -508,6 +992,195 @@ function cornerVerticals(edges) {
   return pos;
 }
 
+// -----------------------------------------------------------------------------
+// 屋根の切り欠き
+// -----------------------------------------------------------------------------
+//   ★ 上から見て長方形の穴を開ける。穴に面するところは屋根も壁も【鉛直】に
+//     下りて、底は屋上の高さ（＝軒高）。中庭・ドライエリアのような形。
+//   ⚠️ 平場（パラペット修景）とは別物。あちらは周りが勾配なりに下って平らな
+//     面になるが、こちらは切り立った穴で、底が抜けている。
+// 切り欠きの一辺の最小値[m]。これより小さくはできない。
+//   ⚠️ 小さくしきって消す、はもう無い。消すのは右のパネルのボタン。
+const NOTCH_MIN = 2.0;
+const NSNAP = 0.25;
+const nsnap = (v) => Math.round(v / NSNAP) * NSNAP;
+const hAtP = (pl, p) => pl.a * p.x + pl.b * p.z + pl.c;
+
+/* 多角形を、軸に平行な直線で切る。残すのは片側だけ。 */
+function clipHalf(poly, axis, c, keepLess) {
+  const val = (p) => (axis === 'x' ? p.x : p.z);
+  const inside = (p) => (keepLess ? val(p) <= c + 1e-9 : val(p) >= c - 1e-9);
+  const out = [];
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length];
+    const ia = inside(a), ib = inside(b);
+    if (ia) out.push(a);
+    if (ia !== ib) {
+      const t = (c - val(a)) / (val(b) - val(a));
+      out.push({ x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t });
+    }
+  }
+  return out;
+}
+
+/* 多角形から長方形を引いた残り。凸な破片の配列で返す。
+   ⚠️ 引き算の結果は凹むので、そのままでは扇形に三角形分割できない。外側を
+     【左・右・下・上】の4つに切り分ければ、どれも凸のまま扱える。 */
+function subtractRect(poly, r) {
+  const out = [];
+  const push = (p) => { if (p.length >= 3) out.push(p); };
+  push(clipHalf(poly, 'x', r.x0, true));
+  push(clipHalf(poly, 'x', r.x1, false));
+  const mid = clipHalf(clipHalf(poly, 'x', r.x0, false), 'x', r.x1, true);
+  if (mid.length >= 3) {
+    push(clipHalf(mid, 'z', r.z0, true));
+    push(clipHalf(mid, 'z', r.z1, false));
+  }
+  return out;
+}
+
+/* 線分の並びから、切り欠きの中を通る部分を取り除く。 */
+function cutSegs(pos, r) {
+  if (!r) return pos;
+  const out = [];
+  for (let i = 0; i + 5 < pos.length; i += 6) {
+    const ax = pos[i], ay = pos[i + 1], az = pos[i + 2];
+    const bx = pos[i + 3], by = pos[i + 4], bz = pos[i + 5];
+    const dx = bx - ax, dz = bz - az;
+    let t0 = 0, t1 = 1, ok = true;
+    const clip = (p, q) => {
+      if (Math.abs(p) < 1e-12) { if (q < 0) ok = false; return; }
+      const t = q / p;
+      if (p < 0) { if (t > t1) ok = false; else if (t > t0) t0 = t; }
+      else if (t < t0) ok = false;
+      else if (t < t1) t1 = t;
+    };
+    clip(-dx, ax - r.x0); clip(dx, r.x1 - ax);
+    clip(-dz, az - r.z0); clip(dz, r.z1 - az);
+    const hit = ok && t1 - t0 > 1e-6;
+    if (!hit) { out.push(ax, ay, az, bx, by, bz); continue; }
+    const at = (t) => [ax + dx * t, ay + (by - ay) * t, az + dz * t];
+    if (t0 > 1e-6) out.push(ax, ay, az, ...at(t0));
+    if (t1 < 1 - 1e-6) out.push(...at(t1), bx, by, bz);
+  }
+  return out;
+}
+
+/* その長方形が、建物の外形（壁の輪郭）に丸ごと収まっているか。
+   ★ 外形は矩形の重ねなので、外接矩形では判定できない（L字の欠けたところに
+     入ってしまう）。x と z の切れ目で碁盤に刻み、桝がすべて中に入っているかを見る。 */
+function notchFits(n) {
+  const rs = rectsOf();
+  if (!rs.length) return false;
+  if (n.x1 - n.x0 < NOTCH_MIN - 1e-9 || n.z1 - n.z0 < NOTCH_MIN - 1e-9) return false;
+  const cut = (vals, lo, hi) => [...new Set([lo, hi, ...vals])]
+    .filter((v) => v > lo - 1e-9 && v < hi + 1e-9).sort((a, b) => a - b);
+  const xs = cut(rs.flatMap((r) => [r.x0, r.x1]), n.x0, n.x1);
+  const zs = cut(rs.flatMap((r) => [r.z0, r.z1]), n.z0, n.z1);
+  for (let i = 0; i + 1 < xs.length; i++) {
+    for (let j = 0; j + 1 < zs.length; j++) {
+      const cx = (xs[i] + xs[i + 1]) / 2, cz = (zs[j] + zs[j + 1]) / 2;
+      if (!rs.some((r) => cx > r.x0 && cx < r.x1 && cz > r.z0 && cz < r.z1)) return false;
+    }
+  }
+  return true;
+}
+
+/* 切り欠きが外壁の面まで届いている辺を調べ、その辺は【屋根の先まで】広げた
+   長方形を返す。
+   ★ 外壁に届いた時点で外へ抜けているので、その先に軒の出は残らない。
+   ⚠️ 残すと、外壁の面から軒先の切れ端だけが飛び出す（実際にそうなっていた）。 */
+function notchCut(n, result) {
+  const rs = rectsOf();
+  const outside = (x, z) => !rs.some(
+    (r) => x > r.x0 && x < r.x1 && z > r.z0 && z < r.z1);
+  const m = Math.max(state.eaveOut, state.rakeOut) + 1;
+  const t = 0.01;
+  const at = (a, b) => [a + (b - a) * 0.25, (a + b) / 2, a + (b - a) * 0.75];
+  // ★ 外壁に届いていても、そこに【軒の出があるなら切り抜かない】。
+  //   軒が架かっているので、切り欠きは屋根に開いた穴のままになる。
+  //   ⚠️ 軒の出があるのに屋根の先まで抜いてしまうと、軒が途中で断ち切られて
+  //     屋根に細長い切れ込みが入る。抜くのは軒の出が 0 の辺だけ。
+  const ers = result.roofs.map((f) => f.r);
+  const mn = (a, k) => Math.min(...a.map((r) => r[k]));
+  const mx = (a, k) => Math.max(...a.map((r) => r[k]));
+  const eaveOutAt = {
+    w: mn(rs, 'x0') - mn(ers, 'x0'), e: mx(ers, 'x1') - mx(rs, 'x1'),
+    s: mn(rs, 'z0') - mn(ers, 'z0'), n: mx(ers, 'z1') - mx(rs, 'z1'),
+  };
+  const flush = (k) => eaveOutAt[k] < 1e-6;
+  const open = {
+    w: flush('w') && at(n.z0, n.z1).every((z) => outside(n.x0 - t, z)),
+    e: flush('e') && at(n.z0, n.z1).every((z) => outside(n.x1 + t, z)),
+    s: flush('s') && at(n.x0, n.x1).every((x) => outside(x, n.z0 - t)),
+    n: flush('n') && at(n.x0, n.x1).every((x) => outside(x, n.z1 + t)),
+  };
+  return {
+    open,
+    rect: {
+      x0: open.w ? n.x0 - m : n.x0, x1: open.e ? n.x1 + m : n.x1,
+      z0: open.s ? n.z0 - m : n.z0, z1: open.n ? n.z1 + m : n.z1,
+    },
+  };
+}
+
+/* 屋根を切り抜くのに使う長方形。稜線を切るときにも同じものを使う。 */
+function notchCutRect(result) {
+  return state.notch ? notchCut(state.notch, result).rect : null;
+}
+
+/* 屋根の外周の辺から、切り欠きで抜けたところを取り除く。
+   ★ 切り欠きが外壁まで届いたのに軒先の小口だけが残っていると、穴の口を
+     黒い帯が横切る。屋根の輪郭も同じ長方形で切ること。 */
+function cutRims(rims, r) {
+  if (!r) return rims;
+  const out = [];
+  for (const rec of rims) {
+    const ax = rec.a.x, az = rec.a.z;
+    const dx = rec.b.x - ax, dz = rec.b.z - az;
+    let t0 = 0, t1 = 1, ok = true;
+    const clip = (p, q) => {
+      if (Math.abs(p) < 1e-12) { if (q < 0) ok = false; return; }
+      const t = q / p;
+      if (p < 0) { if (t > t1) ok = false; else if (t > t0) t0 = t; }
+      else if (t < t0) ok = false;
+      else if (t < t1) t1 = t;
+    };
+    clip(-dx, ax - r.x0); clip(dx, r.x1 - ax);
+    clip(-dz, az - r.z0); clip(dz, r.z1 - az);
+    if (!ok || t1 - t0 < 1e-6) { out.push(rec); continue; }
+    const at = (t) => ({ x: ax + dx * t, z: az + dz * t });
+    const yAt = (t) => rec.ya + (rec.yb - rec.ya) * t;
+    if (t0 > 1e-6) out.push({ a: rec.a, b: at(t0), ya: rec.ya, yb: yAt(t0) });
+    if (t1 < 1 - 1e-6) out.push({ a: at(t1), b: rec.b, ya: yAt(t1), yb: rec.yb });
+  }
+  return out;
+}
+
+/* 切り欠きの4辺を、屋根の面ごとに切り分けたもの。
+   ★ 屋根は破片に割れているので、辺の上でも高さが折れる。面ごとに切ってから
+     立てないと、折れ点を無視した平らな壁になる。 */
+function notchRims(result, n) {
+  const c = [{ x: n.x0, z: n.z0 }, { x: n.x1, z: n.z0 },
+    { x: n.x1, z: n.z1 }, { x: n.x0, z: n.z1 }];
+  const out = [];
+  for (let i = 0; i < 4; i++) {
+    const a = c[i], b = c[(i + 1) % 4];
+    const dx = b.x - a.x, dz = b.z - a.z;
+    for (const f of result.faces) {
+      const cl = clipSegToPoly(a, b, f.poly);
+      if (!cl) continue;
+      const [t0, t1] = cl;
+      if (t1 - t0 < 1e-6) continue;
+      const p0 = { x: a.x + dx * t0, z: a.z + dz * t0 };
+      const p1 = { x: a.x + dx * t1, z: a.z + dz * t1 };
+      out.push({ a: p0, b: p1, plane: f.plane,
+        ya: hAtP(f.plane, p0), yb: hAtP(f.plane, p1) });
+    }
+  }
+  return out;
+}
+
 /* 屋根。01 と同じ【2層】で作る。
      上層（黒）… 葺き材。屋根の表面から下へ ROOF_FINISH。
      下層（白）… 下地・軒裏。さらに下へ ROOF_BASE。
@@ -517,11 +1190,16 @@ function cornerVerticals(edges) {
      屋根の中に壁が林立する。 */
 function buildRoofMesh(result) {
   const top = [], flatTop = [], mid = [], bot = [];
-  const fan = (into, f, drop) => {
-    for (let i = 1; i + 1 < f.poly.length; i++) {
-      const a = f.poly[0], b = f.poly[i], c = f.poly[i + 1];
-      into.push(a.x, f.y[0] - drop, a.z, b.x, f.y[i] - drop, b.z,
-        c.x, f.y[i + 1] - drop, c.z);
+  const nz = state.notch;
+  // ★ 屋根を切り抜くのは【外壁に届いた辺を屋根の先まで伸ばした】長方形。
+  const nc = nz ? notchCut(nz, result) : null;
+  const cut = nc ? nc.rect : null;
+  // ★ 切り欠きがあれば、面から長方形を引いてから三角形に割る。
+  const fan = (into, poly, plane, drop) => {
+    for (let i = 1; i + 1 < poly.length; i++) {
+      const a = poly[0], b = poly[i], c = poly[i + 1];
+      into.push(a.x, hAtP(plane, a) - drop, a.z, b.x, hAtP(plane, b) - drop, b.z,
+        c.x, hAtP(plane, c) - drop, c.z);
     }
   };
   for (const f of result.faces) {
@@ -529,9 +1207,12 @@ function buildRoofMesh(result) {
     //   ⚠️ 高さは下げない。平場の上端は周りの屋根の上端と同じ（＝軒高）で、
     //     段差なく繋がっているのが正しい。色だけを変える。
     const isFlat = Math.hypot(f.plane.a, f.plane.b) < 1e-9;
-    fan(isFlat ? flatTop : top, f, 0);        // 葺き材の表面（平場は防水の表面）
-    fan(mid, f, ROOF_FINISH);                // 葺き材と下地の境目（＝下地の表面）
-    fan(bot, f, ROOF_THICK);                 // 軒裏
+    const pieces = cut ? subtractRect(f.poly, cut) : [f.poly];
+    for (const pl of pieces) {
+      fan(isFlat ? flatTop : top, pl, f.plane, 0);   // 葺き材の表面
+      fan(mid, pl, f.plane, ROOF_FINISH);            // 葺き材と下地の境目
+      fan(bot, pl, f.plane, ROOF_THICK);             // 軒裏
+    }
   }
   // 小口。外周の辺に沿って、黒の帯と白の帯を立てる。
   const black = top.slice(), white = flatTop.slice();
@@ -541,16 +1222,67 @@ function buildRoofMesh(result) {
   };
   // ⚠️ パラペットのある陸屋根では、屋根の外周はパラペットの内側に隠れる。
   //   小口も外周線も描いてはいけない（パラペットの面と重なってちらつく）。
-  const rims = state.parapet ? []
+  let rims = state.parapet ? []
     : outlineEdges(result.faces).map((r) => ({ a: r.a, b: r.b, ya: r.ya, yb: r.yb }));
   // ★ 段差の【高い側】にも小口が要る。ここが抜けていたため、入母屋の妻面の
   //   上端に屋根の厚みぶんの穴が開き、屋根の裏側が見えていた。
   for (const e of stepEdges(result.faces)) {
     rims.push({ a: e.a, b: e.b, ya: e.hiA, yb: e.hiB });
   }
+  // ⚠️ 切り欠きで抜けたところの小口は残さない。残すと、穴の口を黒い帯が横切る。
+  if (cut) rims = cutRims(rims, cut);
   for (const rec of rims) {
     band(black, rec.a, rec.b, rec.ya, rec.yb, 0, ROOF_FINISH);
     band(white, rec.a, rec.b, rec.ya, rec.yb, ROOF_FINISH, ROOF_THICK);
+  }
+  // --- 切り欠きの壁面と底 ---
+  //   ★ 屋根の小口（黒＋白）を立てたあと、その下を壁の色で屋上の高さまで下ろす。
+  //   ⚠️ 軒に近いところでは屋根の裏側が屋上の高さより【低い】。下ろす向きが
+  //     逆になるので、低いところでは立てない。
+  const nRims = cut ? notchRims(result, cut) : [];
+  const wallPos = [];
+  const nLines = [];
+  // ★ 穴の底は【壁の天端】。屋根の仕上げ面（軒高）ではない。
+  //   ⚠️ 軒高で張っていたときは、壁ぎわで屋根の【裏側】より 300mm 高くなり、
+  //     底の板が屋根を突き抜けて外へ出ていた（屋根の端がぐしゃぐしゃになる）。
+  //     壁の内側では屋根の裏側は必ずこの高さ以上なので、ここなら破綻しない。
+  const nfy = wallTopY();
+  for (const rec of nRims) {
+    band(black, rec.a, rec.b, rec.ya, rec.yb, 0, ROOF_FINISH);
+    band(white, rec.a, rec.b, rec.ya, rec.yb, ROOF_FINISH, ROOF_THICK);
+    // ⚠️ 壁が立つのは【元の切り欠きの範囲】だけ。外へ伸ばした先は屋根を
+    //   切り抜いただけで、そこに建物は無い。
+    const cl = (p) => ({ x: Math.min(Math.max(p.x, nz.x0), nz.x1),
+      z: Math.min(Math.max(p.z, nz.z0), nz.z1) });
+    const a = cl(rec.a), b = cl(rec.b);
+    if (Math.hypot(b.x - a.x, b.z - a.z) > 1e-6) {
+      const ya = Math.max(hAtP(rec.plane, a) - ROOF_THICK, nfy);
+      const yb = Math.max(hAtP(rec.plane, b) - ROOF_THICK, nfy);
+      if (ya > nfy + 1e-6 || yb > nfy + 1e-6) {
+        wallPos.push(a.x, ya, a.z, b.x, yb, b.z, b.x, nfy, b.z);
+        wallPos.push(a.x, ya, a.z, b.x, nfy, b.z, a.x, nfy, a.z);
+      }
+      nLines.push(a.x, nfy, a.z, b.x, nfy, b.z);
+    }
+    for (const d of [0, ROOF_FINISH, ROOF_THICK]) {
+      nLines.push(rec.a.x, rec.ya - d, rec.a.z, rec.b.x, rec.yb - d, rec.b.z);
+    }
+  }
+  // ★ 穴の4隅に鉛直の線。これが無いと側壁の面が宙に浮いて見え、深さが読めない。
+  if (nz && nRims.length) {
+    // ⚠️ 外へ抜けた辺の角には線を引かない。そこに側壁は無いので、
+    //   引くと屋根の外の空中に線が立つ。
+    const corners = [[nz.x0, nz.z0, 'w', 's'], [nz.x1, nz.z0, 'e', 's'],
+      [nz.x1, nz.z1, 'e', 'n'], [nz.x0, nz.z1, 'w', 'n']];
+    for (const [cx, cz, k1, k2] of corners) {
+      if (nc.open[k1] || nc.open[k2]) continue;
+      const g = result.globalAt(cx, cz);
+      if (!g || g.h - nfy < 1e-3) continue;
+      nLines.push(cx, g.h, cz, cx, nfy, cz);
+    }
+    // 底（屋上）。防水と同じ白で張る。
+    white.push(nz.x0, nfy, nz.z0, nz.x1, nfy, nz.z0, nz.x1, nfy, nz.z1);
+    white.push(nz.x0, nfy, nz.z0, nz.x1, nfy, nz.z1, nz.x0, nfy, nz.z1);
   }
   white.push(...mid, ...bot);
   const add = (pos, mat) => {
@@ -575,7 +1307,14 @@ function buildRoofMesh(result) {
     }
   }
   ln.push(...cornerVerticals(rims));
+  ln.push(...nLines);
   addBlackLines(roofGroup, ln);
+  if (wallPos.length) {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(wallPos, 3));
+    geo.computeVertexNormals();
+    roofGroup.add(new THREE.Mesh(geo, wallMat));
+  }
 }
 
 /* 黒い線をまとめて置く。 */
@@ -653,22 +1392,32 @@ function footprintSegments(rects) {
 function buildWallOutline(rects, result) {
   const pos = [];
   const wt = wallTopY();
+  // ★ 線もその階の床から。⚠️ 0 から描くと、2階の外形線が地面まで伸びて
+  //   「2階が地盤面から立っている」ように見える。
+  const y0 = state.baseY;
   // 壁の天端。切妻（ケラバ）の下では妻面が続くので、屋根の裏側の高さを採る。
-  const topAt = (x, z) => {
+  //   ⚠️ 屋根をかけない階では、載る屋根が無いので天端そのもの。屋根の高さを
+  //     使うと、壁より上に線が伸びて【天端に帯が一周しているように見える】。
+  const topAt = state.roofed ? (x, z) => {
     const g = result.globalAt(x, z);
     return (g && g.plane) ? Math.max(wt, g.h - ROOF_THICK) : wt;
-  };
+  } : () => wt;
   const hAt = (pl, p) => pl.a * p.x + pl.b * p.z + pl.c;
   for (const seg of footprintSegments(rects)) {
     const { a, b } = seg;
-    pos.push(a.x, 0, a.z, b.x, 0, b.z);                     // 足元
-    for (const p of [a, b]) pos.push(p.x, 0, p.z, p.x, topAt(p.x, p.z), p.z);  // 角の縦線
+    pos.push(a.x, y0, a.z, b.x, y0, b.z);                   // 足元
+    for (const p of [a, b]) pos.push(p.x, y0, p.z, p.x, topAt(p.x, p.z), p.z);  // 角の縦線
     // ★ 軒裏と壁がぶつかる線。壁がどこで屋根に隠れるかは、ここが無いと読めない。
     //   ⚠️ 屋根面ごとに切り分けてから引くこと。屋根が折れているところをまたいで
     //     両端だけで引くと、折れ点を無視した1本の直線になる。
     //   ⚠️ パラペットのある陸屋根には軒裏が無い。壁はそのまま笠木まで立ち上がる
     //     ので、ここに線を引くと壁の途中に意味のない横線が一周する。
-    if (state.parapet) continue;
+    //   ⚠️ 屋根を【かけていない】階にも軒裏は無い。屋根そのものは裏で計算だけ
+    //     されているので、飛ばさないとその裏側の高さに線が一周する。これが
+    //     ・100mm の板 … 地面より 300mm 下に線が出て、板が浮いて見える
+    //     ・立ち上げた階 … 天端の 300mm 下に【横帯】が出る
+    //     の正体だった。屋根をかけるのに要る線ではない。
+    if (state.parapet || !state.roofed) continue;
     const dx = b.x - a.x, dz = b.z - a.z;
     for (const f of result.faces) {
       const cl = clipSegToPoly(a, b, f.poly);
@@ -688,17 +1437,21 @@ function buildWallOutline(rects, result) {
      （矩形どうしが重なる部分は建物の内側に隠れるので、そのままでよい）
    ・妻壁 … 軒高から屋根まで。切妻にした辺の上にできる三角形の壁。
      屋根の外周のうち、軒高より上に浮いている辺の下を埋める。 */
-function buildWalls(rects, result) {
+function buildWalls(rects, result, model) {
   // --- 外周の壁。クリックで辺を選ぶための当たり判定も兼ねる ---
-  rects.forEach((r, ri) => {
+  //   ⚠️ 図面から起こした壁があるときは、この箱は建てない。二重になるうえ、
+  //     中の部屋が見えなくなる。
+  if (!model) rects.forEach((r, ri) => {
     for (const key of EDGE_KEYS) {
       const e = edgeInfo(r, key);
       const w = (key === 'w' || key === 'e') ? (r.z1 - r.z0) : (r.x1 - r.x0);
-      const geo = new THREE.PlaneGeometry(w, wallTopY());
+      // ★ 壁は【その階の床から】立てる。上階は下の階の天端が床になる。
+      const y0 = state.baseY, y1 = wallTopY();
+      const geo = new THREE.PlaneGeometry(w, Math.max(y1 - y0, 0.01));
       const mesh = new THREE.Mesh(geo, wallMat);
       const cx = (key === 'w') ? r.x0 : (key === 'e') ? r.x1 : (r.x0 + r.x1) / 2;
       const cz = (key === 's') ? r.z0 : (key === 'n') ? r.z1 : (r.z0 + r.z1) / 2;
-      mesh.position.set(cx, wallTopY() / 2, cz);
+      mesh.position.set(cx, (y0 + y1) / 2, cz);
       mesh.rotation.y = Math.atan2(e.nx, e.nz);
       mesh.userData = { pickEdge: { ri, key } };
       wallGroup.add(mesh);
@@ -723,6 +1476,23 @@ function buildWalls(rects, result) {
     }
     gLines.push(a.x, y2a, a.z, b.x, y2b, b.z);
   };
+
+  // ⚠️ 屋根をかけない階では、そもそも塞ぐ相手の屋根が無い。妻壁を作ると
+  //   壁の天端に高さ 0.3m ほどの帯が一周してしまう。
+  //   ★ 代わりに、底と天端を塞いで【中身の詰まった塊】にする。枠だけだと、
+  //     上から覗いたときに中が空っぽで、板を置いた感じがしない。
+  if (!state.roofed) {
+    // ⚠️ 図面から起こした壁の階では、床も天端も張らない。
+    //   床 … すぐ下の板が床そのもの。重ねて張ると【階段の穴を塞いでしまう】
+    //        うえ、同じ高さの面が二重になってちらつく。
+    //   天端 … 塞ぐと上から中が見えなくなり、間取りを確かめられない。
+    if (!model) {
+      buildFloor(rects, state.baseY);
+      buildFloor(rects, wallTopY());
+    }
+    buildWallOutline(rects, result);
+    return;
+  }
 
   // (1) 壁の天端から屋根の裏側までを塞ぐ（切妻・入母屋の妻面）。
   //   ★ 測るのは【壁の位置】。軒の出があるので屋根の外周とは 0.6m ずれる。
@@ -777,7 +1547,7 @@ function buildWalls(rects, result) {
     wallGroup.add(new THREE.Mesh(geo, gableWallMat));
     addBlackLines(wallGroup, gLines);
   }
-  buildFloor(rects);
+  if (!model) buildFloor(rects);
   if (state.parapet) buildParapet(rects);
   buildWallOutline(rects, result);
 }
@@ -829,21 +1599,247 @@ function buildParapet(rects) {
   addBlackLines(wallGroup, ln);
 }
 
-/* 建物の底。張らないと、下から見たときに中が丸見えになる。
+// -----------------------------------------------------------------------------
+// DXF の読込用レイヤから立てる壁
+// -----------------------------------------------------------------------------
+//   ★ 壁は【芯線＋厚み】。開口は 0〜2000（扉）／800〜2000（窓）を抜き、
+//     その上は垂れ壁として残る。階段は階高から蹴上を割り出して段を作る。
+//   ⚠️ 押し引きで形を変えることは考えていない。図面から起こした壁は、
+//     高さだけを与えて使う（青い箱で上下する）。
+const MAX_RISE = 0.20;          // 蹴上の上限[m]。これを超えないよう段数を決める
+const wallModelMat = new THREE.MeshBasicMaterial({
+  color: 0xe8e8e8, side: THREE.DoubleSide,
+  polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
+});
+wallModelMat.__shared = true;
+
+// ★ 壁は直方体の集まりで作っている。そのままだと、直交する壁の突き当たりや
+//   開口で切った継ぎ目に、内側の稜線がそのまま出る。【外郭にならない線は
+//   いつも落とす】ので、1つの塊として読める。
+
+/* 直方体の集まりから、外郭の稜線だけを残す。
+   ★ 稜線のまわりを（稜線に直交する面で）4つに割り、いくつが中身で埋まって
+     いるかを見る。4つとも埋まっている＝内部、隣り合う2つだけ＝平らな面の
+     途中。どちらも稜線ではない。
+   ⚠️ 1本の稜線でも、途中で状態が変わる。箱の切れ目で刻んでから区間ごとに
+     見ること。まとめて1回だけ判定すると、交差部の手前まで消えてしまう。 */
+function envelopeLines(ln, boxes) {
+  const E = 0.003;
+  const inside = (x, y, z) => boxes.some((b) => (
+    x > b[0] && x < b[3] && y > b[1] && y < b[4] && z > b[2] && z < b[5]));
+  const out = [];
+  for (let k = 0; k + 5 < ln.length; k += 6) {
+    const p = [ln[k], ln[k + 1], ln[k + 2]];
+    const q = [ln[k + 3], ln[k + 4], ln[k + 5]];
+    // 軸に沿った線分だけを扱う（壁も階段も軸に沿っている）
+    let ax = -1;
+    for (let i = 0; i < 3; i++) if (Math.abs(q[i] - p[i]) > 1e-9) ax = (ax < 0 ? i : -2);
+    if (ax < 0) { out.push(...p, ...q); continue; }
+    const lo = Math.min(p[ax], q[ax]), hi = Math.max(p[ax], q[ax]);
+    const cut = [lo, hi];
+    for (const b of boxes) {
+      for (const v of [b[ax], b[ax + 3]]) if (v > lo + 1e-9 && v < hi - 1e-9) cut.push(v);
+    }
+    cut.sort((a, b) => a - b);
+    const P = (ax + 1) % 3, Q = (ax + 2) % 3;
+    for (let i = 0; i + 1 < cut.length; i++) {
+      if (cut[i + 1] - cut[i] < 1e-9) continue;
+      const m = [...p];
+      m[ax] = (cut[i] + cut[i + 1]) / 2;
+      let n = 0, sig = 0;
+      for (const sp of [-1, 1]) {
+        for (const sq of [-1, 1]) {
+          const t = [...m];
+          t[P] += sp * E; t[Q] += sq * E;
+          if (inside(t[0], t[1], t[2])) { n++; sig |= (sp > 0 ? 1 : 2) * (sq > 0 ? 1 : 4); }
+        }
+      }
+      if (n === 0 || n === 4) continue;                 // 空 or 内部
+      // 隣り合う2つだけ＝平らな面の途中。符号が片方しか違わない組み合わせ。
+      if (n === 2) {
+        const qs = [];
+        for (const sp of [-1, 1]) for (const sq of [-1, 1]) {
+          const t = [...m];
+          t[P] += sp * E; t[Q] += sq * E;
+          if (inside(t[0], t[1], t[2])) qs.push([sp, sq]);
+        }
+        const [u, v] = qs;
+        if ((u[0] === v[0]) !== (u[1] === v[1])) continue;  // 隣どうし
+      }
+      const a = [...m], b = [...m];
+      a[ax] = cut[i]; b[ax] = cut[i + 1];
+      out.push(...a, ...b);
+    }
+  }
+  return out;
+}
+
+/* 直方体を1つ積む。面（三角形12枚）と、稜線12本。
+   ⚠️ ln に null を渡すと面だけ。階段のように箱が重なるところでは、箱ごとに
+     12本引くと線だらけになって、段が読めない真っ黒な塊になる。 */
+function pushBox(pos, ln, x0, y0, z0, x1, y1, z1) {
+  const P = [[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1],
+    [x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1]];
+  const face = (a, b, c, d) => {
+    pos.push(...P[a], ...P[b], ...P[c]);
+    pos.push(...P[a], ...P[c], ...P[d]);
+  };
+  face(0, 3, 2, 1); face(4, 5, 6, 7);          // 下・上
+  face(0, 1, 5, 4); face(2, 3, 7, 6);          // 手前・奥
+  face(1, 2, 6, 5); face(3, 0, 4, 7);          // 右・左
+  if (!ln) return;
+  const e = (a, b) => ln.push(...P[a], ...P[b]);
+  e(0, 1); e(1, 2); e(2, 3); e(3, 0);
+  e(4, 5); e(5, 6); e(6, 7); e(7, 4);
+  e(0, 4); e(1, 5); e(2, 6); e(3, 7);
+}
+
+function buildWallModel() {
+  const m = state.walls;
+  if (!m) return;
+  const y0 = state.baseY;
+  const H = Math.max(state.eaveY - state.baseY, 0);
+  if (H < 1e-6) return;
+  const pos = [], ln = [], bxs = [];
+  const keep = (x0, ya, z0, x1, yb, z1) => bxs.push([x0, ya, z0, x1, yb, z1]);
+  // ★ 壁ごとの向き・芯・端。芯線は交点で終わっているので、そのまま箱にすると
+  //   出隅で【厚みの半分ぶん四角く欠ける】。柱を抜いたように見えるのはこれ。
+  //   ⚠️ 相手の壁に突き当たっている端だけ、厚みの半分だけ伸ばす。どの端も
+  //     伸ばすと、行き止まりの壁が figure より長くなる。
+  const ws = m.walls.map((w) => {
+    const alongX = (w.x1 - w.x0) >= (w.z1 - w.z0);
+    return { w, alongX, h: w.t / 2,
+      a: alongX ? w.x0 : w.z0, b: alongX ? w.x1 : w.z1,
+      c: alongX ? (w.z0 + w.z1) / 2 : (w.x0 + w.x1) / 2 };
+  });
+  const T = 1e-3;
+  const onWall = (x, z, o) => (o.alongX
+    ? (Math.abs(z - o.c) < T && x > o.a - T && x < o.b + T)
+    : (Math.abs(x - o.c) < T && z > o.a - T && z < o.b + T));
+  for (const u of ws) {
+    for (const [end, v] of [['a', u.a], ['b', u.b]]) {
+      const x = u.alongX ? v : u.c, z = u.alongX ? u.c : v;
+      const hit = ws.some((o) => o !== u && onWall(x, z, o));
+      if (hit) u[end] += (end === 'a' ? -u.h : u.h);
+    }
+  }
+  for (const u of ws) {
+    const { w, alongX, h, a, b, c } = u;
+    // ★ この壁の芯線に乗っている開口だけを拾う。
+    //   ⚠️ 向きと芯の位置の両方を見ること。位置だけだと、交差する壁の開口まで
+    //     拾ってしまう。
+    const os = [];
+    for (const o of m.opens) {
+      const oX = (o.x1 - o.x0) >= (o.z1 - o.z0);
+      if (oX !== alongX) continue;
+      const oc = alongX ? (o.z0 + o.z1) / 2 : (o.x0 + o.x1) / 2;
+      if (Math.abs(oc - c) > 1e-3) continue;
+      const oa = alongX ? o.x0 : o.z0;
+      const ob = alongX ? o.x1 : o.z1;
+      if (ob <= a + 1e-6 || oa >= b - 1e-6) continue;
+      os.push({ a: Math.max(oa, a), b: Math.min(ob, b), lo: o.lo, hi: o.hi });
+    }
+    os.sort((p, q) => p.a - q.a);
+    const box = (a0, a1, lo, hi) => {
+      if (a1 - a0 < 1e-6 || hi - lo < 1e-6) return;
+      if (alongX) {
+        pushBox(pos, ln, a0, y0 + lo, c - h, a1, y0 + hi, c + h);
+        keep(a0, y0 + lo, c - h, a1, y0 + hi, c + h);
+      } else {
+        pushBox(pos, ln, c - h, y0 + lo, a0, c + h, y0 + hi, a1);
+        keep(c - h, y0 + lo, a0, c + h, y0 + hi, a1);
+      }
+    };
+    let cur = a;
+    for (const o of os) {
+      box(cur, o.a, 0, H);                          // 開口の手前まで、まるごと
+      box(o.a, o.b, 0, Math.min(o.lo, H));          // 腰壁（窓の下）
+      box(o.a, o.b, Math.min(o.hi, H), H);          // 垂れ壁
+      cur = o.b;
+    }
+    box(cur, b, 0, H);
+  }
+  // --- 階段 ---
+  //   ★ 段数は【階高から】決める。図面に描いてある段板の数は見ない。
+  //     蹴上が上限を超えないよう段数を増やし、蹴上を割り戻す。
+  const s = m.stair;
+  if (s) {
+    const len = s.alongX ? (s.x1 - s.x0) : (s.z1 - s.z0);
+    const n = Math.max(2, Math.ceil(H / MAX_RISE));
+    const rise = H / n, go = len / n;
+    // 走りに沿う座標 t と、幅方向の両端 w0/w1 を、世界座標へ直す。
+    const P = (t, y, w) => (s.alongX
+      ? [s.x0 + t, y, w] : [w, y, s.z0 + t]);
+    const w0 = s.alongX ? s.z0 : s.x0;
+    const w1 = s.alongX ? s.z1 : s.x1;
+    const seg = (t1, y1, w1_, t2, y2, w2) => {
+      ln.push(...P(t1, y1, w1_), ...P(t2, y2, w2));
+    };
+    // 面は箱で作る（中身の詰まった段）。線はここでは出さない。
+    for (let i = 1; i <= n; i++) {
+      const a = (i - 1) * go, b = i * go;
+      const u0 = s.dir > 0 ? a : len - b;
+      const u1 = s.dir > 0 ? b : len - a;
+      const yt = y0 + rise * i;
+      if (s.alongX) {
+        pushBox(pos, null, s.x0 + u0, y0, s.z0, s.x0 + u1, yt, s.z1);
+        keep(s.x0 + u0, y0, s.z0, s.x0 + u1, yt, s.z1);
+      } else {
+        pushBox(pos, null, s.x0, y0, s.z0 + u0, s.x1, yt, s.z0 + u1);
+        keep(s.x0, y0, s.z0 + u0, s.x1, yt, s.z0 + u1);
+      }
+    }
+    // ★ 線は【段の形】だけを引く。踏面の先・蹴上・両側の輪郭・端部の口。
+    for (let i = 1; i <= n; i++) {
+      const a = (i - 1) * go, b = i * go;
+      const ta = s.dir > 0 ? a : len - a;      // 段の手前（低い側）
+      const tb = s.dir > 0 ? b : len - b;      // 段の奥（高い側）
+      const yl = y0 + rise * (i - 1), yt = y0 + rise * i;
+      seg(ta, yt, w0, ta, yt, w1);             // 蹴上の天端＝踏面の先（ヨコ）
+      seg(ta, yl, w0, ta, yl, w1);             // 蹴上の下端（ヨコ）
+      for (const w of [w0, w1]) {
+        seg(ta, yl, w, ta, yt, w);             // 蹴上の縦（両側）
+        seg(ta, yt, w, tb, yt, w);             // 踏面の縁（両側）
+      }
+    }
+    // 端部。下端は蹴上の口、上端は上階の床までの立ち上がり。
+    const tEnd = s.dir > 0 ? len : 0;
+    seg(tEnd, y0, w0, tEnd, y0, w1);
+    seg(tEnd, y0 + H, w0, tEnd, y0 + H, w1);
+    for (const w of [w0, w1]) {
+      seg(tEnd, y0, w, tEnd, y0 + H, w);
+      seg(s.dir > 0 ? 0 : len, y0, w, tEnd, y0, w);   // 足元の輪郭（両側）
+    }
+  }
+  if (!pos.length) return;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.computeVertexNormals();
+  wallGroup.add(new THREE.Mesh(geo, wallModelMat));
+  addBlackLines(wallGroup, envelopeLines(ln, bxs));
+}
+
+/* 外形を、ある高さで水平に塞ぐ。底にも天端にも使う。
    ⚠️ 矩形ごとに1枚ずつ張ってはいけない。重なったところで同じ高さの面が
      二重になり、ちらつく。x と z の切れ目で碁盤に刻み、
-     どれかの矩形に入っている桝だけを張る。 */
-function buildFloor(rects) {
-  const xs = [...new Set(rects.flatMap((r) => [r.x0, r.x1]))].sort((a, b) => a - b);
-  const zs = [...new Set(rects.flatMap((r) => [r.z0, r.z1]))].sort((a, b) => a - b);
+     どれかの矩形に入っている桝だけを張る。
+   ⚠️ 高さを渡すこと。0 で固定していたときは、上階の床が地面に張られていた。 */
+function buildFloor(rects, y = state.baseY) {
+  // ★ 階段が上がってくるところは床を張らない。張ると階段が床に突き刺さる。
+  const n = state.hole;
+  const xs = [...new Set([...rects.flatMap((r) => [r.x0, r.x1]),
+    ...(n ? [n.x0, n.x1] : [])])].sort((a, b) => a - b);
+  const zs = [...new Set([...rects.flatMap((r) => [r.z0, r.z1]),
+    ...(n ? [n.z0, n.z1] : [])])].sort((a, b) => a - b);
   const pos = [];
   for (let i = 0; i + 1 < xs.length; i++) {
     for (let j = 0; j + 1 < zs.length; j++) {
       const cx = (xs[i] + xs[i + 1]) / 2, cz = (zs[j] + zs[j + 1]) / 2;
       if (!rects.some((r) => cx > r.x0 && cx < r.x1 && cz > r.z0 && cz < r.z1)) continue;
+      if (n && cx > n.x0 && cx < n.x1 && cz > n.z0 && cz < n.z1) continue;
       const [x0, x1, z0, z1] = [xs[i], xs[i + 1], zs[j], zs[j + 1]];
-      pos.push(x0, 0, z0, x1, 0, z0, x1, 0, z1);
-      pos.push(x0, 0, z0, x1, 0, z1, x0, 0, z1);
+      pos.push(x0, y, z0, x1, y, z0, x1, y, z1);
+      pos.push(x0, y, z0, x1, y, z1, x0, y, z1);
     }
   }
   if (!pos.length) return;
@@ -851,6 +1847,32 @@ function buildFloor(rects) {
   geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   geo.computeVertexNormals();
   wallGroup.add(new THREE.Mesh(geo, wallMat));
+}
+
+/* 床板に開けた穴（階段の上り口）の内側。板の厚みぶんの立ち上がりと、その線。
+   ⚠️ 面を張らないと、板を横から見たときに厚みが抜けて見える。 */
+function buildHole() {
+  const n = state.hole;
+  if (!n) return;
+  const y0 = state.baseY, y1 = wallTopY();
+  if (y1 - y0 < 1e-6) return;
+  const pos = [], ln = [];
+  const q = (ax, az, bx, bz) => {
+    pos.push(ax, y0, az, bx, y0, bz, bx, y1, bz);
+    pos.push(ax, y0, az, bx, y1, bz, ax, y1, az);
+    ln.push(ax, y0, az, bx, y0, bz);
+    ln.push(ax, y1, az, bx, y1, bz);
+    ln.push(ax, y0, az, ax, y1, az);
+  };
+  q(n.x0, n.z0, n.x1, n.z0);
+  q(n.x1, n.z0, n.x1, n.z1);
+  q(n.x1, n.z1, n.x0, n.z1);
+  q(n.x0, n.z1, n.x0, n.z0);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.computeVertexNormals();
+  wallGroup.add(new THREE.Mesh(geo, wallMat));
+  addBlackLines(wallGroup, ln);
 }
 
 /* 矩形1つぶんの棟。位置も長さも【形から決まる】ので、計算で出す。
@@ -865,18 +1887,9 @@ function ridgeOf(r, ri, result = lastResult) {
   const info = result && result.roofs[ri];
   const hs = info ? info.hs : Math.min(r.x1 - r.x0, r.z1 - r.z0) / 2;
   const y = info ? info.ridgeY : state.eaveY;
-  const on = (key) => gableOf(ri, key) < 0.999;
-  // ⚠️ 棟は「立ち上がる辺」と【直交】する向きに走る。
-  //   東西から立ち上がれば棟は南北へ、南北からなら棟は東西へ。
-  //   ここを取り違えると、棟の両端のハンドルが同じ場所に重なって掴めなくなる。
-  const wx = r.x1 - r.x0, wz = r.z1 - r.z0;
-  const onWE = on('w') && on('e');
-  const onSN = on('s') && on('n');
-  let alongX;
-  if (onWE && onSN) alongX = wx >= wz;      // どちらからも立ち上がる＝長辺方向
-  else if (onSN) alongX = true;             // 南北から → 棟は東西
-  else if (onWE) alongX = false;            // 東西から → 棟は南北
-  else alongX = wx >= wz;                   // 片流れなど
+  // ⚠️ 棟の向きは屋根の計算と【同じ見方】で決めること。ここだけ別の規則で
+  //   決めていると、球の位置と実際の棟がずれる。
+  const alongX = ridgeAxisOf(r, ri, state.gables) === 'x';
   // ★ 棟をずらしていれば、棟の線（＝段差の線）もそのぶん横へ寄る。
   //   ⚠️ 球を中央に置いたままにすると、掴んでいる場所と動くものがずれる。
   const axis = info ? info.axis : null;
@@ -935,12 +1948,10 @@ function ridgeHandles(rects, result) {
     if (result.flat) return;
     for (const end of ['a', 'b']) {
       const p = ridge[end];
-      // ★ クリック（動かさずに離す）で枝分かれさせる／やめる。
-      //   元の1本の棟の端 → そこに直交する棟を生やす
-      //   枝そのものの端（＝左右に分かれた2つの球）→ その枝をやめる
-      //   ⚠️ 中央屋根の端でも戻せるが、枝と突き合うところの球は枝の屋根に
-      //     潜っていて出せない。戻す球がどこにも無くなるので、【分かれた側】の
-      //     球から戻せるようにしておくこと。
+      // ★ ここで求める branch は【回転マークを置く目印】。球そのものは
+      //   もう枝分かれを切り替えない（伸縮とずらしだけ）。
+      //   元の1本の棟の端 → そこに直交する棟を生やせる
+      //   枝そのものの端 → その枝をやめられる（branchOff）
       const m = layout.meta[ri] || {};
       let branch = null, branchOff = false;
       if (SHAPES[state.shapeId].branchable) {
@@ -948,6 +1959,14 @@ function ridgeHandles(rects, result) {
         if (m.role === 'single' || m.role === 'center') branch = p.edge;
         // 枝の端は、その枝を消す。棟の端は 's'/'n' だが、消すのは枝の側（'w'/'e'）。
         else if (m.role === 'arm') { branch = m.edge; branchOff = true; }
+      }
+      // ⚠️ 枝を出せる向きは【1つだけ】。東西へ出したあと、中央の屋根が細長く
+      //   なって棟が南北へ向くと、その端からも分けられるように見えてしまう。
+      //   そこで足すと東西の枝ごと作り直しになり、「片方の端を押したのに
+      //   両方変わった」ように見える。向きが違う端では分けさせない。
+      if (branch && !branchOff && state.branches.size) {
+        const ax = (e) => ((e === 'w' || e === 'e') ? 'x' : 'z');
+        for (const b of state.branches) { if (ax(b) !== ax(branch)) { branch = null; break; } }
       }
       out.push({
         ri, edge: p.edge, x: p.x, y: ridge.y, z: p.z,
@@ -976,9 +1995,9 @@ function buildRidgeHandles(rects, result) {
     const mesh = new THREE.Mesh(new THREE.SphereGeometry(rad, 18, 12), handleMat);
     mesh.position.set(h.x, h.y, h.z);
     mesh.renderOrder = 9;
-    // ★ クリックで枝分かれできる球（黄）と、伸縮しかできない球（灰）を色で分ける。
-    mesh.material = h.branch ? handleMat : handlePlainMat;
-    if (hot) mesh.material = handleHotMat;
+    // ⚠️ かつては「クリックで枝分かれできる球」を色で分けていたが、その操作を
+    //   回転マークへ移したので区別する意味が無くなった。全部おなじ色にする。
+    mesh.material = hot ? handleHotMat : handleMat;
     mesh.userData = {
       ridgeEnd: {
         ri: h.ri, edge: h.edge, hs: h.hs, base: h.base, dir: h.dir,
@@ -988,6 +2007,231 @@ function buildRidgeHandles(rects, result) {
     };
     handleGroup.add(mesh);
   }
+}
+
+// -----------------------------------------------------------------------------
+// 棟を回す印
+// -----------------------------------------------------------------------------
+//   ★ 寄棟から【棟が直交した切妻】へは、連続では行けない。棟の向きが
+//     入れ替わるのは飛び道具であって、引いて近づける類のものではない。
+//     連続な変形（球のドラッグ）と、不連続な切り替え（この印）を分けておく。
+//   ⚠️ 軒の辺につまみを置いて連続に変形しようとしたことがあるが、
+//     途中で棟の向きが入れ替わるため、成立しない屋根が次々にできた。
+//     この道は塞いである。
+const rotMat = new THREE.MeshBasicMaterial({ color: 0x7a4fd8, depthTest: false });
+// ★ 白の縁取り。屋根の黒でも壁の白でも空でも、同じように読めるようにする。
+const rotEdgeMat = new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false });
+const rotHitMat = new THREE.MeshBasicMaterial({ visible: false });
+const rotLineMat = new THREE.LineDashedMaterial({
+  color: 0x7a4fd8, dashSize: 0.10, gapSize: 0.09, depthTest: false,
+});
+const rotLineBackMat = new THREE.LineBasicMaterial({ color: 0xffffff, depthTest: false });
+for (const m of [rotMat, rotEdgeMat, rotHitMat, rotLineMat, rotLineBackMat]) {
+  m.__shared = true;
+}
+
+const ROT_ARC = Math.PI * 1.5;
+// 引き出し線の長さ[m]。
+//   ⚠️ 印を球のすぐ横に置いていたときは、棟を伸ばそうとして印を押してしまう
+//     取り違えが起きた。手が触れない高さまで引き上げること。
+const ROT_LEAD = 1.0;
+
+/* 回転の印を1つ置く。引き出し線＋輪＋矢じり＋（見えない）当たり判定の円板。
+   ★ 渡すのは【印を指したい点】。そこから真上へ引き出した先に印を置く。
+   ⚠️ Group を handleGroup に入れてはいけない。後片付けが children の
+     geometry を捨てて回るので、geometry を持たない Group で落ちる。 */
+function addRotMark(x, y0, z, r, data) {
+  const y = y0 + ROT_LEAD;
+  // 引き出し線。白の実線の上に紫の破線を重ねると、破線の隙間から白が覗いて
+  // どんな地の色でも切れずに読める。
+  // ⚠️ 引き出し線は当たり判定から外す。three.js の線は既定で【1m の太さ】を
+  //   持って判定されるので、線を残すと下の球まで奪ってしまう。
+  const line = (mat, order) => {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute([x, y0, z, x, y, z], 3));
+    const l = new THREE.Line(g, mat);
+    l.computeLineDistances();
+    l.renderOrder = order;
+    l.raycast = () => {};
+    handleGroup.add(l);
+  };
+  line(rotLineBackMat, 11);
+  line(rotLineMat, 12);
+  // ⚠️ 見えている部分すべてに同じ目印を付けること。輪や矢じりに目印が無いと、
+  //   絵の上をクリックしたときに【当たったが何も無い物】になり、押しても
+  //   反応しない印ができる（実際にそうなっていた）。
+  const mark = { rotMark: data };
+  // 輪。白を一回り太く先に描いて縁取りにする。
+  const ring = (mat, tube, order) => {
+    const m = new THREE.Mesh(new THREE.TorusGeometry(r, tube, 8, 26, ROT_ARC), mat);
+    m.position.set(x, y, z);
+    m.rotation.x = -Math.PI / 2;
+    m.renderOrder = order;
+    m.userData = mark;
+    handleGroup.add(m);
+  };
+  ring(rotEdgeMat, r * 0.30, 12);
+  ring(rotMat, r * 0.15, 13);
+  // 矢じり。円弧の終端に、接線の向きで立てる。
+  const tip = (mat, k, order) => {
+    const m = new THREE.Mesh(
+      new THREE.ConeGeometry(r * 0.40 * k, r * 0.85 * k, 10), mat);
+    m.position.set(x + Math.cos(ROT_ARC) * r, y, z - Math.sin(ROT_ARC) * r);
+    m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0),
+      new THREE.Vector3(-Math.sin(ROT_ARC), 0, -Math.cos(ROT_ARC)));
+    m.renderOrder = order;
+    m.userData = mark;
+    handleGroup.add(m);
+  };
+  tip(rotEdgeMat, 1.5, 12);
+  tip(rotMat, 1.0, 13);
+  // 当たり判定。輪の内側の穴も拾えるように、まるごと球で覆う。
+  // ⚠️ 水平な円板にしてはいけない。真横から見たときに線になって押せなくなる。
+  const hit = new THREE.Mesh(new THREE.SphereGeometry(r * 1.35, 10, 8), rotHitMat);
+  hit.position.set(x, y, z);
+  hit.renderOrder = 13;
+  hit.userData = mark;
+  handleGroup.add(hit);
+}
+
+/* 棟を回す印を並べる。
+     中央 … いつも出す。押すと棟が 90° 向きを変えて切妻になる。
+     両端 … その端がまだ寄棟のときだけ。押すとそこで棟が直角に分かれる。
+   ★ 端の印は【棟の向きがその場で 90° 変わる】ことを表している。押すと
+     直交する棟が生えて、谷ができる（球のクリックと同じ動き）。
+   ★ 分けたあとも、同じ場所に印を出し続ける。押すと分かれをやめる。
+     ⚠️ 分かれた棟の端は【切妻】になっているので、「球を動かしたら消す」の
+       規則をここにも当ててはいけない。当てると、やめる手立てが無くなる。
+   ⚠️ 同じことをする印を2つ出さない。分かれた棟の両端は、どちらも
+     「その分かれをやめる」なので、印は1つでよい。 */
+function buildRotMarks(rects, result) {
+  const rad = handleRadius(rects);
+  const seen = new Set();
+  for (const h of ridgeHandles(rects, result)) {
+    if (isBuried(h, result, rad)) continue;
+    if (!h.branch) continue;                       // 分けられない端には出さない
+    if (!h.branchOff && gableOf(h.ri, h.edge) > 1e-3) continue;
+    const k = `${h.branch}:${h.branchOff}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    let px = h.x, py = h.y, pz = h.z;
+    if (h.branchOff) {
+      // ★ 置くのは【枝の棟のまんなか】。ここは分ける前に棟の端があった場所で、
+      //   「押した所を押せば戻る」になる。
+      //   ⚠️ 枝の棟の端に置くと妻の頂点まで飛んでいき、分ける前と場所が
+      //     変わってしまう（どこを押せば戻るのか分からなくなる）。
+      const rg = ridgeOf(rects[h.ri], h.ri, result);
+      px = (rg.a.x + rg.b.x) / 2; py = rg.y; pz = (rg.a.z + rg.b.z) / 2;
+    }
+    addRotMark(px, py, pz, rad * 2.6,
+      { ri: h.ri, kind: 'end', branch: h.branch, undo: !!h.branchOff });
+  }
+  // ★ 棟を回す印は【屋根ぜんぶに1つ】。棟を回すのは屋根まるごとの話なので、
+  //   矩形ごとに出すと、どれを押すと何が回るのか分からなくなる。
+  const mi = Math.max(0, layout.meta.findIndex(
+    (x) => x && (x.role === 'center' || x.role === 'single' || x.role === 'base')));
+  const rm = rects[mi];
+  const im = result.roofs[mi];
+  if (rm && im && im.hs > 1e-6 && !result.flat
+    && im.ridgeY - result.eaveY >= 1e-3 && Math.abs(im.t || 0) <= 1e-6
+    && (!result.drawnRoofs || result.drawnRoofs.has(mi))) {
+    const ridge = ridgeOf(rm, mi, result);
+    addRotMark((ridge.a.x + ridge.b.x) / 2, ridge.y,
+      (ridge.a.z + ridge.b.z) / 2, rad * 3.0, { ri: mi, kind: 'turn' });
+  }
+}
+
+/* 印を押したときの動き。 */
+function applyRotMark(m) {
+  if (m.kind === 'turn') {
+    // ★ いまの棟と【平行】な2辺を妻にする。＝棟が 90° 向きを変える。
+    //   もう一度押すと、また 90° 回って元の向きの切妻に戻る。
+    // ⚠️ 枝分かれしていたら、いったんほどいてから回すこと。枝を残したまま
+    //   向きだけ変えると、棟が2方向に走って形が破綻する（実際に壊れていた）。
+    if (state.branches.size) { state.branches = new Set(); applyLayout(); }
+    const i = 0;                       // 土台の屋根
+    const r = rectsOf()[i];
+    if (!r) return;
+    const alongX = ridgeAxisOf(r, i, state.gables) === 'x';
+    const pair = alongX ? ['s', 'n'] : ['w', 'e'];
+    const other = alongX ? ['w', 'e'] : ['s', 'n'];
+    for (const k of other) delete state.gables[gableKey(i, k)];
+    for (const k of pair) state.gables[gableKey(i, k)] = 1;
+  } else {
+    // ★ 端の印は【そこで棟を直角に分ける】。球をクリックしたのと同じ動き。
+    toggleBranch(m.branch);
+    return;
+  }
+  state.shifts = {};        // 棟の向きが変われば、ずらしの意味も変わる
+  rebuild();
+  syncUI();
+}
+
+// 切り欠きのつまみ。棟（オレンジ）や平場（緑）と紛れない色にする。
+const notchMat = new THREE.MeshBasicMaterial({ color: 0x00a8a8, depthTest: false });
+notchMat.__shared = true;
+
+/* 切り欠きのつまみ。まんなかに1つ（動かす・大きさを変える）と、
+   4辺のまんなかに1つずつ（その辺だけ伸び縮み）。
+   ⚠️ 屋上の高さに置く。屋根の上に置くと、穴の底が見えているのに
+     つまみだけ宙に浮いて、どこを掴んでいるのか分からない。 */
+function buildNotchHandles(rects) {
+  const n = state.notch;
+  if (!n) return;
+  const rad = handleRadius(rects);
+  const y = wallTopY();          // 穴の底
+  const cx = (n.x0 + n.x1) / 2, cz = (n.z0 + n.z1) / 2;
+  const box = new THREE.Mesh(
+    new THREE.BoxGeometry(rad * 2.6, rad * 2.6, rad * 2.6), notchMat);
+  box.position.set(cx, y + rad * 3, cz);
+  box.renderOrder = 9;
+  box.userData = { notchHandle: { kind: 'move' } };
+  handleGroup.add(box);
+  const put = (key, x, z) => {
+    const m = new THREE.Mesh(new THREE.OctahedronGeometry(rad * 1.5), notchMat);
+    m.position.set(x, y + rad * 2, z);
+    m.renderOrder = 9;
+    m.userData = { notchHandle: { kind: 'edge', key } };
+    handleGroup.add(m);
+  };
+  put('w', n.x0, cz); put('e', n.x1, cz);
+  put('s', cx, n.z0); put('n', cx, n.z1);
+}
+
+/* 切り欠きをつくる／消す。 */
+function toggleNotch() {
+  if (!state.roofed) return;
+  if (state.notch) { state.notch = null; rebuild(); syncUI(); return; }
+  const c = footprintCentroid(rectsOf());
+  if (!c) return;
+  const h = NOTCH_MIN / 2;
+  const mk = (x, z) => ({ x0: x - h, z0: z - h, x1: x + h, z1: z + h });
+  let n = mk(nsnap(c.x), nsnap(c.z));
+  if (!notchFits(n)) {
+    // ★ 重心に置けないことがある（L字の欠けたところにまたがるとき）。
+    //   収まる場所のうち、重心にいちばん近いところを探す。
+    const rs = rectsOf();
+    const bx0 = Math.min(...rs.map((r) => r.x0)), bx1 = Math.max(...rs.map((r) => r.x1));
+    const bz0 = Math.min(...rs.map((r) => r.z0)), bz1 = Math.max(...rs.map((r) => r.z1));
+    let best = null, bd = Infinity;
+    for (let x = nsnap(bx0 + h); x <= bx1 - h + 1e-9; x += NSNAP) {
+      for (let z = nsnap(bz0 + h); z <= bz1 - h + 1e-9; z += NSNAP) {
+        const cand = mk(x, z);
+        if (!notchFits(cand)) continue;
+        const d = (x - c.x) ** 2 + (z - c.z) ** 2;
+        if (d < bd) { bd = d; best = cand; }
+      }
+    }
+    if (!best) {
+      showHint(`<b>切り欠きを置けません</b><br>一辺 ${NOTCH_MIN} m の穴が`
+        + '入る広さがありません');
+      return;
+    }
+    n = best;
+  }
+  state.notch = n;
+  selPart = active;
+  rebuild(); syncUI();
 }
 
 /* 建物の外形の重心。ここが屋根をへこませる場所になる。
@@ -1017,6 +2261,45 @@ function footprintCentroid(rects) {
    ★ 下げるほど平場が広がり、周りの勾配屋根が輪状に細くなる。
      ⚠️ 平場は屋上レベルに固定。ハンドルは【広さ】を決める道具で、
        平場の高さを決める道具ではない。 */
+// 壁の高さを掴む印。丸い球（棟）や八面体（平場）と紛れないよう箱にする。
+const eaveHMat = new THREE.MeshBasicMaterial({ color: 0x007acc, depthTest: false });
+eaveHMat.__shared = true;
+
+/* 壁の天端を掴んで、建物の高さを与える。
+   ★ ②「高さを与える」は、これが無いと操作そのものが存在しなかった。
+     軒高は 3.0m 固定で、変える口がどこにも無かった。
+   ⚠️ 平面図をなぞる押し引きは【水平】、これは【垂直】。同じ壁の上で役割を
+     分けると取り違えるので、天端に別の印を出して掴ませる。 */
+/* 屋根をかけない階の天端に、黒い線を回す。
+   ⚠️ 壁だけだと角の稜線しか出ず、階の境目が読めない。 */
+function buildFloorOutline(rects) {
+  const pos = [];
+  const y = wallTopY();
+  for (const s of footprintSegments(rects)) {
+    pos.push(s.a.x, y, s.a.z, s.b.x, y, s.b.z);
+  }
+  addBlackLines(wallGroup, pos);
+}
+
+function buildEaveHandle(rects, eaves) {
+  const segs = footprintSegments(rects);
+  if (!segs.length) return;
+  // いちばん長い辺の中央に置く。短い辺だと印同士が近づいて掴みにくい。
+  let best = null, bl = -1;
+  for (const s of segs) {
+    const l = Math.hypot(s.b.x - s.a.x, s.b.z - s.a.z);
+    if (l > bl) { bl = l; best = s; }
+  }
+  const e = edgeInfo({ x0: best.a.x, z0: best.a.z, x1: best.b.x, z1: best.b.z }, best.key);
+  const rad = handleRadius(eaves) * 1.5;
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(rad * 2, rad * 2, rad * 2), eaveHMat);
+  mesh.position.set((best.a.x + best.b.x) / 2 - e.nx * rad,
+    wallTopY(), (best.a.z + best.b.z) / 2 - e.nz * rad);
+  mesh.renderOrder = 9;
+  mesh.userData = { eaveHandle: true };
+  handleGroup.add(mesh);
+}
+
 function buildFlatHandle(rects, eaves, result) {
   if (lastTop - state.eaveY < 1e-3) return;      // 陸屋根＝つくるものが無い
   const c = footprintCentroid(rects);
@@ -1068,7 +2351,7 @@ function showBlocked() {
 /* 稜線を色で描き分ける。
    ★ 棟・隅棟（赤）と谷（青）を見分けられるようにするのが狙い。
      判定は「その線の両隣が、線より高いか低いか」だけで足りる。 */
-function buildEdgeLines(result) {
+function buildEdgeLines(result, sel) {
   const shared = new Map();
   const keyOf = (a, b) => {
     const ka = `${k3(a.x)},${k3(a.z)}`;
@@ -1130,13 +2413,22 @@ function buildEdgeLines(result) {
     const lb = Math.max(hAtP(f1.plane, b), hAtP(f2.plane, b));
     (isValley ? valley : ridge).push(a.x, la, a.z, b.x, lb, b.z);
   }
-  addFatLines(ridge, RIDGE_COLOR);
-  addFatLines(valley, VALLEY_COLOR);
-  addLines(eave, EAVE_COLOR);
+  // ★ 棟と谷の色分けは【指定中の印】。触っていないときは、他の稜線と同じ
+  //   細い黒で引く。線そのものを消すと、屋根の折れ目が読めなくなる。
+  // ⚠️ 稜線も切り欠きの中は通らない。切らないと、穴の上に線だけが宙に残る。
+  const nz = notchCutRect(result);
+  const cutR = cutSegs(ridge, nz), cutV = cutSegs(valley, nz);
+  if (sel) {
+    addFatLines(cutR, RIDGE_COLOR);
+    addFatLines(cutV, VALLEY_COLOR);
+  } else {
+    addLines(cutR.concat(cutV), EAVE_COLOR);
+  }
+  addLines(cutSegs(eave, nz), EAVE_COLOR);
   // ★ 軒裏（屋根の裏側）にも同じ折れ目がある。下から見上げたときにここが無いと、
   //   のっぺりした白い板に見えて、隅棟の位置も屋根の厚みも読めない。
   //   ⚠️ 色は分けない。裏側は仕上げではないので、棟か谷かの区別に意味がない。
-  addLines(ridge.concat(valley), EAVE_COLOR, ROOF_THICK);
+  addLines(cutSegs(ridge.concat(valley), nz), EAVE_COLOR, ROOF_THICK);
 }
 
 // ⚠️ 稜線は屋根面とまったく同じ高さにある。そのまま描くと深度が拮抗して
@@ -1193,6 +2485,14 @@ let wallDrag = null;
 let flatDrag = null;
 // 軒先をつまんで出し入れしている間の控え。
 let eaveDrag = null;
+let eaveHDrag = null;      // 壁の高さ（軒高）を上下に伸ばしている最中
+let planDrag = null;       // 下絵を水平に動かしている最中
+let rotPending = null;     // 棟を回す印を押している最中（離したら効く）
+let notchDrag = null;      // 切り欠きを動かしている／辺を伸ばしている最中
+// 軒高の刻み[m]と、行ける範囲。
+// 下限を 2m にしていたときは、描いたばかりの 100mm の板を掴んだ瞬間に
+//   2m まで飛んだ。作図の出発点が板になったので、板の厚みまで許す。
+const EAVEY_SNAP = 0.05, EAVEY_MIN = 0.1, EAVEY_MAX = 15.0;
 // カーソルが乗っている軒先。
 let hoverEave = null;
 // 建物をこれより小さくはしない[m]
@@ -1203,6 +2503,17 @@ const MIN_SIZE = 2;
 //   ⚠️ 表示は小数1桁なので、刻みも 0.5 にして数字と実際をずらさない。
 const SNAP = 0.5;
 const snapV = (v) => Math.round(v / SNAP) * SNAP;
+
+/* 座標をどこかへ寄せる。下絵の線が近ければそちらへ、無ければ刻みへ。
+   ★ なぞる道具を別に作らず、プッシュプルの【当たり先】だけを差し替える。
+     操作を覚え直さずに図面をなぞれるのが狙い。
+   ⚠️ 下絵が無いとき・スナップを切ったときは、今までどおり 0.5m 刻み。 */
+function snapAxis(axis, v) {
+  const hit = underlaySnap(axis, v);
+  return (hit === null || hit === undefined) ? snapV(v) : hit;
+}
+// その辺が動く向きの軸。西東の壁は x、南北の壁は z。
+const axisOf = (key) => ((key === 'w' || key === 'e') ? 'x' : 'z');
 
 /* 「ちょうどよい位置」の近くだけ吸い付かせる。それ以外は滑らかに動く。
    ★ 止まりたいのは【形の切り替わり目】だけ。
@@ -1270,7 +2581,8 @@ function rangeOf(partial, r, key, h) {
   const nearLo = h.u < 0.5;
   const w0 = (h.u > 0.4 && h.u < 0.6)
     ? full
-    : Math.abs(snapV(lo + h.u * full) - (nearLo ? lo : hi));
+    // 掴んだ点も下絵の線へ寄せる。張り出す範囲の切れ目が図面と合う。
+    : Math.abs(snapAxis(along ? 'z' : 'x', lo + h.u * full) - (nearLo ? lo : hi));
   const w = Math.max(SNAP, Math.min(full, snapV(w0 + h.steps * SNAP)));
   h.steps = Math.round((w - w0) / SNAP);
   return {
@@ -1286,19 +2598,20 @@ function drawBand(r, key, rng) {
   const e = edgeInfo(r, key);
   const cx = rng.along ? ((key === 'w') ? r.x0 : r.x1) : (rng.a + rng.b) / 2;
   const cz = rng.along ? (rng.a + rng.b) / 2 : ((key === 's') ? r.z0 : r.z1);
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(rng.w, wallTopY()), bandMat);
+  const yb = state.baseY, yt = wallTopY();
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(rng.w, Math.max(yt - yb, 0.01)), bandMat);
   // 壁より少し外側へ。同じ面に置くとちらつく。
-  mesh.position.set(cx - e.nx * 0.03, wallTopY() / 2, cz - e.nz * 0.03);
+  mesh.position.set(cx - e.nx * 0.03, (yb + yt) / 2, cz - e.nz * 0.03);
   mesh.rotation.y = Math.atan2(e.nx, e.nz);
   bandGroup.add(mesh);
   // 範囲の切れ目を線でも示す。半透明の面だけでは端がぼやける。
   const g = new THREE.BufferGeometry();
   const hw = rng.w / 2, dx = rng.along ? 0 : hw, dz = rng.along ? hw : 0;
-  const x = cx - e.nx * 0.04, z = cz - e.nz * 0.04, ty = wallTopY();
+  const x = cx - e.nx * 0.04, z = cz - e.nz * 0.04, ty = yt;
   g.setAttribute('position', new THREE.Float32BufferAttribute([
-    x - dx, 0, z - dz, x - dx, ty, z - dz,
+    x - dx, yb, z - dz, x - dx, ty, z - dz,
     x - dx, ty, z - dz, x + dx, ty, z + dz,
-    x + dx, ty, z + dz, x + dx, 0, z + dz,
+    x + dx, ty, z + dz, x + dx, yb, z + dz,
   ], 3));
   bandGroup.add(new THREE.LineSegments(g, bandEdgeMat));
 }
@@ -1422,12 +2735,174 @@ function screenScaleY(px, py, pz) {
   return { vx, vy, len2: Math.max(vx * vx + vy * vy, 4) };
 }
 
+/* 立面図を貼る面を、モデルの上でクリックして選ばせる。
+   ★ 方角を当てさせるのではなく【どの面か】を目で選ばせる。取り違えようがない。
+   ⚠️ 選べるのは同じ向きの面だけ。向きが混ざった面に1枚の立面は貼れない。
+     （入隅で奥まった壁も、同じ向きなら一緒に選べる。立面図は投影図なので
+       奥行きが違っても1枚に描かれている） */
+let facePick = null;   // { sel: [], cb }
+
+function facePickBar(show, note) {
+  const bar = el('facePick');
+  if (!bar) return;
+  bar.style.display = show ? 'flex' : 'none';
+  if (note) el('facePickNote').textContent = note;
+}
+
+/* 選んでいる面を光らせる。 */
+function drawFaceSel() {
+  clearGroup(bandGroup);
+  if (!facePick) return;
+  for (const s of facePick.sel) {
+    const by = s.y0, ty = s.y1;
+    const along = (s.key === 'w' || s.key === 'e');
+    const w = along ? Math.abs(s.b.z - s.a.z) : Math.abs(s.b.x - s.a.x);
+    const e = edgeInfo({ x0: s.a.x, z0: s.a.z, x1: s.b.x, z1: s.b.z }, s.key);
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, Math.max(ty - by, 0.01)), bandMat);
+    mesh.position.set((s.a.x + s.b.x) / 2 - e.nx * 0.03, (by + ty) / 2,
+      (s.a.z + s.b.z) / 2 - e.nz * 0.03);
+    mesh.rotation.y = Math.atan2(e.nx, e.nz);
+    bandGroup.add(mesh);
+  }
+}
+
+/* その箱の壁の天端。いまの箱を切り替えずに測る。 */
+function wallTopOfPart(i) {
+  const keepA = active, keepL = layout;
+  active = i; layout = parts[i].layout;
+  const y = wallTopY();
+  active = keepA; layout = keepL;
+  return y;
+}
+
+/* 当たった点を含む、外形の線分を返す。
+   ★ 階をまたいで選べるようにする。立面図は投影図なので、手前向きの面は
+     1階も2階もまとめて1枚に描かれている。 */
+function faceUnder(key, p, partIdx) {
+  const t = 0.05;
+  const rects = parts[partIdx] ? parts[partIdx].layout.rects : rectsOf();
+  for (const s of footprintSegments(rects)) {
+    if (s.key !== key) continue;
+    if (key === 'w' || key === 'e') {
+      if (Math.abs(s.a.x - p.x) > t) continue;
+      const lo = Math.min(s.a.z, s.b.z), hi = Math.max(s.a.z, s.b.z);
+      if (p.z >= lo - t && p.z <= hi + t) {
+        return { ...s, part: partIdx, y0: parts[partIdx].baseY, y1: wallTopOfPart(partIdx) };
+      }
+    } else {
+      if (Math.abs(s.a.z - p.z) > t) continue;
+      const lo = Math.min(s.a.x, s.b.x), hi = Math.max(s.a.x, s.b.x);
+      if (p.x >= lo - t && p.x <= hi + t) {
+        return { ...s, part: partIdx, y0: parts[partIdx].baseY, y1: wallTopOfPart(partIdx) };
+      }
+    }
+  }
+  return null;
+}
+
+function startFacePick(cb) {
+  facePick = { sel: [], cb };
+  facePickBar(true, '貼りたい面をクリックしてください（同じ向きなら複数可）');
+  drawFaceSel();
+}
+
+function endFacePick(ok) {
+  const fp = facePick;
+  facePick = null;
+  facePickBar(false);
+  clearGroup(bandGroup);
+  if (!fp) return;
+  if (!ok || !fp.sel.length) { fp.cb(null); return; }
+  const key = fp.sel[0].key;
+  const along = (key === 'w' || key === 'e') ? 'z' : 'x';
+  // ★ 面ごとに【奥行き・面に沿った範囲・高さの範囲】を持たせて返す。
+  //   1枚の立面図をこの面たちへ切り分けて貼る＝投影図を面に載せる、になる。
+  const faces = fp.sel.map((s) => {
+    const u0 = along === 'z' ? s.a.z : s.a.x;
+    const u1 = along === 'z' ? s.b.z : s.b.x;
+    return { key,
+      plane: (along === 'z') ? s.a.x : s.a.z,
+      a: Math.min(u0, u1), b: Math.max(u0, u1),
+      y0: s.y0, y1: s.y1 };
+  });
+  fp.cb({ key, faces });
+}
+
+function toggleFace(ev) {
+  setRay(ev);
+  const wh = _rc.intersectObjects(wallGroup.children, false)
+    .find((x) => x.object.userData.pickEdge);
+  if (!wh) return;
+  const { key } = wh.object.userData.pickEdge;
+  if (facePick.sel.length && facePick.sel[0].key !== key) {
+    facePickBar(true, '同じ向きの面だけ一緒に選べます（階はまたげます）');
+    return;
+  }
+  const seg = faceUnder(key, wh.point, wh.object.userData.part ?? active);
+  if (!seg) return;
+  const same = (p, q) => p.key === q.key
+    && Math.abs(p.a.x - q.a.x) < 1e-6 && Math.abs(p.a.z - q.a.z) < 1e-6
+    && Math.abs(p.b.x - q.b.x) < 1e-6 && Math.abs(p.b.z - q.b.z) < 1e-6;
+  const i = facePick.sel.findIndex((s) => same(s, seg) && s.part === seg.part);
+  if (i >= 0) facePick.sel.splice(i, 1); else facePick.sel.push(seg);
+  const floors = new Set(facePick.sel.map((s) => s.part)).size;
+  facePickBar(true, `${facePick.sel.length} 面（${floors} 階）を選んでいます`);
+  drawFaceSel();
+}
+
 renderer.domElement.addEventListener('pointerdown', (ev) => {
   if (ev.button !== 0) return;
+  // ★ 作図中は、モデルより先に地面を拾う。既にある建物の上をなぞっても、
+  //   掴んでしまわずに長方形を描き続けられる。
+  if (drawTool === 'rect') {
+    const p = groundPoint(ev);
+    if (p) {
+      const x = drawSnap('x', p.x), z = drawSnap('z', p.z);
+      rectDraw = { x0: x, z0: z, x1: x, z1: z };
+      controls.enabled = false;
+      ev.preventDefault();
+    }
+    return;
+  }
+  // 面を選んでいる間は、押し引きも棟の操作もしない（視点操作だけ残す）
+  if (facePick) { downAt = { x: ev.clientX, y: ev.clientY }; return; }
+  // ★ 触った物の箱を「今の箱」にしてから、いつもの処理へ入る。
+  //   これで押し引きも棟も高さも、掴んだ箱に効く。
+  // ★ 下絵を動かすギズモが最優先。モデルより手前に描いているので、
+  //   当たり判定でも先に見ないと掴めない。
+  {
+    setRay(ev);
+    const gz = gizmoPick(_rc);
+    if (gz) {
+      const y = planMoveY();
+      const hit = new THREE.Vector3();
+      if (_rc.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), -y), hit)) {
+        planDrag = { base: planMoveBase(), hx: hit.x, hz: hit.z, y };
+        controls.enabled = false;
+        ev.preventDefault();
+        return;
+      }
+    }
+  }
+  {
+    setRay(ev);
+    const h0 = _rc.intersectObjects(handleGroup.children, false)[0];
+    const w0 = h0 || _rc.intersectObjects(wallGroup.children, false)
+      .find((x) => x.object.userData.pickEdge);
+    if (w0) focusPart(w0.object);
+  }
   downAt = { x: ev.clientX, y: ev.clientY };
   setRay(ev);
-  const hit = _rc.intersectObjects(handleGroup.children, false)[0];
+  // ★ 回転マークは【いちばん手前でなくても】拾う。
+  //   ⚠️ 端のマークは棟の球の真上に浮いている。見る角度によっては球の方が
+  //     手前に来るので、素直に最短だけを見ると、マークを狙ったのに球を
+  //     掴んでしまい「押しても何も起きない」ように見える。
+  const hits = _rc.intersectObjects(handleGroup.children, false);
+  const hit = hits.find((x) => x.object.userData.rotMark) || hits[0];
   if (!hit) {
+    // ⚠️ 何も選んでいないときは、まず選ぶだけ。いきなり押し引きが始まると、
+    //   建物を眺めようとしただけで形が変わる。
+    if (selPart < 0) return;
     // 棟の球でなければ、屋根（軒先）と壁のうち【手前にある方】を試す。
     // ⚠️ 奥行きを見ずに壁を拾うと、屋根の上をクリックしたのに向こう側の壁を
     //   掴んでしまう。
@@ -1483,6 +2958,40 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
     ev.preventDefault();
     return;
   }
+  if (hit.object.userData.notchHandle) {
+    const p = new THREE.Vector3();
+    if (_rc.ray.intersectPlane(
+      new THREE.Plane(new THREE.Vector3(0, 1, 0), -wallTopY()), p)) {
+      notchDrag = { ...hit.object.userData.notchHandle,
+        base: { ...state.notch }, hx: p.x, hz: p.z };
+      controls.enabled = false;
+      ev.preventDefault();
+      return;
+    }
+  }
+  if (hit.object.userData.rotMark) {
+    // ★ 効かせるのは【離したとき】。押した瞬間に効かせると、印の上から
+    //   視点を回そうとしただけで屋根が変わる。
+    rotPending = { ...hit.object.userData.rotMark, x0: ev.clientX, y0: ev.clientY };
+    controls.enabled = false;
+    ev.preventDefault();
+    return;
+  }
+  if (hit.object.userData.eaveHandle) {
+    const q = hit.object.position;
+    // ★ ひとつの印で2つ。上下＝建物の高さ、左右＝建物そのものの水平移動。
+    //   ⚠️ 最初のひと動きで役割を決める。途中で切り替わると、高さを直している
+    //     つもりで建物が横に飛ぶ。
+    const p = new THREE.Vector3();
+    _rc.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), -state.baseY), p);
+    eaveHDrag = { y0: ev.clientY, x0: ev.clientX, base: state.eaveY, mode: null,
+      sv: screenScaleY(q.x, q.y, q.z),
+      hx: p.x, hz: p.z,
+      base0: { ...state.base }, extras0: state.extras.map((r) => ({ ...r })) };
+    controls.enabled = false;
+    ev.preventDefault();
+    return;
+  }
   if (hit.object.userData.flatHandle) {
     const q = hit.object.position;
     // ★ 控えるのは割合ではなく【軒高からの高さ[m]】。平場をいっぱいまで
@@ -1498,6 +3007,8 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
     return;
   }
   const h = hit.object.userData.ridgeEnd;
+  // ⚠️ handleGroup には棟の球以外も入っている。素通しで進むとここで落ちる。
+  if (!h) return;
   const p = hit.object.position;
   // ★ 棟に【沿う】向きと【横切る】向きの2つを測る。
   //   沿う＝棟の伸縮（寄棟 ⇔ 切妻）、横切る＝棟のずれ（招き屋根 ⇔ 片流れ）。
@@ -1529,16 +3040,23 @@ function applyWallDrag() {
   if (rng.whole) {
     // 壁ぜんぶを動かす＝その矩形の辺そのものが動く
     const b = { ...wallDrag.rect0 };
-    if (key === 'w') b.x0 = Math.min(snapV(b.x0 + d), b.x1 - MIN_SIZE);
-    else if (key === 'e') b.x1 = Math.max(snapV(b.x1 - d), b.x0 + MIN_SIZE);
-    else if (key === 's') b.z0 = Math.min(snapV(b.z0 + d), b.z1 - MIN_SIZE);
-    else b.z1 = Math.max(snapV(b.z1 - d), b.z0 + MIN_SIZE);
+    const sn = (v) => snapAxis(axisOf(key), v);
+    if (key === 'w') b.x0 = Math.min(sn(b.x0 + d), b.x1 - MIN_SIZE);
+    else if (key === 'e') b.x1 = Math.max(sn(b.x1 - d), b.x0 + MIN_SIZE);
+    else if (key === 's') b.z0 = Math.min(sn(b.z0 + d), b.z1 - MIN_SIZE);
+    else b.z1 = Math.max(sn(b.z1 - d), b.z0 + MIN_SIZE);
     if (wallDrag.kind === 'base') state.base = b;
     else state.extras[wallDrag.ei] = b;
   } else {
     // 壁の一部を押し出す＝矩形を1枚足す（引っ込めるとその矩形は消える）
-    // 外へ引いた量（内向きが正なので反転）。刻みに丸めるので、戻せば必ず 0 になる。
-    const depth = snapV(-d);
+    // 外へ引いた量（内向きが正なので反転）。
+    // ★ 量ではなく【張り出した先の辺の座標】で寄せる。
+    //   ⚠️ 量のほうで丸めると、下絵の線に合わせたつもりが元の壁の位置ぶんずれる。
+    const r0 = wallDrag.rect0;
+    const edge0 = (key === 'w') ? r0.x0 : (key === 'e') ? r0.x1
+      : (key === 's') ? r0.z0 : r0.z1;
+    const sgn = (key === 'w' || key === 's') ? -1 : 1;
+    const depth = sgn * (snapAxis(axisOf(key), edge0 - sgn * d) - edge0);
     state.extras = wallDrag.extras0.map((x) => ({ ...x }));
     if (depth >= SNAP) {
       state.extras.push(makeExtra(wallDrag.rect0, key, rng.a, rng.b, depth));
@@ -1562,6 +3080,21 @@ function applyWallDrag() {
 }
 
 renderer.domElement.addEventListener('pointermove', (ev) => {
+  // 作図中はホバーの帯を出さない。押し引きの帯と描いている枠が同じ色で
+  //   重なり、どちらを見ているのか分からなくなる。
+  if (drawTool) {
+    if (rectDraw) {
+      const p = groundPoint(ev);
+      if (p) {
+        rectDraw.x1 = drawSnap('x', p.x); rectDraw.z1 = drawSnap('z', p.z);
+        const r = normRect(rectDraw);
+        drawRectBand(r);
+        showTagAt(`${(r.x1 - r.x0).toFixed(2)} × ${(r.z1 - r.z0).toFixed(2)} m`,
+          (r.x0 + r.x1) / 2, 0.3, (r.z0 + r.z1) / 2);
+      }
+    }
+    return;
+  }
   if (wallDrag) {
     wallDrag.cx = ev.clientX; wallDrag.cy = ev.clientY;
     applyWallDrag();
@@ -1576,6 +3109,103 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
     rebuild();
     syncUI();
     showEaveTag(eaveDrag, out);
+    return;
+  }
+  if (notchDrag) {
+    setRay(ev);
+    const p = new THREE.Vector3();
+    if (_rc.ray.intersectPlane(
+      new THREE.Plane(new THREE.Vector3(0, 1, 0), -wallTopY()), p)) {
+      const d = notchDrag, b = d.base;
+      const dx = nsnap(p.x - d.hx), dz = nsnap(p.z - d.hz);
+      const shift = (mx, mz) => {
+        if (d.kind === 'move') {
+          return { x0: b.x0 + mx, x1: b.x1 + mx, z0: b.z0 + mz, z1: b.z1 + mz };
+        }
+        // ★ 1辺だけ動かす。反対の辺を追い越さないよう、最小の辺で止める。
+        const n = { ...b };
+        if (d.key === 'w') n.x0 = Math.min(b.x0 + mx, b.x1 - NOTCH_MIN);
+        else if (d.key === 'e') n.x1 = Math.max(b.x1 + mx, b.x0 + NOTCH_MIN);
+        else if (d.key === 's') n.z0 = Math.min(b.z0 + mz, b.z1 - NOTCH_MIN);
+        else n.z1 = Math.max(b.z1 + mz, b.z0 + NOTCH_MIN);
+        return n;
+      };
+      // ★ 壁より外へは出さない。【収まるところまで詰めて止める】。
+      //   ⚠️ 収まらない候補を丸ごと弾いてはいけない。カーソルが少し先へ行った
+      //     だけで一歩も動かなくなり、壁際で固まる（実際にそうなっていた）。
+      //   ⚠️ x を先に詰めてから z を詰める。こうすると壁に当たっても、
+      //     もう一方の向きへは滑って動ける。
+      const reach = (want, other, isX) => {
+        const n = Math.abs(Math.round(want / NSNAP));
+        const sg = Math.sign(want);
+        let ok = 0;
+        for (let i = 1; i <= n; i++) {
+          const v = sg * i * NSNAP;
+          if (!notchFits(shift(isX ? v : other, isX ? other : v))) break;
+          ok = v;
+        }
+        return ok;
+      };
+      const bx = reach(dx, 0, true);
+      const bz = reach(dz, bx, false);
+      const cand = shift(bx, bz);
+      if (!notchFits(cand)) return;
+      state.notch = cand;
+      rebuild(); syncUI();
+      const n = state.notch;
+      showTagAt(`切り欠き ${(n.x1 - n.x0).toFixed(2)} × ${(n.z1 - n.z0).toFixed(2)} m`,
+        (n.x0 + n.x1) / 2, wallTopY() + 0.6, (n.z0 + n.z1) / 2);
+    }
+    return;
+  }
+  if (planDrag) {
+    // ★ 床の高さの水平面と交わらせて動かす。画面の動きから換算するより、
+    //   掴んだ点がそのまま指の下に来るので合わせやすい。
+    setRay(ev);
+    const hit = new THREE.Vector3();
+    if (_rc.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), -planDrag.y), hit)) {
+      const r = planMoveTo(planDrag.base.x + (hit.x - planDrag.hx),
+        planDrag.base.y + (hit.z - planDrag.hz));
+      showHint(r && r.snapped ? '<b>角に吸い付きました</b>' : '<b>下絵を移動中</b>');
+    }
+    return;
+  }
+  if (eaveHDrag) {
+    const sx = ev.clientX - eaveHDrag.x0, sy = ev.clientY - eaveHDrag.y0;
+    if (!eaveHDrag.mode && Math.hypot(sx, sy) > 5) {
+      eaveHDrag.mode = (Math.abs(sx) > Math.abs(sy)) ? 'move' : 'height';
+    }
+    if (eaveHDrag.mode === 'move') {
+      setRay(ev);
+      const p = new THREE.Vector3();
+      if (_rc.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), -state.baseY), p)) {
+        moveFloor(p.x - eaveHDrag.hx, p.z - eaveHDrag.hz);
+      }
+      return;
+    }
+    if (!eaveHDrag.mode) return;
+    // 画面の動きを高さ[m]に直す。上へ動かすほど壁が高くなる。
+    const dm = ((ev.clientX - eaveHDrag.x0) * eaveHDrag.sv.vx
+      + (ev.clientY - eaveHDrag.y0) * eaveHDrag.sv.vy) / eaveHDrag.sv.len2;
+    let y = eaveHDrag.base + dm;
+    y = Math.round(y / EAVEY_SNAP) * EAVEY_SNAP;
+    const lo = state.baseY + EAVEY_MIN;
+    y = Math.max(lo, Math.min(EAVEY_MAX, y));
+    // ★ 下の階を伸ばしたら、上の階も一緒に持ち上げる。
+    //   ⚠️ 動かさないと、階の間に隙間が空くか、上階が下階へめり込む。
+    const d = y - state.eaveY;
+    const oldTop = state.eaveY;
+    state.eaveY = y;
+    if (Math.abs(d) > 1e-9) {
+      for (const p of parts) {
+        if (p === parts[active]) continue;
+        if (p.baseY >= oldTop - 1e-6) { p.baseY += d; p.eaveY += d; }
+      }
+    }
+    rebuild();
+    syncUI();
+    const b = footprintCentroid(rectsOf());
+    if (b) showTagAt(`壁の高さ ${state.eaveY.toFixed(2)} m`, b.x, state.eaveY + 0.3, b.z);
     return;
   }
   if (flatDrag) {
@@ -1600,12 +3230,47 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
   }
   if (!ridgeDrag) {
     // つまめる場所ではカーソルを変える（掴めることを形で示す）
+    if (selPart < 0) {
+      if (hoverEave || hoverWall) { hoverEave = null; hoverWall = null; clearGroup(bandGroup); }
+      renderer.domElement.style.cursor = '';
+      clearHint(); hideSizeTag();
+      return;
+    }
     setRay(ev);
     clearHint();
-    const hh = _rc.intersectObjects(handleGroup.children, false)[0];
+    const hhs = _rc.intersectObjects(handleGroup.children, false);
+    const hh = hhs.find((x) => x.object.userData.rotMark) || hhs[0];
+    if (!hh) hideSizeTag();
+    if (hh && hh.object.userData.eaveHandle) {
+      renderer.domElement.style.cursor = 'ns-resize';
+      setHover(null);
+      const q = hh.object.position;
+      showTagAt('建物の高さ／横へ移動', q.x, q.y + 0.45, q.z);
+      showHint('<b>この階のつまみ</b><br>上下にドラッグ＝建物の高さ'
+        + '<br>左右にドラッグ＝この階を水平移動（角が吸い付きます）'
+        + `<br>いま ${state.eaveY.toFixed(2)} m`);
+      return;
+    }
+    if (hh && hh.object.userData.notchHandle) {
+      const nh = hh.object.userData.notchHandle;
+      const q = hh.object.position;
+      renderer.domElement.style.cursor = 'move';
+      setHover(null);
+      showTagAt(nh.kind === 'move' ? '切り欠きを動かす' : 'この辺を伸ばす',
+        q.x, q.y + 0.4, q.z);
+      showHint(nh.kind === 'move'
+        ? '<b>屋根の切り欠き</b><br>ドラッグ＝前後左右に動かす'
+          + '<br>大きさは4辺のつまみで変えます（一辺は最小 ' + NOTCH_MIN + ' m）'
+          + '<br>消すときは右の「切り欠きを消す」'
+        : '<b>切り欠きの辺</b><br>ドラッグ＝この辺だけ伸ばす・縮める'
+          + '<br>壁より外へは出ません');
+      return;
+    }
     if (hh && hh.object.userData.flatHandle) {
       renderer.domElement.style.cursor = 'ns-resize';
       setHover(null);
+      const q = hh.object.position;
+      showTagAt('屋上の平場をつくる', q.x, q.y + 0.45, q.z);
       showHint('<b>屋根のてっぺん</b><br>上下にドラッグ＝屋上の平場をつくる'
         + '<br>下げるほど平場が広がり、周りの屋根は平場へ向かって下ります'
         + '<br>いっぱいまで下げてさらに引くと、パラペットの陸屋根になります');
@@ -1617,7 +3282,33 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
       setHover(null);
       // ★ その球で何ができるかを、右のパネルの下に出す。
       //   ⚠️ モデルのそばに出すと、肝心の屋根が説明文で隠れてしまう。
+      if (hh.object.userData.rotMark) {
+        // ★ この印だけは、説明を【印のそば】に出す。右のパネルまで目を
+        //   動かすと、どの印の話なのか分からなくなる。
+        const rm = hh.object.userData.rotMark;
+        const q = hh.object.position;
+        renderer.domElement.style.cursor = 'pointer';
+        showTagAt(rm.kind === 'turn' ? '棟の向きを変える'
+          : (rm.undo ? '棟の分かれをやめる' : '直交する棟を合成'),
+        q.x, q.y + ROT_LEAD * 0.45, q.z);
+        showHint(rm.kind === 'turn'
+          ? '<b>棟を 90° 回す</b><br>クリック＝棟の向きを変えて切妻にする'
+            + '<br>もう一度押すと、また 90° 回ります'
+          : (rm.undo
+            ? '<b>棟の分かれをやめる</b><br>クリック＝この直交する棟を消して'
+              + '寄棟に戻す'
+            : '<b>ここで棟を直角に分ける</b><br>クリック＝直交する棟を合成'
+              + '<br>（谷ができます）'));
+        return;
+      }
+      hideSizeTag();
       const hd = hh.object.userData.ridgeEnd;
+      if (hd) {
+        // ★ 球のそばにも一言。右のパネルの説明と対にする。
+        const q = hh.object.position;
+        showTagAt(Math.abs(hd.t || 0) > 1e-6 ? '棟をずらす' : '棟を伸ばす・縮める',
+          q.x, q.y + 0.45, q.z);
+      }
       const rows = ['<b>棟の端</b>'];
       if (Math.abs(hd.t || 0) > 1e-6) {
         rows.push('棟を横切ってドラッグ＝棟をずらす（招き屋根 ⇔ 片流れ）');
@@ -1628,11 +3319,6 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
         if (hd.axis) {
           rows.push('棟を横切ってドラッグ＝棟をずらす（招き屋根 → 片流れ）');
           rows.push('Shift を押しながら＝差し掛け屋根（軒高はそのまま）');
-        }
-        if (hd.branch) {
-          rows.push(hd.branchOff
-            ? 'クリック＝この棟の合成をやめる'
-            : 'クリック＝直交する棟を合成');
         }
       }
       showHint(rows.join('<br>'));
@@ -1807,6 +3493,8 @@ function clearHint() {
 
 // ホイールで押し引きの範囲を増減する（カーソルを当てている間／掴んでいる間）。
 renderer.domElement.addEventListener('wheel', (ev) => {
+  // ⚠️ かつては切り欠きの大きさもホイールで変えていたが、視点の拡大縮小と
+  //   区別がつかず取り違えるので廃止した。大きさは4辺のつまみで変える。
   const t = wallDrag || hoverWall;
   const partial = wallDrag ? wallDrag.partial
     : (hoverWall && (pushTarget(hoverWall.ri, hoverWall.key) || {}).partial);
@@ -1823,7 +3511,8 @@ const endRidgeDrag = () => {
   controls.enabled = true;
   clearHint();
   hideSizeTag();
-  if (!d.moved && d.branch) { toggleBranch(d.branch); return; }
+  // ⚠️ かつては「動かさずに離す＝クリック」で棟を分けていたが、廃止した。
+  //   棟を分ける／やめるは回転マークに一本化してある。球は伸縮とずらしだけ。
   rebuild();
 };
 const endEaveDrag = () => {
@@ -1928,9 +3617,46 @@ function hideSizeTag() {
   if (sizeTagEl) sizeTagEl.style.display = 'none';
 }
 renderer.domElement.addEventListener('pointercancel', () => {
+  if (rotPending) { rotPending = null; controls.enabled = true; }
   endRidgeDrag(); endWallDrag(); endFlatDrag(); endEaveDrag();
 });
-renderer.domElement.addEventListener('pointerup', () => {
+renderer.domElement.addEventListener('pointerup', (ev) => {
+  // ★ ほとんど動いていなければクリック。そこで選択を切り替える。
+  //   ⚠️ 掴んでいる最中は触らない。押し引きの終わりで選択が飛ぶと、
+  //     続けて棟を触れなくなる。壁の押し引きは【動いていない＝ただのクリック】
+  //     なので、ここでは除け者にしない。
+  if (downAt && Math.hypot(ev.clientX - downAt.x, ev.clientY - downAt.y) < 5
+    && !rectDraw && !rotPending && !planDrag && !eaveHDrag && !facePick
+    && !eaveDrag && !flatDrag && !ridgeDrag) {
+    updateSelection(ev);
+  }
+  if (rectDraw) {
+    const r = normRect(rectDraw);
+    rectDraw = null;
+    clearGroup(bandGroup); hideSizeTag();
+    // 点を突いただけのときに 0×0 の板を作らない。
+    if (r.x1 - r.x0 > 0.5 && r.z1 - r.z0 > 0.5) { setTool(null); addSlab([r]); }
+    else { controls.enabled = true; }
+    return;
+  }
+  if (notchDrag) { notchDrag = null; controls.enabled = true; hideSizeTag(); return; }
+  if (rotPending) {
+    const m = rotPending;
+    rotPending = null; controls.enabled = true; clearHint();
+    if (Math.hypot(ev.clientX - m.x0, ev.clientY - m.y0) < 8) applyRotMark(m);
+    return;
+  }
+  if (planDrag) { planDrag = null; controls.enabled = true; clearHint(); return; }
+  if (eaveHDrag) { eaveHDrag = null; controls.enabled = true; hideSizeTag(); return; }
+  // ⚠️ クリックとして扱うのは、ほとんど動いていないときだけ。
+  //   視点を回すドラッグで面が選ばれてしまうのを防ぐ。
+  if (facePick) {
+    if (downAt && Math.hypot(ev.clientX - downAt.x, ev.clientY - downAt.y) < 4) {
+      toggleFace(ev);
+    }
+    downAt = null;
+    return;
+  }
   if (eaveDrag) { endEaveDrag(); return; }
   if (flatDrag) { endFlatDrag(); return; }
   if (wallDrag) { endWallDrag(); return; }
@@ -1965,9 +3691,17 @@ renderer.domElement.addEventListener('pointerup', () => {
 })();
 
 function syncUI() {
+  // ⚠️ 「屋根の有無」では、押すと何が起きるか分からない。いまの状態から
+  //   次に起きることを書く。
+  el('roofToggle').textContent = state.roofed ? '屋根をやめる' : '屋根をかける';
   el('slopeVal').textContent = `${(state.slope * 10).toFixed(1)} 寸`;
   el('eaveOutVal').textContent = `${Math.round(state.eaveOut * 1000)} mm`;
   el('rakeOutVal').textContent = `${Math.round(state.rakeOut * 1000)} mm`;
+  const nb = el('notchToggle');
+  if (nb) {
+    nb.textContent = state.notch ? '切り欠きを消す' : '切り欠き';
+    nb.disabled = !state.roofed;
+  }
 }
 
 /* 水平面上の多角形の面積[㎡]。 */
@@ -2069,6 +3803,11 @@ function syncReadout(result) {
       + `（${footprintArea(layout.rects).toFixed(1)} ㎡）`);
     if (state.extras.length) add('張り出し', `${state.extras.length} か所`);
   }
+  if (parts.length > 1) {
+    add('いまの階', `${active + 1} / ${parts.length}`
+      + (state.roofed ? '（屋根あり）' : '（壁だけ）'));
+  }
+  if (state.baseY > 1e-6) add('床の高さ', `${state.baseY.toFixed(1)} m`);
   add('軒高', `${state.eaveY.toFixed(1)} m`);
   // ★ 平場をつくると素の棟は無くなり、帯に低い峰が立つだけ。呼び名も変える。
   //   ⚠️ 高さは result.ridgeY（素の棟）ではなく、実際に描かれた面から採ること。
@@ -2149,14 +3888,106 @@ function tick() {
 
 // ⚠️ 画面の大きさが決まってからフィットさせること。先に呼ぶと縦横比が
 //   確定しておらず、モデルが中央からずれる。
-setShape('rect');
-requestAnimationFrame(() => { resize(); fitCamera(); });
+// ⚠️ かつて「3Dモデルを表示する」チェックを置いていたが、外したまま次の作業に
+//   入ると【掴むものが何も無い】状態になり、高さも形も与えられなくなる。
+//   下絵は元から手前に描いているので隠す必要が無く、罠にしかならないので撤去した。
+for (const g of [roofGroup, wallGroup, lineGroup, handleGroup, bandGroup]) {
+  g.visible = true;
+}
+
+// 下絵。平面図が無いときだけ、立面を立てる位置をモデルの外形から借りる。
+initUnderlay({
+  scene,
+  pickFaces: startFacePick,
+  floorY: () => state.baseY,
+  /* 下絵から起こした外形も、長方形を描いたときと同じ【板】にする。
+     ★ ここを共通にしておくと、以後の押し引き・積み重ね・屋根が
+       作り方を問わず同じように効く。 */
+  setFootprint: (arg) => {
+    if (!arg) return;
+    const list = Array.isArray(arg) ? arg : [arg];
+    dropUntouchedPlanSlab();
+    addSlab(list);
+    planSlab = parts[active];
+  },
+  /* 読込用レイヤから起こした壁の模型を受け取る。
+     ★ 外形（屋根用）は板として置き、その上に壁の模型を載せる。
+       高さは今までどおり【青い箱】で与える。 */
+  setWalls: (m) => {
+    if (!m) return;
+    // ★ 前に読み込んだ壁が【まだ高さを与えていない】なら捨てて置き直す。
+    //   高さを与えてあれば、その上に【次の階】として積む。
+    //   ⚠️ 無条件に捨ててはいけない。2階を読み込んだ瞬間に1階が消える。
+    dropUntouchedDxf();
+    // 床の板 → その上に壁。1階は「1階の床高さ」、上階は床板 100mm。
+    addSlab([m.foot]);
+    const upper = state.baseY > 1e-6;
+    state.eaveY = state.baseY + (upper ? FLOOR_T : floorH());
+    parts[active].fromDxf = true;
+    parts[active].floorSlab = !upper;    // 厚みが「1階の床高さ」に連動する板
+    // ★ 下の階から階段が上がってくるところは、床を張らない。
+    if (upper) {
+      const below = parts.find((p) => p.walls
+        && Math.abs(p.eaveY - state.baseY) < 1e-6 && p.walls.stair);
+      if (below) {
+        const t = below.walls.stair;
+        state.hole = { x0: t.x0, z0: t.z0, x1: t.x1, z1: t.z1 };
+      }
+    }
+    const slab = parts[active];
+    addSlab([m.foot]);                   // 板の上から始まる階
+    parts[active].fromDxf = true;
+    state.walls = m;
+    lastDxf = [slab, parts[active]];
+    rebuild(); syncUI();
+  },
+});
+el('roofToggle').addEventListener('click', roofHere);
+el('notchToggle').addEventListener('click', toggleNotch);
+el('toolRect').addEventListener('click', () => setTool('rect'));
+el('toolDxf').addEventListener('click', () => {
+  setTool(null);
+  askPlanFile();          // ファイルを選ぶ → そのまま囲って指定 → 板が立つ
+});
+// ★ 1階の床高さは、読み込んだあとでも効かせる。数値を打ち替えたら、
+//   床の板の厚みを変え、その上に載っている階をまとめて持ち上げる。
+el('floorH').addEventListener('input', () => {
+  const fh = floorH();
+  let moved = false;
+  for (const p of parts) {
+    if (!p.floorSlab) continue;
+    const old = p.eaveY - p.baseY;
+    if (Math.abs(old - fh) < 1e-9) continue;
+    const d = fh - old;
+    const topWas = p.baseY + old;
+    p.eaveY = p.baseY + fh;
+    // ⚠️ 真上の階だけでなく、その上に積んである階も全部ずらすこと。
+    for (const q of parts) {
+      if (q !== p && q.baseY > topWas - 1e-6) { q.baseY += d; q.eaveY += d; }
+    }
+    moved = true;
+  }
+  if (moved) { rebuild(); syncUI(); }
+});
+el('facePickOk').addEventListener('click', () => endFacePick(true));
+el('facePickNo').addEventListener('click', () => endFacePick(false));
+
+// ★ 起動時は何も描かない。「はじめに」で選んでもらう。
+requestAnimationFrame(() => { resize(); });
 tick();
 
 // 動作確認から触れるように出しておく
 window.__roof = {
   state, rebuild, applyLayout, buildRoof, scene, camera, renderer,
   computeRoof, ridgeHandles, visibleHandleKeys, watchedBuried, isBuried,
+  addSlab, roofHere, setTool, parts, applyRotMark, buildRotMarks,
+  pickDebug: (cx, cy) => {
+    setRay({ clientX: cx, clientY: cy });
+    return _rc.intersectObjects(handleGroup.children, false)
+      .map((h) => ({ d: +h.distance.toFixed(3), geo: h.object.geometry.type,
+        keys: Object.keys(h.object.userData) }));
+  },
+  get active() { return active; },
   footprintCentroid, roofName,
   roofGroup, wallGroup, lineGroup, handleGroup, bandGroup,
   get layout() { return layout; },

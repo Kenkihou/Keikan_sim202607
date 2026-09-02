@@ -108,14 +108,41 @@ function edgeInfo(r, key) {
      ⚠️ ここを「短辺の半分」で固定していると、切妻で棟の向きを変えたときに
        棟高が合わなくなる。立ち上がる辺だけを見て測ること。 */
 function halfSpanOf(r, ri, gables) {
-  const on = (key) => (gables[`${ri}:${key}`] ?? 0) < 1 - EPS;   // 立ち上がる辺か
+  const g = (key) => (gables[`${ri}:${key}`] ?? 0);
+  const on = (key) => g(key) < 1 - EPS;             // 立ち上がる辺か
   const wx = r.x1 - r.x0, wz = r.z1 - r.z0;
+  // ★ 棟の高さを決めるのは【途中で打ち切っていない対】だけ。
+  //   途中で打ち切った面はそこで終わって上へは効かないので、棟を支えない。
+  //   ⚠️ ここを「切妻でなければ支える」（g<1）で見ていたときは、長辺側を
+  //     少しでも妻にした瞬間に、支えていない対が棟高を決めてしまい、
+  //     屋根面が食い違って妻面に穴が開いた。
+  const full = [];
+  if (g('w') <= EPS && g('e') <= EPS) full.push(wx / 2);
+  if (g('s') <= EPS && g('n') <= EPS) full.push(wz / 2);
+  if (full.length) return Math.min(...full);
   const cands = [];
   if (on('w') && on('e')) cands.push(wx / 2);
   else if (on('w') || on('e')) cands.push(wx);      // 片側だけ＝片流れ
   if (on('s') && on('n')) cands.push(wz / 2);
   else if (on('s') || on('n')) cands.push(wz);
   return cands.length ? Math.min(...cands) : 0;
+}
+
+/* 棟が走る向き。'x'（東西へ走る）/ 'z'（南北へ走る）。
+   ★ 棟は【立ち上がって棟を支えている対】と直交して走る。halfSpanOf と
+     同じ見方をすること。片方だけで決めると、球の位置と実際の棟がずれる。 */
+function ridgeAxisOf(r, ri, gables) {
+  const g = (key) => (gables[`${ri}:${key}`] ?? 0);
+  const on = (key) => g(key) < 1 - EPS;
+  const wx = r.x1 - r.x0, wz = r.z1 - r.z0;
+  const fullX = g('w') <= EPS && g('e') <= EPS;     // 東西から支えている
+  const fullZ = g('s') <= EPS && g('n') <= EPS;     // 南北から支えている
+  if (fullX && fullZ) return wx >= wz ? 'x' : 'z';
+  if (fullZ) return 'x';                            // 南北から → 棟は東西
+  if (fullX) return 'z';                            // 東西から → 棟は南北
+  if (on('s') && on('n') && !(on('w') && on('e'))) return 'x';
+  if (on('w') && on('e') && !(on('s') && on('n'))) return 'z';
+  return wx >= wz ? 'x' : 'z';
 }
 
 /* 棟をどちらへずらせるか。'x'（東西へずらす）/ 'z'（南北へずらす）/ null。
@@ -532,5 +559,5 @@ function findValleyProblem(result) {
 
 export {
   SHAPES, EDGE_KEYS, EDGE_LABEL, buildRoof, outlineEdges, findValleyProblem,
-  halfSpan, halfSpanOf, shiftAxisOf, maxRidgeY, edgeInfo, k3,
+  halfSpan, halfSpanOf, ridgeAxisOf, shiftAxisOf, maxRidgeY, edgeInfo, k3,
 };

@@ -2,3 +2,6 @@ node_modules/
 .env
 dist/
 __pycache__/
+
+# 練習用のサンプル図面（大きいので追跡しない）
+05_roof-lab/sample/

@@ -5,3 +5,9 @@ __pycache__/
 
 # 練習用のサンプル図面（大きいので追跡しない）
 05_roof-lab/sample/
+
+# 04 の検証用データ。コードからは読み込んでおらず、大きい（87MB / 65MB）ので追跡しない。
+# ⚠️ ファイル名で個別に指定している。*.splat / *.spz とまとめて外すと、
+#   将来ほんとうに読み込むデータを入れたときに黙って抜け落ちる。
+04_earth-simulator/kyoto_city_garden.splat
+04_earth-simulator/export_25000_修正.spz

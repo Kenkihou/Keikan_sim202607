@@ -11,3 +11,11 @@ __pycache__/
 #   将来ほんとうに読み込むデータを入れたときに黙って抜け落ちる。
 04_earth-simulator/kyoto_city_garden.splat
 04_earth-simulator/export_25000_修正.spz
+
+# 社内向けの操作ガイド一式（台本・画面・pptx）。
+# ⚠️ このリポジトリは【公開】なので、社内資料は上げない。
+#   フォルダは OneDrive の中にあるので、同期とバックアップはそちらに任せる。
+01_building-builder/manual/
+
+# 図面データ。内部でやり取りするものなので、ネットには上げない。
+*.dxf

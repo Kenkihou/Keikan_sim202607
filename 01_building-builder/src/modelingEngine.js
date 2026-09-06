@@ -1,5 +1,8 @@
 // modelingEngine.js
 import * as THREE from 'three';
+import { dxfWindows } from './dxf/dxfEngine.js';
+// ★追加：屋根型を選ぶのではなく、辺ごとの立ち上がりで連続的に変形する屋根。
+import { buildFreeRoof } from './roof/roofMesh.js';
 import { applyPartTexture } from './materialTextureFactory.js';
 
 // ==========================================
@@ -14,7 +17,7 @@ const balcGlassMat = new THREE.MeshBasicMaterial({
 const woodMat = new THREE.MeshBasicMaterial({ 
     color: 0x4a2e1b, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1, side: THREE.DoubleSide 
 });
-const sashMat = new THREE.MeshBasicMaterial({ 
+export const sashMat = new THREE.MeshBasicMaterial({ 
     color: 0x444444, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1, side: THREE.DoubleSide 
 });
 const createGlassTexture = () => {
@@ -30,7 +33,7 @@ const createGlassTexture = () => {
     ctx.fillRect(0, 0, 2, 256);
     return new THREE.CanvasTexture(canvas);
 };
-const windowGlassMat = new THREE.MeshBasicMaterial({ 
+export const windowGlassMat = new THREE.MeshBasicMaterial({ 
     name: 'window_glass',
     map: createGlassTexture(), color: 0xffffff, transparent: true, opacity: 0.85, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1, side: THREE.DoubleSide 
 });
@@ -79,7 +82,20 @@ function getCachedMaterial(b, partKey, templateMat) {
 // ==========================================
 const WIN_W = 1970;          // 窓の開口幅。従来の障子外形と同じ値にして見た目の大きさを変えない
 const WIN_HEAD_Y = 2100;     // 窓上端の高さ（従来どおり）
+// ★追加：窓の種類。leaves は障子の枚数（0＝FIX でガラスだけ）。
+//   ⚠️ 大きさは種類に紐づけない。種類を変えても寸法はそのまま
+//     （変えたい人はつまみで変える）。
+const WIN_TYPES = {
+    sliding: { name: '引違い', leaves: 2 },
+    fix: { name: 'FIX', leaves: 0 },
+};
 const DOOR_W = 900, DOOR_H = 2000, PORCH_H = 100;
+// そで壁・垂れ壁の厚み[mm]。つまみの位置もこの値から出すので、共有しておく。
+const SODE_T = 100, TARE_T = 100;
+// 庇の厚み。⚠️ buildDecorations の t（軒庇）と t_flat（水平庇）と同じ値であること。
+const VISOR_T = 150, FLAT_T = 100;
+// バルコニー。床の上げ量・床と壁の厚み[mm]。
+const BALC_LIFT = 100, BALC_T = 100;
 const FRAME_MITSUKE = 40;    // 窓・玄関の枠の見付幅（開口の縁から内側に見える枠の幅）
 const FRAME_PROTRUDE = 20;   // 枠が壁面から外側（手前）へ出る寸法
 const SASH_D = 40;           // 障子1枚の見込み
@@ -173,16 +189,37 @@ function buildFrameGeometry(w, h, mitsuke, protrude) {
 //   u = 建具の offsetX が動く向き、v = ワールドY（本体ボックスの中心を原点とする）
 //   ★ ここで返す矩形が、そのまま壁に開ける穴になる。buildWindows / buildDoors は
 //     同じ計算で建具を置くので、両者がずれないようこの関数に一本化してある。
+/* ★追加：その面の建具の一覧。窓は面ごとに【何枚でも】置ける。
+   ★ 古いデータは1枚ぶんの入れ物（オブジェクト）なので、触ったときに配列へ
+     直して書き戻す。読むところも書くところも、以後は配列だけを見ればよい。
+   ⚠️ 玄関は1つのまま。土間が付くので、同じ面に2つあっても意味が通らない。 */
+function openListOf(b, dir, kind) {
+    if (kind === 'door') {
+        const p = b.doorParams && b.doorParams[dir];
+        return p ? [p] : [];
+    }
+    if (!b.windows || !b.windows[dir]) return [];
+    if (!b.windowParams) b.windowParams = {};
+    let a = b.windowParams[dir];
+    if (!a) a = [];
+    else if (!Array.isArray(a)) a = [a];
+    b.windowParams[dir] = a;
+    return a;
+}
+
 function getWallOpenings(b, baseY) {
     const res = { px: [], nx: [], pz: [], nz: [] };
     const cy = baseY + b.h / 2;   // 本体ボックスの中心Y（ワールド）
     if (b.windows) {
         for (const dir in b.windows) {
             if (!res[dir]) continue;
-            const p = (b.windowParams && b.windowParams[dir]) || { height: 2000, offsetX: 0, offsetY: 0 };
-            const h = p.height;
-            const topY = baseY + WIN_HEAD_Y + (p.offsetY || 0);
-            res[dir].push({ kind: 'window', u: p.offsetX || 0, v: topY - h / 2 - cy, w: WIN_W, h });
+            for (const p of openListOf(b, dir, 'window')) {
+                const h = p.height || 2000;
+                // ★追加：幅も【つまんで決める】。持っていなければ従来の既定値。
+                const w = p.width || WIN_W;
+                const topY = baseY + WIN_HEAD_Y + (p.offsetY || 0);
+                res[dir].push({ kind: 'window', u: p.offsetX || 0, v: topY - h / 2 - cy, w, h });
+            }
         }
     }
     // 玄関は1階（baseY=0）のみ。buildDoors の条件と揃えること。
@@ -190,7 +227,8 @@ function getWallOpenings(b, baseY) {
         for (const dir in b.doors) {
             if (!res[dir]) continue;
             const p = (b.doorParams && b.doorParams[dir]) || { offsetX: 0 };
-            res[dir].push({ kind: 'door', u: p.offsetX || 0, v: (PORCH_H + DOOR_H / 2) - cy, w: DOOR_W, h: DOOR_H });
+            const dw = p.width || DOOR_W, dh = p.height || DOOR_H;
+            res[dir].push({ kind: 'door', u: p.offsetX || 0, v: (PORCH_H + dh / 2) - cy, w: dw, h: dh });
         }
     }
     return res;
@@ -280,6 +318,112 @@ export const ModelingEngine = {
         return getCachedMaterial(b, partKey, templateMat);
     },
 
+    /* ★追加：面に沿った座標のとり方。u は建具の offsetX が動く向き（面を外から
+       見て右が＋）、n は面の外向き、half は本体の中心から面までの距離。
+       ⚠️ buildWindows / buildDoors の rotY + translateX と同じ向きにすること。
+         ここがずれると、つまんで動かした向きと建具の動く向きが逆になる。 */
+    faceBasis(b, dir) {
+        const m = {
+            pz: { u: [1, 0], n: [0, 1], half: b.d / 2, len: b.w },
+            nz: { u: [-1, 0], n: [0, -1], half: b.d / 2, len: b.w },
+            px: { u: [0, -1], n: [1, 0], half: b.w / 2, len: b.d },
+            nx: { u: [0, 1], n: [-1, 0], half: b.w / 2, len: b.d },
+        };
+        return m[dir] || null;
+    },
+
+    /* ★追加：建具（窓・玄関）のいまの位置と大きさ。
+       ★ 開口の計算は getWallOpenings に一本化してあるので、そこから引く。
+         別々に出すと、つまみの位置と実際の建具がずれる。 */
+    WIN_TYPES,
+
+    /* ★追加：図面から起こした階の窓。番号は plan.opens の番号。 */
+    dxfWindowAt(b, index) {
+        if (!b || b.kind !== 'dxf' || !b.plan) return null;
+        return dxfWindows(b.plan).find((w) => w.src === index) || null;
+    },
+
+    openList(b, dir, kind) { return openListOf(b, dir, kind); },
+
+    /* ★追加：そで壁のいまの姿。u は面に沿った中心の位置、depth は壁の面から
+       外へ出る奥行、y0/y1 は世界の高さ。つまみもドラッグもここから引く。 */
+    sodeRect(b, baseY, dir, side) {
+        const f = this.faceBasis(b, dir);
+        const mode = b.sodeWalls && b.sodeWalls[dir];
+        const p = b.sodeParams && b.sodeParams[dir] && b.sodeParams[dir][side];
+        if (!f || !p || !mode) return null;
+        if (mode !== 'both' && mode !== side) return null;
+        const inset = Math.min(Math.max(p.inset || 0, 0),
+            Math.max(0, f.len / 2 - SODE_T));
+        const h = Math.max(100, b.h - (p.topGap || 0));
+        const sign = (side === 'left') ? -1 : 1;
+        return { u: (f.len / 2 - SODE_T / 2 - inset) * sign, t: SODE_T,
+            depth: p.depth, inset, y0: baseY, y1: baseY + h, h };
+    },
+
+    /* ★追加：バルコニーのいまの姿。
+       floorTop は床の天端、railY は手すりの天端、sideY は側面壁の天端。 */
+    balcRect(b, baseY, dir) {
+        const f = this.faceBasis(b, dir);
+        const type = b.balconies && b.balconies[dir];
+        const p = b.balcParams && b.balcParams[dir];
+        if (!f || !type || !p) return null;
+        const floorTop = baseY + BALC_LIFT + BALC_T;
+        // ⚠️ 側面壁は階の天端で頭打ち。buildBalconies と同じ見方にすること。
+        const hSide = Math.min(p.h_side, Math.max(100, b.h - BALC_LIFT - BALC_T));
+        return { type, depth: p.depth, floorTop,
+            hRail: p.h_handrail, hSide, hSideMax: Math.max(100, b.h - BALC_LIFT - BALC_T),
+            railY: floorTop + p.h_handrail, sideY: floorTop + hSide,
+            uSide: -(f.len / 2 - BALC_T / 2), t: BALC_T };
+    },
+
+    /* ★追加：垂れ壁のいまの姿。u0/u1 は面に沿った左右の端。 */
+    tareRect(b, baseY, dir) {
+        const f = this.faceBasis(b, dir);
+        const p = b.tareWalls && b.tareWalls[dir] && b.tareParams && b.tareParams[dir];
+        if (!f || !p) return null;
+        const gapL = Math.max(0, p.left || 0), gapR = Math.max(0, p.right || 0);
+        const w = Math.max(300, f.len - gapL - gapR);
+        const c = (gapL - gapR) / 2;
+        return { u0: c - w / 2, u1: c + w / 2, w, h: p.height,
+            y1: baseY, y0: baseY - p.height, gapL, gapR, t: TARE_T };
+    },
+
+    /* ★追加：軒庇のいまの姿。yTop は取り付く高さ（階の天端）、yOut は先端の高さ。
+       ⚠️ 数字の出どころは buildDecorations と同じにすること。別に持つと、
+         つまみと絵が食い違う。 */
+    visorRect(b, baseY, dir) {
+        const f = this.faceBasis(b, dir);
+        const p = b.visorParams && b.visorParams[dir];
+        if (!f || !p || !(b.visors || []).includes(dir)) return null;
+        const eaves = (p.eaves !== undefined) ? p.eaves : 600;
+        const keraba = (p.keraba !== undefined) ? p.keraba : 300;
+        const slope = (p.slope !== undefined) ? p.slope : 4;
+        const yTop = baseY + b.h;
+        return { eaves, keraba, slope, yTop, yOut: yTop - eaves * slope / 10,
+            len: f.len, t: VISOR_T };
+    },
+
+    /* ★追加：水平庇のいまの姿。y は板の天端。 */
+    flatRect(b, baseY, dir) {
+        const f = this.faceBasis(b, dir);
+        const p = b.flatVisorParams && b.flatVisorParams[dir];
+        if (!f || !p || !(b.flatVisors || []).includes(dir)) return null;
+        const depth = (p.depth !== undefined) ? p.depth : 300;
+        const offsetY = (p.offsetY !== undefined) ? p.offsetY : 0;
+        const margin = (p.margin !== undefined) ? p.margin : 0;
+        return { depth, offsetY, margin, y: baseY + b.h + offsetY,
+            len: f.len, t: FLAT_T };
+    },
+
+    openingRect(b, baseY, dir, kind, index = 0) {
+        const o = (getWallOpenings(b, baseY)[dir] || [])
+            .filter((q) => q.kind === kind)[index];
+        if (!o) return null;
+        const yc = baseY + b.h / 2 + o.v;
+        return { u: o.u, w: o.w, h: o.h, yc, y0: yc - o.h / 2, y1: yc + o.h / 2 };
+    },
+
     /**
      * 本体ボックスのジオメトリ（窓・玄関の開口をくり抜いたもの）。
      * BoxGeometry の差し替えなので、グループ順（px,nx,top,bottom,pz,nz）と法線を保っている。
@@ -304,10 +448,12 @@ export const ModelingEngine = {
             for (let dir in b.doors) {
                 const doorGroup = new THREE.Group();
                 const p = b.doorParams && b.doorParams[dir] ? b.doorParams[dir] : { offsetX: 0 };
-                
-                // 寸法設定。開口は DOOR_W×DOOR_H で、扉本体は四周 FRAME_MITSUKE ぶん小さい（枠の見え掛かり）。
-                const h_door = DOOR_H - FRAME_MITSUKE * 2;
-                const w_door = DOOR_W - FRAME_MITSUKE * 2;
+
+                // ★追加：玄関の大きさも【つまんで決める】。持っていなければ従来の既定値。
+                const dw = p.width || DOOR_W, dh = p.height || DOOR_H;
+                // 寸法設定。開口は dw×dh で、扉本体は四周 FRAME_MITSUKE ぶん小さい（枠の見え掛かり）。
+                const h_door = dh - FRAME_MITSUKE * 2;
+                const w_door = dw - FRAME_MITSUKE * 2;
                 const d_door = SASH_D;
                 const doorMatB = getCachedMaterial(b, 'door', doorMat);
                 const w_porch = 1500, h_porch = PORCH_H, d_porch = 900;
@@ -330,17 +476,17 @@ export const ModelingEngine = {
                 //   窓と同じ考え方。壁に開けた穴の厚みを見せる。枠の正面と同じくドアと同色で塗る
                 //   （壁色にすると、枠の内側だけ色が違って見えてしまうため）。
                 const dTunnelGeo = buildRevealTunnelGeometry(
-                    DOOR_W - FRAME_MITSUKE * 2, DOOR_H - FRAME_MITSUKE * 2, JAMB_D);
+                    dw - FRAME_MITSUKE * 2, dh - FRAME_MITSUKE * 2, JAMB_D);
                 const dTunnel = new THREE.Mesh(dTunnelGeo, doorMatB);
-                dTunnel.position.set(0, PORCH_H + DOOR_H / 2, offsetZ);
+                dTunnel.position.set(0, PORCH_H + dh / 2, offsetZ);
                 const dTunnelLine = new THREE.LineSegments(new THREE.EdgesGeometry(dTunnelGeo), edgeMat);
                 dTunnelLine.position.copy(dTunnel.position);
                 doorGroup.add(dTunnel, dTunnelLine);
 
                 // --- 3. 玄関の枠（見え掛かり。壁面から外側へ FRAME_PROTRUDE 飛び出す。扉と同色）---
-                const dFrameGeo = buildFrameGeometry(DOOR_W, DOOR_H, FRAME_MITSUKE, FRAME_PROTRUDE);
+                const dFrameGeo = buildFrameGeometry(dw, dh, FRAME_MITSUKE, FRAME_PROTRUDE);
                 const dFrame = new THREE.Mesh(dFrameGeo, doorMatB);
-                dFrame.position.set(0, PORCH_H + DOOR_H / 2, offsetZ);
+                dFrame.position.set(0, PORCH_H + dh / 2, offsetZ);
                 const dFrameLine = new THREE.LineSegments(new THREE.EdgesGeometry(dFrameGeo), edgeMat);
                 dFrameLine.position.copy(dFrame.position);
                 doorGroup.add(dFrame, dFrameLine);
@@ -348,7 +494,7 @@ export const ModelingEngine = {
                 // --- 4. 玄関扉 (Door) ---
                 //   扉は開口の中に落とし込み、外面を壁面から SASH_INSET だけ引っ込ませる。
                 const doorGeo = new THREE.BoxGeometry(w_door, h_door, d_door);
-                const doorPos = new THREE.Vector3(0, h_porch + DOOR_H / 2, offsetZ - SASH_INSET - d_door / 2);
+                const doorPos = new THREE.Vector3(0, h_porch + dh / 2, offsetZ - SASH_INSET - d_door / 2);
                 const doorMesh = new THREE.Mesh(doorGeo, doorMatB);
                 doorMesh.position.copy(doorPos);
                 const doorLine = new THREE.LineSegments(new THREE.EdgesGeometry(doorGeo), edgeMat);
@@ -363,7 +509,7 @@ export const ModelingEngine = {
                 // タグ付け
                 doorGroup.traverse(child => {
                     if (child.isMesh || child.isLineSegments) {
-                        child.userData = { isDeco: true, type: 'door', dir: dir, id: b.id };
+                        child.userData = { isDeco: true, type: 'door', dir: dir, id: b.id, openIndex: 0 };
                     }
                 });
                 
@@ -381,12 +527,14 @@ export const ModelingEngine = {
 
         if (b.windows) {
             for (let dir in b.windows) {
+              const list = openListOf(b, dir, 'window');
+              for (let wi = 0; wi < list.length; wi++) {
                 const windowGroup = new THREE.Group();
-                const p = b.windowParams && b.windowParams[dir] ? b.windowParams[dir] : { height: 2000, offsetX: 0, offsetY: 0 };
+                const p = list[wi];
 
                 // 開口（＝壁に開いている穴）の寸法。buildBodyGeometryFor と同じ計算にすること。
                 const h_open = p.height;
-                const w_open = WIN_W;
+                const w_open = p.width || WIN_W;
 
                 const topY = baseY + WIN_HEAD_Y + (p.offsetY || 0);
                 windowGroup.position.set(b.x, topY - h_open / 2, b.z);
@@ -417,12 +565,15 @@ export const ModelingEngine = {
                 frameLine.position.set(0, 0, offsetZ);
                 windowGroup.add(frameMesh, frameLine);
 
-                // --- 3. 引き違い障子 2枚 ---
-                //   障子2枚の外形は開口より四周 FRAME_MITSUKE だけ小さい（枠の見え掛かり）。
-                //   2枚は框の見付ぶん（FRAME_W）重なる＝召し合わせ。
+                // --- 3. 障子 ---
+                //   ★ 種類で枚数が変わる。引違いは2枚、すべり出し・開きは1枚、
+                //     FIX は障子が無くガラスだけ。外形はどれも開口より四周
+                //     FRAME_MITSUKE だけ小さい（枠の見え掛かり）。
+                //   ⚠️ 引違いの2枚は框の見付ぶん（FRAME_W）重なる＝召し合わせ。
+                const wt = WIN_TYPES[p.type] || WIN_TYPES.sliding;
                 const w_asm = w_open - FRAME_MITSUKE * 2;
                 const h_sash = h_open - FRAME_MITSUKE * 2;
-                const w_sash = (w_asm + FRAME_W) / 2;
+                const w_sash = (wt.leaves === 2) ? (w_asm + FRAME_W) / 2 : w_asm;
 
                 // 障子1枚ぶんのジオメトリ（框＝外形から内側をくり抜いた枠）
                 const makeSashGeo = () => {
@@ -445,10 +596,21 @@ export const ModelingEngine = {
                 const glassGeo = new THREE.BoxGeometry(w_sash - FRAME_W * 2, h_sash - FRAME_W * 2, GLASS_T);
 
                 // 右が外、左が内（日本の引き違いの通常の建て方。参照モデルもこの順）
-                const leaves = [
-                    { x: w_asm / 2 - w_sash / 2,  z: offsetZ - SASH_INSET - SASH_D / 2 },        // 外障子（右）
-                    { x: -w_asm / 2 + w_sash / 2, z: offsetZ - SASH_INSET - SASH_D * 1.5 },      // 内障子（左）
-                ];
+                const leaves = (wt.leaves === 2)
+                    ? [{ x: w_asm / 2 - w_sash / 2, z: offsetZ - SASH_INSET - SASH_D / 2 },
+                       { x: -w_asm / 2 + w_sash / 2, z: offsetZ - SASH_INSET - SASH_D * 1.5 }]
+                    : (wt.leaves === 1
+                        ? [{ x: 0, z: offsetZ - SASH_INSET - SASH_D / 2 }]
+                        : []);
+                // ★ FIX は障子が無い。枠の内側にガラスを1枚はめるだけ。
+                if (!leaves.length) {
+                    const fixGeo = new THREE.BoxGeometry(w_asm, h_sash, GLASS_T);
+                    const fix = new THREE.Mesh(fixGeo, windowGlassMat);
+                    fix.name = 'window_glass';
+                    fix.userData.isGlass = true;
+                    fix.position.set(0, 0, offsetZ - SASH_INSET - GLASS_T / 2);
+                    windowGroup.add(fix);
+                }
                 for (const lf of leaves) {
                     const sashGeo = makeSashGeo();
                     const pos = new THREE.Vector3(lf.x, 0, lf.z);
@@ -471,12 +633,14 @@ export const ModelingEngine = {
                 // ▼▼▼ 修正: isGlass などの既存のuserDataを消さないようにマージする ▼▼▼
                 windowGroup.traverse(child => {
                     if (child.isMesh || child.isLineSegments) {
-                        child.userData = { ...child.userData, isDeco: true, type: 'window', dir: dir, id: b.id };
+                        child.userData = { ...child.userData, isDeco: true, type: 'window',
+                            dir: dir, id: b.id, openIndex: wi };
                     }
                 });
                 // ▲▲▲ 修正ここまで ▲▲▲
 
                 group.add(windowGroup);
+              }
             }
         }
         return group;
@@ -490,19 +654,22 @@ export const ModelingEngine = {
         const { roofMat, edgeMat } = materials; // ★ balcWallMat, balcGlassMat の受け取りを削除
 
         if (b.balconies) {
-            const t_floor = 100; 
-            const t_wall = 100;  
+            const t_floor = BALC_T;
+            const t_wall = BALC_T;
 
             for (let dir in b.balconies) {
                 const type = b.balconies[dir];
                 const p = b.balcParams && b.balcParams[dir] ? b.balcParams[dir] : { depth: 1000, h_handrail: 1100, h_side: 1100 };
                 const d_total = p.depth;
                 const d_floor = d_total - t_wall;
-                const h_wall = p.h_handrail; 
-                const h_side = p.h_side;     
+                const h_wall = p.h_handrail;
+                // ★ 側面壁は【階の天端まで】上げられる。
+                //   ⚠️ 階を低くしたら一緒に下がる。持っている値をそのまま使うと、
+                //     壁だけが階の上へ突き出る。
+                const h_side = Math.min(p.h_side, Math.max(100, b.h - BALC_LIFT - BALC_T));
 
                 const balcGroup = new THREE.Group();
-                balcGroup.position.set(b.x, baseY + 100, b.z);
+                balcGroup.position.set(b.x, baseY + BALC_LIFT, b.z);
 
                 const w2 = b.w / 2;
                 const d2 = b.d / 2;
@@ -891,6 +1058,16 @@ export const ModelingEngine = {
                     const e_lr = lr.eaves !== undefined ? lr.eaves : 600;
                     const slope_lr = lr.slope !== undefined ? lr.slope / 10 : 0.4;
                     const k_lr = lr.keraba !== undefined ? lr.keraba : 300;
+                    // ★ ケラバは【辺ごと】に持てるようにする。
+                    //   ⚠️ 1つの値を左右で使い回すと、片側を詰めたときに反対側まで
+                    //     一緒に動いて、片方だけ壁ぎりぎりに納めることができない。
+                    //   指定が無ければ従来どおり keraba の1つの値に従う。
+                    const kOf = (dd) => {
+                        const v = lr['keraba_' + dd];
+                        return (typeof v === 'number') ? Math.max(0, v) : k_lr;
+                    };
+                    const k_nx = kOf('nx'), k_px = kOf('px');
+                    const k_nz = kOf('nz'), k_pz = kOf('pz');
 
                     const H_max = max_out * slope_lr; 
                     const H_out_eaves = e_lr * slope_lr;
@@ -1150,8 +1327,8 @@ export const ModelingEngine = {
                         if (lr.out_pz > 0) { 
                             let x_L_in = x_in_L, x_L_out = x_out_L;
                             let x_R_in = x_in_R, x_R_out = x_out_R;
-                            if (lr.out_nx === 0) { x_L_in = x_wall_L - k_lr; x_L_out = x_wall_L - k_lr; }
-                            if (lr.out_px === 0) { x_R_in = x_wall_R + k_lr; x_R_out = x_wall_R + k_lr; }
+                            if (lr.out_nx === 0) { x_L_in = x_wall_L - k_nx; x_L_out = x_wall_L - k_nx; }
+                            if (lr.out_px === 0) { x_R_in = x_wall_R + k_px; x_R_out = x_wall_R + k_px; }
                             
                             const pIT_L = [x_L_in, H_max, z_in_F, 'T'], pIT_R = [x_R_in, H_max, z_in_F, 'T'];
                             const pIB_L = [x_L_in, H_max, z_in_F, 'B'],   pIB_R = [x_R_in, H_max, z_in_F, 'B'];
@@ -1163,10 +1340,10 @@ export const ModelingEngine = {
                             addRoofQuad(pOT_R, pOT_L, pOB_L, pOB_R); 
 
                             if (lr.out_nx === 0) { 
-                                if (k_lr > 0) {
-                                    const pBT_L = [x_wall_L - k_lr, H_max-dropInner, z_in_F - backDist, 'T'];
+                                if (k_nx > 0) {
+                                    const pBT_L = [x_wall_L - k_nx, H_max-dropInner, z_in_F - backDist, 'T'];
                                     const pBT_R = [x_wall_L, H_max-dropInner, z_in_F - backDist, 'T'];
-                                    const pBB_L = [x_wall_L - k_lr, H_max-dropInner, z_in_F - backDist, 'B'];
+                                    const pBB_L = [x_wall_L - k_nx, H_max-dropInner, z_in_F - backDist, 'B'];
                                     const pBB_R = [x_wall_L, H_max-dropInner, z_in_F - backDist, 'B'];
                                     const piT_R = [x_wall_L, H_max, z_in_F, 'T'];
                                     const piB_R = [x_wall_L, H_max, z_in_F, 'B'];
@@ -1179,11 +1356,11 @@ export const ModelingEngine = {
                                 addWallTri([x_wall_L, H_max, z_in_F], [x_wall_L, 0, z_in_F], [x_wall_L, 0, z_wall_F]);
                             }
                             if (lr.out_px === 0) { 
-                                if (k_lr > 0) {
+                                if (k_px > 0) {
                                     const pBT_L = [x_wall_R, H_max-dropInner, z_in_F - backDist, 'T'];
-                                    const pBT_R = [x_wall_R + k_lr, H_max-dropInner, z_in_F - backDist, 'T'];
+                                    const pBT_R = [x_wall_R + k_px, H_max-dropInner, z_in_F - backDist, 'T'];
                                     const pBB_L = [x_wall_R, H_max-dropInner, z_in_F - backDist, 'B'];
-                                    const pBB_R = [x_wall_R + k_lr, H_max-dropInner, z_in_F - backDist, 'B'];
+                                    const pBB_R = [x_wall_R + k_px, H_max-dropInner, z_in_F - backDist, 'B'];
                                     const piT_L = [x_wall_R, H_max, z_in_F, 'T'];
                                     const piB_L = [x_wall_R, H_max, z_in_F, 'B'];
                                     addRoofQuad(pBT_L, pBT_R, pIT_R, piT_L);
@@ -1199,8 +1376,8 @@ export const ModelingEngine = {
                         if (lr.out_nz > 0) {
                             let x_inR = x_in_R, x_outR = x_out_R;
                             let x_inL = x_in_L, x_outL = x_out_L;
-                            if (lr.out_px === 0) { x_inR = x_wall_R + k_lr; x_outR = x_wall_R + k_lr; }
-                            if (lr.out_nx === 0) { x_inL = x_wall_L - k_lr; x_outL = x_wall_L - k_lr; }
+                            if (lr.out_px === 0) { x_inR = x_wall_R + k_px; x_outR = x_wall_R + k_px; }
+                            if (lr.out_nx === 0) { x_inL = x_wall_L - k_nx; x_outL = x_wall_L - k_nx; }
 
                             const pIT_R = [x_inR, H_max, z_in_B, 'T'], pIT_L = [x_inL, H_max, z_in_B, 'T'];
                             const pIB_R = [x_inR, H_max, z_in_B, 'B'],   pIB_L = [x_inL, H_max, z_in_B, 'B'];
@@ -1212,10 +1389,10 @@ export const ModelingEngine = {
                             addRoofQuad(pOT_L, pOT_R, pOB_R, pOB_L);
 
                             if (lr.out_px === 0) {
-                                if (k_lr > 0) {
-                                    const pBT_R = [x_wall_R + k_lr, H_max-dropInner, z_in_B + backDist, 'T'];
+                                if (k_px > 0) {
+                                    const pBT_R = [x_wall_R + k_px, H_max-dropInner, z_in_B + backDist, 'T'];
                                     const pBT_L = [x_wall_R, H_max-dropInner, z_in_B + backDist, 'T'];
-                                    const pBB_R = [x_wall_R + k_lr, H_max-dropInner, z_in_B + backDist, 'B'];
+                                    const pBB_R = [x_wall_R + k_px, H_max-dropInner, z_in_B + backDist, 'B'];
                                     const pBB_L = [x_wall_R, H_max-dropInner, z_in_B + backDist, 'B'];
                                     const piT_L = [x_wall_R, H_max, z_in_B, 'T'];
                                     const piB_L = [x_wall_R, H_max, z_in_B, 'B'];
@@ -1228,11 +1405,11 @@ export const ModelingEngine = {
                                 addWallTri([x_wall_R, H_max, z_in_B], [x_wall_R, 0, z_in_B], [x_wall_R, 0, z_wall_B]);
                             }
                             if (lr.out_nx === 0) {
-                                if (k_lr > 0) {
+                                if (k_nx > 0) {
                                     const pBT_R = [x_wall_L, H_max-dropInner, z_in_B + backDist, 'T'];
-                                    const pBT_L = [x_wall_L - k_lr, H_max-dropInner, z_in_B + backDist, 'T'];
+                                    const pBT_L = [x_wall_L - k_nx, H_max-dropInner, z_in_B + backDist, 'T'];
                                     const pBB_R = [x_wall_L, H_max-dropInner, z_in_B + backDist, 'B'];
-                                    const pBB_L = [x_wall_L - k_lr, H_max-dropInner, z_in_B + backDist, 'B'];
+                                    const pBB_L = [x_wall_L - k_nx, H_max-dropInner, z_in_B + backDist, 'B'];
                                     const piT_R = [x_wall_L, H_max, z_in_B, 'T'];
                                     const piB_R = [x_wall_L, H_max, z_in_B, 'B'];
                                     addRoofQuad(pBT_R, pBT_L, pIT_L, piT_R);
@@ -1248,8 +1425,8 @@ export const ModelingEngine = {
                         if (lr.out_px > 0) {
                             let z_inB = z_in_B, z_outB = z_out_B; 
                             let z_inF = z_in_F, z_outF = z_out_F; 
-                            if (lr.out_nz === 0) { z_inB = z_wall_B - k_lr; z_outB = z_wall_B - k_lr; }
-                            if (lr.out_pz === 0) { z_inF = z_wall_F + k_lr; z_outF = z_wall_F + k_lr; }
+                            if (lr.out_nz === 0) { z_inB = z_wall_B - k_nz; z_outB = z_wall_B - k_nz; }
+                            if (lr.out_pz === 0) { z_inF = z_wall_F + k_pz; z_outF = z_wall_F + k_pz; }
 
                             const pIT_B = [x_in_R, H_max, z_inB, 'T'], pIT_F = [x_in_R, H_max, z_inF, 'T'];
                             const pIB_B = [x_in_R, H_max, z_inB, 'B'],   pIB_F = [x_in_R, H_max, z_inF, 'B'];
@@ -1261,10 +1438,10 @@ export const ModelingEngine = {
                             addRoofQuad(pOT_F, pOT_B, pOB_B, pOB_F);
 
                             if (lr.out_nz === 0) {
-                                if (k_lr > 0) {
-                                    const pBT_B = [x_in_R - backDist, H_max-dropInner, z_wall_B - k_lr, 'T'];
+                                if (k_nz > 0) {
+                                    const pBT_B = [x_in_R - backDist, H_max-dropInner, z_wall_B - k_nz, 'T'];
                                     const pBT_F = [x_in_R - backDist, H_max-dropInner, z_wall_B, 'T'];
-                                    const pBB_B = [x_in_R - backDist, H_max-dropInner, z_wall_B - k_lr, 'B'];
+                                    const pBB_B = [x_in_R - backDist, H_max-dropInner, z_wall_B - k_nz, 'B'];
                                     const pBB_F = [x_in_R - backDist, H_max-dropInner, z_wall_B, 'B'];
                                     const piT_F = [x_in_R, H_max, z_wall_B, 'T'];
                                     const piB_F = [x_in_R, H_max, z_wall_B, 'B'];
@@ -1277,11 +1454,11 @@ export const ModelingEngine = {
                                 addWallTri([x_in_R, H_max, z_wall_B], [x_wall_R, 0, z_wall_B], [x_in_R, 0, z_wall_B]);
                             }
                             if (lr.out_pz === 0) {
-                                if (k_lr > 0) {
+                                if (k_pz > 0) {
                                     const pBT_B = [x_in_R - backDist, H_max-dropInner, z_wall_F, 'T'];
-                                    const pBT_F = [x_in_R - backDist, H_max-dropInner, z_wall_F + k_lr, 'T'];
+                                    const pBT_F = [x_in_R - backDist, H_max-dropInner, z_wall_F + k_pz, 'T'];
                                     const pBB_B = [x_in_R - backDist, H_max-dropInner, z_wall_F, 'B'];
-                                    const pBB_F = [x_in_R - backDist, H_max-dropInner, z_wall_F + k_lr, 'B'];
+                                    const pBB_F = [x_in_R - backDist, H_max-dropInner, z_wall_F + k_pz, 'B'];
                                     const piT_B = [x_in_R, H_max, z_wall_F, 'T'];
                                     const piB_B = [x_in_R, H_max, z_wall_F, 'B'];
                                     addRoofQuad(pBT_B, pBT_F, pIT_F, piT_B);
@@ -1297,8 +1474,8 @@ export const ModelingEngine = {
                         if (lr.out_nx > 0) {
                             let z_inF = z_in_F, z_outF = z_out_F;
                             let z_inB = z_in_B, z_outB = z_out_B;
-                            if (lr.out_pz === 0) { z_inF = z_wall_F + k_lr; z_outF = z_wall_F + k_lr; }
-                            if (lr.out_nz === 0) { z_inB = z_wall_B - k_lr; z_outB = z_wall_B - k_lr; }
+                            if (lr.out_pz === 0) { z_inF = z_wall_F + k_pz; z_outF = z_wall_F + k_pz; }
+                            if (lr.out_nz === 0) { z_inB = z_wall_B - k_nz; z_outB = z_wall_B - k_nz; }
 
                             const pIT_F = [x_in_L, H_max, z_inF, 'T'], pIT_B = [x_in_L, H_max, z_inB, 'T'];
                             const pIB_F = [x_in_L, H_max, z_inF, 'B'],   pIB_B = [x_in_L, H_max, z_inB, 'B'];
@@ -1310,10 +1487,10 @@ export const ModelingEngine = {
                             addRoofQuad(pOT_B, pOT_F, pOB_F, pOB_B);
 
                             if (lr.out_pz === 0) {
-                                if (k_lr > 0) {
-                                    const pBT_F = [x_in_L + backDist, H_max-dropInner, z_wall_F + k_lr, 'T'];
+                                if (k_pz > 0) {
+                                    const pBT_F = [x_in_L + backDist, H_max-dropInner, z_wall_F + k_pz, 'T'];
                                     const pBT_B = [x_in_L + backDist, H_max-dropInner, z_wall_F, 'T'];
-                                    const pBB_F = [x_in_L + backDist, H_max-dropInner, z_wall_F + k_lr, 'B'];
+                                    const pBB_F = [x_in_L + backDist, H_max-dropInner, z_wall_F + k_pz, 'B'];
                                     const pBB_B = [x_in_L + backDist, H_max-dropInner, z_wall_F, 'B'];
                                     const piT_B = [x_in_L, H_max, z_wall_F, 'T'];
                                     const piB_B = [x_in_L, H_max, z_wall_F, 'B'];
@@ -1326,11 +1503,11 @@ export const ModelingEngine = {
                                 addWallTri([x_in_L, H_max, z_wall_F], [x_wall_L, 0, z_wall_F], [x_in_L, 0, z_wall_F]);
                             }
                             if (lr.out_nz === 0) {
-                                if (k_lr > 0) {
+                                if (k_nz > 0) {
                                     const pBT_F = [x_in_L + backDist, H_max-dropInner, z_wall_B, 'T'];
-                                    const pBT_B = [x_in_L + backDist, H_max-dropInner, z_wall_B - k_lr, 'T'];
+                                    const pBT_B = [x_in_L + backDist, H_max-dropInner, z_wall_B - k_nz, 'T'];
                                     const pBB_F = [x_in_L + backDist, H_max-dropInner, z_wall_B, 'B'];
-                                    const pBB_B = [x_in_L + backDist, Math.max(0, H_max-dropInner), z_wall_B - k_lr, 'B']; 
+                                    const pBB_B = [x_in_L + backDist, Math.max(0, H_max-dropInner), z_wall_B - k_nz, 'B']; 
                                     const piT_F = [x_in_L, H_max, z_wall_B, 'T'];
                                     const piB_F = [x_in_L, H_max, z_wall_B, 'B'];
                                     addRoofQuad(pBT_F, pBT_B, pIT_B, piT_F);
@@ -1428,6 +1605,20 @@ export const ModelingEngine = {
      */
     buildRoofs: function(b, baseY, buildingData, materials) {
         const group = new THREE.Group();
+        // ★追加：自由屋根は別の作り方（roof/roofMesh.js）。寄棟・切妻・入母屋を
+        //   型で分けず、辺ごとの「どこまで立ち上げるか」で連続的に出す。
+        if (b.roof && b.roof.type === '自由屋根') {
+            const fr = buildFreeRoof(b, materials);
+            fr.position.set(b.x, baseY + b.h, b.z);
+            // ★ 屋根をクリックして選べるように、どのメッシュにも階の id を持たせる。
+            //   ⚠️ id が無いと、当たっても「どの階の屋根か」が分からず、
+            //     クリックしても何も起きない（実際にそうなっていた）。
+            fr.traverse((o) => {
+                if (o.isMesh) o.userData = { id: b.id, isRoof: true };
+            });
+            group.add(fr);
+            return group;
+        }
         // ★変更：軒裏(wallMat)とは別に、垂直に立ち上がる壁面（パラペット躯体・妻壁）は
         // 最上階の壁面と同じマテリアル(gableWallMat)を使う
         const { wallMat, roofMat, edgeMat, gableWallMat } = materials;
@@ -2076,7 +2267,7 @@ export const ModelingEngine = {
         const { wallMat, edgeMat } = materials;
 
         if (b.sodeWalls) {
-            const t_sode = 100; // 厚み固定100mm
+            const t_sode = SODE_T; // 厚み固定100mm
 
             for (let dir in b.sodeWalls) {
                 const mode = b.sodeWalls[dir];
@@ -2101,8 +2292,11 @@ export const ModelingEngine = {
                     const geo = new THREE.BoxGeometry(t_sode, h_sode, d_sode);
                     
                     // 左右に応じたX位置のオフセット（壁の内側に収まるように配置）
+                    // ★追加：縁からの寄せ。0 なら隅ぴったり、増やすほど内側へ入る。
+                    const inset = Math.min(Math.max(param.inset || 0, 0),
+                        Math.max(0, faceWidth / 2 - t_sode));
                     const directionSign = isLeft ? -1 : 1;
-                    const posX = (faceWidth / 2 - t_sode / 2) * directionSign;
+                    const posX = (faceWidth / 2 - t_sode / 2 - inset) * directionSign;
                     const posY = h_sode / 2;
                     const posZ = offsetZ + d_sode / 2;
 
@@ -2110,6 +2304,9 @@ export const ModelingEngine = {
                     mesh.position.set(posX, posY, posZ);
                     const line = new THREE.LineSegments(new THREE.EdgesGeometry(geo), edgeMat);
                     line.position.copy(mesh.position);
+                    // ★ 左右のどちらかを持たせる。掴んだときに、どちらのそで壁か分かる。
+                    mesh.userData.partSide = isLeft ? 'left' : 'right';
+                    line.userData.partSide = mesh.userData.partSide;
 
                     sodeGroup.add(mesh, line);
                 };
@@ -2122,7 +2319,8 @@ export const ModelingEngine = {
 
                 sodeGroup.traverse(child => {
                     if (child.isMesh || child.isLineSegments) {
-                        child.userData = { isDeco: true, type: 'sodeWall', dir: dir, id: b.id };
+                        child.userData = { ...child.userData, isDeco: true,
+                            type: 'sodeWall', dir: dir, id: b.id };
                     }
                 });
 
@@ -2138,7 +2336,7 @@ export const ModelingEngine = {
         const { wallMat, edgeMat } = materials;
 
         if (b.tareWalls) {
-            const t_tare = 100; // 厚み固定100mm
+            const t_tare = TARE_T; // 厚み固定100mm
 
             for (let dir in b.tareWalls) {
                 const p = b.tareParams[dir];
@@ -2156,11 +2354,15 @@ export const ModelingEngine = {
                 else if (dir === 'nx') { rotY = -Math.PI / 2;offsetZ = b.w / 2; faceWidth = b.d; }
 
                 const h_tare = p.height; // スライダーで指定された下がり幅
-                const geo = new THREE.BoxGeometry(faceWidth, h_tare, t_tare);
-                
+                // ★追加：両端の空き。縁から内側へ寄せたぶんだけ短くなる。
+                //   ⚠️ 短くしすぎて消えないよう、最低 300mm は残す。
+                const gapL = Math.max(0, p.left || 0), gapR = Math.max(0, p.right || 0);
+                const w_tare = Math.max(300, faceWidth - gapL - gapR);
+                const geo = new THREE.BoxGeometry(w_tare, h_tare, t_tare);
+
                 // Y位置: 底面（0）から下に向かって伸びるため -h_tare/2
                 // Z位置: 壁の表面（offsetZ）から外側へ厚み分飛び出すように配置
-                const posX = 0;
+                const posX = (gapL - gapR) / 2;
                 const posY = -h_tare / 2;
                 const posZ = offsetZ - t_tare / 2; // ★「+」から「-」に変更
 

@@ -1086,6 +1086,21 @@
                 <line x1="-2" y1="21" x2="8" y2="21" stroke="#005a9e" stroke-width="2.5" stroke-linecap="round" />
             </svg>
         </button>
+        <!-- ★変更：DXF 専用だったボタンを【外のファイルとのやりとり】にまとめた。
+             取り込み（DXF・3Dモデル）と書き出し（GLB）は同じ用事なので、
+             入口を1つにして、中で選ぶ。 -->
+        <button id="btn-io" class="toolbar-btn" onclick="window.openIoMenu(this)" data-tooltip="⤓⤒ 取り込み / 書き出し">
+            <svg viewBox="0 0 24 24" style="width: 28px; height: 28px; color: #333; overflow: visible;">
+                <!-- 受け皿（ファイルの置き場） -->
+                <path d="M3 15 v4 h18 v-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+                <!-- 入り（下向き・青） -->
+                <line x1="8" y1="3" x2="8" y2="11.5" stroke="#005a9e" stroke-width="1.8" stroke-linecap="round" />
+                <polyline points="5,8.5 8,11.8 11,8.5" fill="none" stroke="#005a9e" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+                <!-- 出（上向き・赤） -->
+                <line x1="16" y1="12" x2="16" y2="3.5" stroke="#d9534f" stroke-width="1.8" stroke-linecap="round" />
+                <polyline points="13,6.8 16,3.4 19,6.8" fill="none" stroke="#d9534f" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+        </button>
         <button id="btn-snap-toggle" class="toolbar-btn" onclick="window.toggleSnap()" data-tooltip="📏 スナップ: 500mm">
     <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; width: 100%;">
         <span id="snap-val" style="font-size: 11px; font-weight: 900; line-height: 1;">500</span>
@@ -1118,6 +1133,16 @@
             </svg>
         </button>
 
+        <!-- ★追加：サブカメラ。押すと、いまの画面がそのまま画角として残る。
+             ⚠️ 01〜04 で同じ位置に見せたいので、この並び（外構の右隣）を空けておく。 -->
+        <button id="btn-subcam" class="toolbar-btn" onclick="window.toggleSubCam()" data-tooltip="🎥 サブカメラ（いまの画面を画角として残す）">
+            <svg viewBox="0 0 24 24" style="width: 28px; height: 28px; color: #333; overflow: visible;">
+                <rect x="2.5" y="7" width="12" height="10" rx="2" fill="rgba(15,127,212,0.12)" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+                <path d="M14.5 11 l6 -3 v8 l-6 -3 z" fill="rgba(15,127,212,0.12)" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+                <circle cx="8.5" cy="12" r="2.2" fill="none" stroke="#0f7fd4" stroke-width="1.4" />
+            </svg>
+        </button>
+
         <div class="toolbar-divider"></div>
 
         <button id="btn-undo" class="toolbar-btn disabled" onclick="undo()" data-tooltip="↺ 元に戻す">↺</button>
@@ -1133,7 +1158,11 @@
              （0 から動かすと起動）が入口になっている。 -->
 
         <div class="toolbar-divider"></div>
-        <button id="btn-start-tutorial" class="toolbar-btn" style="background:#f8f9fa; color:#333;" data-tooltip="🎓 チュートリアル">🎓</button>
+        <!-- ★ チュートリアルは、操作方法を大きく変えた今の中身と食い違うため
+             いったん押せなくしてある（消してはいない）。作り直したら disabled を外す。 -->
+        <button id="btn-start-tutorial" class="toolbar-btn disabled" disabled
+                style="background:#f8f9fa; color:#333;"
+                data-tooltip="🎓 チュートリアル（作り直し中）">🎓</button>
     </div>
 
     <div id="floating-menu"></div>
@@ -1150,8 +1179,10 @@
             <div id="ext-groups"></div>
             <div id="ext-items"></div>
             <div class="ext-btns">
+                <!-- ★「外構を全消去」は撤去した。取り消せない操作なのに、
+                     作図をやめるボタンのすぐ隣にあって押し間違えやすかった。
+                     消すのは【1つ選んで Delete】か、編集パネルの削除ボタンで行う。 -->
                 <button class="ext-act" id="ext-btn-cancel" style="display:none">作図をやめる</button>
-                <button class="ext-act danger" id="ext-btn-clear">外構を全消去</button>
             </div>
             <button class="ext-act primary" id="ext-btn-exit">外構作図を終了</button>
         </div>

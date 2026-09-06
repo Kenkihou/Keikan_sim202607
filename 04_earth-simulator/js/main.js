@@ -70,6 +70,12 @@ import {
   userModelState, userModelGroup, updateUserModel, resnapUserModel, restartUserModelSession,
   notifyParentReady,
 } from './usermodel.js';
+// ファイル（点群 .spz/.splat/.ply ・ モデル .glb/.gltf）を取り込んで、クリックした
+// 場所へ置く。読み込むだけでUI・取り込み・ギズモを自前で組み立てる。
+import {
+  setSplatWalkMode, importState, items as placedItems, sparkRenderer,
+  importFiles, removeItem, selectItem, startPlacing,
+} from './importobjects.js';
 
 // =========================================================================
 // リサイズ＆描画ループ（3d-tiles-renderer の標準的な使い方）
@@ -167,6 +173,9 @@ function animate() {
   updateClipPlanes();                       // 中心の切り抜き（クリップ面・断面板の位置）
   updateRoofText(performance.now());        // 屋根テキストの流れ（ONのときだけ動く）
   updateStreetView(performance.now());      // ストリートビューの歩き（立っている間だけ動く）
+  // 点群の中に立つ間だけ、点群の描画品質を落とす（塗りつぶし律速なので効きが大きい）。
+  // ★ 出入りを監視するだけの安い呼び出し。実際に切り替わるのは状態が変わった時だけ。
+  setSplatWalkMode(streetViewState.active);
   updateSetbackGuide();                     // 壁面後退の面ガイド（選択が変わったときだけ描き直す）
   const terrainTiles = getTerrainTiles();
   if (terrainTiles) terrainTiles.update();  // 地形（建物より先に更新。距離制限なし）
@@ -334,6 +343,10 @@ window.__dbg = {
   userModelState, userModelGroup, updateUserModel, resnapUserModel, markUserModelDirty,
   mountainGroup, mountainState, buildMountains, updateMountainVisibility, markMountainsDirty,
   buildingEditState, resetBuildingEdits, updateSelectionBox,
+  // 取り込んだオブジェクト。歩行モードの品質切り替えを手で試せるようにしておく
+  // （ストリートビューに入らなくても __dbg.setSplatWalkMode(true) で確認できる）。
+  importState, placedItems, sparkRenderer, setSplatWalkMode,
+  importFiles, removeItem, selectItem, startPlacing,
   render: () => renderer.render(scene, camera),
 };
 window.__plateauWards = wardTiles;   // 互換用

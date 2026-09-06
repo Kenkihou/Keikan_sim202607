@@ -11,6 +11,7 @@
    このファイルが両者の境界。外向きの座標（pickGround の戻り値など）は m、
    シーンに置くときだけ MM 倍して mm に直す。
    ============================================================ */
+import { markTool } from '../../subcam.js';
 import * as THREE from 'three';
 
 export const MM = 1000;                 // 1m = 1000mm
@@ -73,6 +74,7 @@ export function initViewer(ctx){
   marker.position.y = 10;
   marker.visible = false;
   marker.renderOrder = 10;
+  markTool(marker);               // ★ 作図中の印も道具
   scene.add(marker);
 
   /* --- 作図中の線（折れ線にも使うので余裕をもった頂点数で確保しておく） --- */
@@ -83,6 +85,7 @@ export function initViewer(ctx){
   rubber.position.y = 20;
   rubber.visible = false;
   rubber.renderOrder = 10;
+  markTool(rubber);               // ★ 作図中の線も道具
   scene.add(rubber);
 }
 
@@ -92,6 +95,24 @@ export const getRenderer = () => renderer;
 export const getControls = () => controls;
 export const getSnapM = () => getSnapMM() / MM;      // スナップ量を m で
 export function render(){ requestRender(); }
+
+/* ★追加：地盤面上の点（m）→ 画面の位置（px）。
+   作図中の札や寸法を、手を動かしている場所のそばに出すために使う。 */
+export function toScreen(p){
+  const v = new THREE.Vector3(p.x * MM, 0, p.z * MM).project(camera);
+  return { x: (v.x + 1) / 2 * window.innerWidth,
+           y: (-v.y + 1) / 2 * window.innerHeight };
+}
+
+/* ★追加：目印を【閉じられる合図】として強調する。
+   ⚠️ 最初の点に戻れば閉じられる、ということは言葉で説明しても読まれない。
+     近づいたら印の色と大きさが変わる、という形で見せる。 */
+export function setMarkerHot(on){
+  if (!marker) return;
+  marker.material.color.set(on ? 0x1f9d55 : 0xff8a3d);
+  marker.scale.setScalar(on ? 1.6 : 1);
+  render();
+}
 
 /* 画面座標 → 地盤面上の点（m 単位・スナップ済み） */
 export function pickGround(ev, snap = true){

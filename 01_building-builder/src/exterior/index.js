@@ -8,7 +8,8 @@
    このファイルは「モードの出入り」と「クリック操作」だけを受け持つ。
    ============================================================ */
 import { initViewer, pickGround, pickItem, showMarker, showRubber, clearOverlays,
-         focusOn, world, render } from './core/viewer.js';
+         focusOn, world, render, getControls, toScreen, setMarkerHot,
+         getSnapM } from './core/viewer.js';
 import * as store from './core/store.js';
 import { initUI, showUI, setActive, getActive, refreshReadouts } from './core/ui.js';
 import { initGizmo, refreshHandles, gizmoBusy, setGizmoActive } from './core/gizmo.js';
@@ -21,6 +22,21 @@ let canvas = null;
 
 let draw = [];                 // 作図中にクリックした点（m）
 let down = null;               // 押した位置（カメラ操作とクリックの区別に使う）
+// ★追加：範囲（地面）を【ドラッグ】で描いている最中。{ p0 }
+//   ⚠️ 建物の平面作図と同じ手つきにするため。同じ「四角を描く」のに、
+//     建物はドラッグ・外構は2点クリック、と作法が違うのは覚え直しになる。
+let rectDrag = null;
+// ドラッグで描き終えた直後の click を1回だけ捨てるための目印。
+//   ⚠️ 捨てないと、置いたばかりのものが click で選び直され（あるいは外れ）る。
+let eatClick = false;
+// ★追加：囲い（折れ線）も、まず【ドラッグで1本】引く。
+//   ★ 囲いの多くは1本の直線か、せいぜい L 字。いちばん多い使い方が
+//     「覚えることゼロ」で終わるようにする。折り曲げは、そのあとの選択肢。
+let polyDrag = null;
+// 直前に置いたもの。「続ける」で開き直すために覚えておく。
+let lastRec = null;
+// 折れ線を、最初の点に戻して閉じられる状態か。
+let canClose = false;
 const moved = () => !down || down.d > 5;
 const same = (a, b) => Math.abs(a.x - b.x) < 1e-6 && Math.abs(a.z - b.z) < 1e-6;
 
@@ -68,7 +84,9 @@ export function initExterior(ctx){
   initViewer(ctx);
   initGizmo(() => { refreshHandles(); refreshReadouts(); }, { getSnapMM: ctx.getSnapMM });
   initUI({
-    onPick: def => { draw = []; showRubber(null); showMarker(null); if (def) store.select(null); },
+    onPick: def => { draw = []; showRubber(null); showMarker(null);
+      hideTag(); hideSize(); setMarkerHot(false); canClose = false;
+      if (def) store.select(null); },
     onEdit: () => {},
     onExit: () => exitExterior(),
   });
@@ -161,20 +179,143 @@ function finishDraw(){
   const rec = store.addItem(def, draw);
   draw = [];
   showRubber(null);
+  hideTag();
+  hideSize();
+  setMarkerHot(false);
+  canClose = false;
   store.select(rec);
   setActive(null);
   return true;
 }
-function cancelDraw(){ draw = []; showRubber(null); }
+function cancelDraw(){ draw = []; showRubber(null); hideTag(); hideSize(); }
+
+/* ★追加：モデルのそばに出す小さな札。
+   ⚠️ 「次に何をすればいいか」は、画面の端ではなく【手を動かしている場所】に
+     置くこと。上の帯に書いても読まれない（実際に読み落とされていた）。 */
+let tagEl = null;
+function tag(){
+  if (tagEl) return tagEl;
+  tagEl = document.createElement('div');
+  tagEl.style.cssText = 'position:fixed;z-index:100002;display:none;gap:4px;'
+    + 'transform:translate(-50%,-50%);font:12px/1 system-ui,sans-serif;';
+  document.body.appendChild(tagEl);
+  return tagEl;
+}
+function showTag(p, buttons){
+  const el = tag();
+  el.innerHTML = '';
+  for (const [label, kind, fn] of buttons){
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.style.cssText = 'border:none;border-radius:6px;padding:7px 11px;cursor:pointer;'
+      + 'font-weight:700;font-size:12px;box-shadow:0 2px 8px rgba(0,0,0,.25);'
+      + (kind === 'go' ? 'background:#007acc;color:#fff;' : 'background:#fff;color:#333;');
+    b.onclick = (ev) => { ev.stopPropagation(); fn(); };
+    // ⚠️ 札の上での押下がキャンバスへ抜けると、作図が1回ぶん進んでしまう。
+    b.onpointerdown = (ev) => ev.stopPropagation();
+    el.appendChild(b);
+  }
+  const s = toScreen(p);
+  el.style.left = s.x + 'px';
+  el.style.top = (s.y - 34) + 'px';
+  el.style.display = 'flex';
+}
+function hideTag(){ if (tagEl) tagEl.style.display = 'none'; }
+
+/* ★追加：引いている最中の寸法。カーソルのそばに出す。 */
+let sizeEl = null;
+function showSize(text, sx, sy){
+  if (!sizeEl){
+    sizeEl = document.createElement('div');
+    sizeEl.style.cssText = 'position:fixed;z-index:100002;display:none;pointer-events:none;'
+      + 'background:rgba(33,37,41,.9);color:#fff;padding:3px 8px;border-radius:5px;'
+      + 'font:12px/1.4 system-ui,sans-serif;white-space:nowrap;transform:translate(14px,14px);';
+    document.body.appendChild(sizeEl);
+  }
+  sizeEl.textContent = text;
+  sizeEl.style.left = sx + 'px';
+  sizeEl.style.top = sy + 'px';
+  sizeEl.style.display = 'block';
+}
+function hideSize(){ if (sizeEl) sizeEl.style.display = 'none'; }
+
+const dist = (a, b) => Math.hypot(b.x - a.x, b.z - a.z);
+const fmtM = (v) => (Math.round(v * 10) / 10).toFixed(1) + ' m';
+
+/* ★追加：引いた直後に出す札。押さなければ、そのまま確定したまま。 */
+function offerContinue(rec){
+  lastRec = rec;
+  const pts = rec.pts;
+  showTag(pts[pts.length - 1], [
+    ['＋ ここから続ける', 'go', () => {
+      // 置いたものをいったん取り消し、点だけ引き継いで作図に戻る。
+      const def = rec.def, keep = rec.pts.map(q => ({ x: q.x, z: q.z }));
+      store.removeItem(rec);
+      lastRec = null;
+      setActive(def);
+      draw = keep;
+      showRubber(draw, null);
+      showTag(draw[draw.length - 1], [['終わり', 'go', () => finishDraw()]]);
+    }],
+    ['終わり', 'plain', () => { hideTag(); lastRec = null; }],
+  ]);
+}
 
 function setupEvents(){
   canvas.addEventListener('pointerdown', ev => {
     if (!active) return;
     down = { x: ev.clientX, y: ev.clientY, d: 0 };
+    // ★ 範囲ものは、押した所を起点にドラッグで描く。
+    //   ⚠️ 描いているあいだはカメラを止める。止めないと、引っぱるたびに
+    //     視点が回って、どこを掴んでいるのか分からなくなる。
+    const def = getActive();
+    if (def && def.place === 'rect' && ev.button === 0){
+      const p = pickGround(ev);
+      if (p){
+        rectDrag = { p0: p };
+        draw = [];
+        const c = getControls();
+        if (c) c.enabled = false;
+      }
+    }
+    // ★ 囲いも、1本目は【ドラッグ】で引く。折れ点を足すのは、そのあと。
+    //   ⚠️ 折れ点を足す途中（draw に点がある）は、クリックで進める作図の
+    //     途中なので、ここでドラッグを始めてはいけない。
+    if (def && def.place === 'poly' && ev.button === 0 && !draw.length){
+      const p = pickGround(ev);
+      if (p){
+        polyDrag = { p0: p };
+        const c = getControls();
+        if (c) c.enabled = false;
+      }
+    }
   });
 
   canvas.addEventListener('pointermove', ev => {
     if (!active) return;
+    // ★ 範囲をドラッグ中。四隅をつないで【長方形のまま】見せる。
+    //   ⚠️ 対角線1本だと、どこまでが範囲なのか読み取れない。
+    if (rectDrag){
+      const p = pickGround(ev);
+      if (p){
+        const a = rectDrag.p0;
+        showRubber([a, { x: p.x, z: a.z }, p, { x: a.x, z: p.z }], a);
+        showMarker(p);
+        showSize(fmtM(Math.abs(p.x - a.x)) + ' × ' + fmtM(Math.abs(p.z - a.z)),
+          ev.clientX, ev.clientY);
+      }
+      return;
+    }
+    // ★ 囲いを1本引いている最中。長さを数字でも見せる。
+    if (polyDrag){
+      const p = pickGround(ev);
+      if (p){
+        showRubber([polyDrag.p0], p);
+        showMarker(p);
+        showSize(fmtM(dist(polyDrag.p0, p)), ev.clientX, ev.clientY);
+      }
+      return;
+    }
     if (ev.buttons){
       if (down) down.d = Math.max(down.d, Math.hypot(ev.clientX - down.x, ev.clientY - down.y));
       showMarker(null);
@@ -182,13 +323,77 @@ function setupEvents(){
     }
     const def = getActive();
     if (!def) { showMarker(null); return; }
-    const p = pickGround(ev);
+    let p = pickGround(ev);
+    // ★ 折れ点を足している最中、最初の点に近づいたら【そこへ吸い付く】。
+    //   戻れば閉じられる、ということを印の色と大きさで見せる。
+    canClose = false;
+    if (p && draw.length >= 2 && dist(p, draw[0]) < snapNear()){
+      p = { x: draw[0].x, z: draw[0].z };
+      canClose = true;
+    }
+    setMarkerHot(canClose);
     showMarker(p);
-    if (draw.length && p) showRubber(draw, p); else showRubber(null);
+    if (draw.length && p){
+      showRubber(draw, p);
+      showSize(fmtM(dist(draw[draw.length - 1], p))
+        + (canClose ? '　クリックで閉じる' : ''), ev.clientX, ev.clientY);
+    } else {
+      showRubber(null);
+      hideSize();
+    }
+  });
+
+  /* 「最初の点に戻った」とみなす距離。スナップ幅より少し広く取る。 */
+  function snapNear(){ return Math.max(0.4, getSnapM() * 1.2); }
+
+  /* ★追加：範囲のドラッグの終わり。離した所がもう一方の隅。 */
+  /* ★追加：囲いのドラッグの終わり。1本引けたら、その場で置いて札を出す。 */
+  window.addEventListener('pointerup', ev => {
+    if (!polyDrag) return;
+    const a = polyDrag.p0;
+    const p = pickGround(ev);
+    polyDrag = null;
+    eatClick = true;
+    const c = getControls();
+    if (c) c.enabled = true;
+    showRubber(null);
+    hideSize();
+    if (p && dist(a, p) > 0.2){
+      const def = getActive();
+      draw = [a, p];
+      const rec = store.addItem(def, draw);
+      draw = [];
+      store.select(rec);
+      setActive(null);
+      // ★ 押さなければ、このまま確定。折り曲げたい人にだけ道を見せる。
+      offerContinue(rec);
+    } else {
+      draw = [];
+    }
+  });
+
+  window.addEventListener('pointerup', ev => {
+    if (!rectDrag) return;
+    const a = rectDrag.p0;
+    const p = pickGround(ev);
+    rectDrag = null;
+    eatClick = true;
+    const c = getControls();
+    if (c) c.enabled = true;
+    showRubber(null);
+    // ⚠️ 押しただけ（ほとんど動いていない）ときは何も置かない。
+    //   置くと、選ぼうとしただけで極小の地面ができてしまう。
+    if (p && Math.abs(p.x - a.x) > 0.2 && Math.abs(p.z - a.z) > 0.2){
+      draw = [a, p];
+      finishDraw();
+    } else {
+      draw = [];
+    }
   });
 
   canvas.addEventListener('click', ev => {
     if (!active) return;
+    if (eatClick){ eatClick = false; return; }
     if (moved() || gizmoBusy()) return;                  // カメラ操作／ギズモ操作の直後
     const def = getActive();
 
@@ -205,11 +410,21 @@ function setupEvents(){
       setActive(null);
       return;
     }
+    if (def.place === 'rect') return;                     // ★ 範囲はドラッグ専用
+    // ★ 最初の点に戻ったら、そこで閉じて確定する（敷地をぐるりと囲うとき）。
+    if (def.place === 'poly' && canClose && draw.length >= 2){
+      draw.push({ x: draw[0].x, z: draw[0].z });
+      finishDraw();
+      return;
+    }
     if (draw.length && same(p, draw[draw.length - 1])) return;   // 同じ点の連打は無視
     draw.push(p);
     showRubber(draw, p);
-    /* 線・範囲は2点で確定。折れ線はダブルクリック／Enter まで続ける */
+    /* 線は2点で確定。折れ線は札の「終わり」／ダブルクリック／Enter まで続ける */
     if (def.place !== 'poly' && draw.length >= 2) finishDraw();
+    if (def.place === 'poly' && draw.length >= 2){
+      showTag(draw[draw.length - 1], [['終わり', 'go', () => finishDraw()]]);
+    }
   });
 
   /* 折れ線の確定 */

@@ -1,7 +1,43 @@
 // main.js
 import * as THREE from 'three';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
-import { ModelingEngine } from './modelingEngine.js';
+import { ModelingEngine, sashMat, windowGlassMat } from './modelingEngine.js';
+// ★追加：DXF の平面図から起こした階。平面の形は図面が決め、高さだけ 3D で決める。
+import { buildDxfFloor, buildSlabWithHole, dxfWindows } from './dxf/dxfEngine.js';
+import { freeRidge, freeRidges, freeRoofFlat, freeRoofWallDrop, freeNotch, freeSlopeHandles,
+    freeEaveBars, freeRoofOwner, OUT_DIR } from './roof/roofMesh.js';
+import { geyaBars, geyaSlopeHandle, GEYA_OUT_DIR } from './roof/geya.js';
+import { paraParts, PARA_OUT_DIR } from './roof/para.js';
+
+/* いま選んでいる、パラペット修景屋根の階。上面を選んでいるときだけ。 */
+function selectedPara() {
+    const b = AppState.buildingData.find(d => d.id === AppState.selectedId);
+    if (!b || AppState.selectedFaceDir !== 'top') return null;
+    return (b.roof && b.roof.type === 'パラペット修景') ? b : null;
+}
+
+/* いま選んでいる、下屋を持つ階。上面を選んでいるときだけ。 */
+function selectedGeya() {
+    const b = AppState.buildingData.find(d => d.id === AppState.selectedId);
+    if (!b || AppState.selectedFaceDir !== 'top') return null;
+    return b.lowerRoof ? b : null;
+}
+
+/* いま選んでいる階に掛かっている大屋根の【持ち主】。
+   ★ L字は直方体を並べて作る。屋根はそのうち1つが持っているので、どちらを
+     選んでも同じ屋根のつまみが出るように、持ち主へ読み替える。 */
+function selectedRoofOwner() {
+    const b = AppState.buildingData.find(d => d.id === AppState.selectedId);
+    if (!b || AppState.selectedFaceDir !== 'top') return null;
+    return freeRoofOwner(b);
+}
+import { askDxfFloor } from './dxf/index.js';
+// ★追加：外のファイルとのやりとり（取り込み／書き出し）。
+import { askModelImport, modelObject, dropModel, dropAllModels, rescaleModel,
+    modelsPending } from './io/modelIo.js';
+import { openIoMenu } from './io/ioMenu.js';
+import { freezeSkinned } from './io/bakeSkin.js';
+import { SubCam, markTool } from './subcam.js';
 import { AppState } from './appState.js';
 import { UIController } from './uiController.js';
 import { InteractionHandler } from './interactionHandler.js';
@@ -19,7 +55,92 @@ import { initExterior, toggleExterior, exitExterior, isExteriorActive,
 
 // --- UI・操作状態（画面固有のもの） ---
 let interactiveMeshes = [];
-let meshMap = {}; 
+let meshMap = {};
+// ★追加：選んでいる面に出す「つまみ」。
+//   ★ 押し引きは【面が引ける】と知っている人しか使えない。掴めるものが目に
+//     見えていれば説明が要らない。つまみと面のどちらを引いても結果は同じ。
+//   ⚠️ つまみは【選んでいる面だけ】に出す。全部の面に出すと、どれを掴んで
+//     いるのか分からなくなる。
+let pullHandles = [];
+// ★ 矢印は【濃い赤】。選んでいる面のピンクと明るさで離しておく。
+//   ⚠️ 面と近い色にすると、面の一部なのか操作の印なのかが分からなくなる。
+const pullHandleMat = new THREE.MeshBasicMaterial({
+    color: 0xb0121a, depthTest: false,
+});
+// ★追加：棟の端のつまみ。押し引きの青とは色も形も分ける。
+//   ⚠️ 同じ見た目にすると「どちらに動くのか」が分からなくなる。
+const ridgeHandleMat = new THREE.MeshBasicMaterial({
+    color: 0xf0ad4e, depthTest: false, transparent: true, opacity: 0.95,
+});
+// ★追加：押される面をあらわす板と、その輪郭。
+//   ⚠️ 面そのものと同じ色にしない。どこまでが建物で、どこからが操作の印なのかが
+//     分からなくなる。板は薄く透かして、輪郭で厚みを見せる。
+// ⚠️ 透かさない。透けると線だけが見えて、板ではなく針金の枠に見える。
+const pullFaceMat = new THREE.MeshBasicMaterial({
+    color: 0x9fd4f2, depthTest: false, side: THREE.DoubleSide,
+});
+const pullEdgeMat = new THREE.LineBasicMaterial({
+    color: 0x0b5f96, depthTest: false, transparent: true, opacity: 0.9,
+});
+// ★追加：屋根の切り欠きのつまみ。屋根の形を変えるつまみとは役目が違う。
+const notchHandleMat = new THREE.MeshBasicMaterial({
+    color: 0x00a8a8, depthTest: false,
+});
+// ★追加：屋上の平場をつくるつまみ。棟の球と役目が違うので色も形も分ける。
+const flatHandleMat = new THREE.MeshBasicMaterial({
+    color: 0x2fae62, depthTest: false, side: THREE.DoubleSide,
+});
+// ★追加：勾配のつまみ。勾配屋根の【面ごと】に、その重心へ勾配定規を立てる。
+//   ★ 触った面がそのまま起き上がる／寝るので、どの面の勾配かで迷わない。
+//   ⚠️ これだけは深度を見る（depthTest: true）。屋根の裏側に回った面の定規まで
+//     透けて見えると、どれが手前の面のものか分からなくなる。隠れたら消す。
+const slopeHandleMat = new THREE.MeshBasicMaterial({
+    color: 0xd21f2a, side: THREE.DoubleSide, transparent: true, opacity: 0.85,
+});
+const slopeEdgeMat = new THREE.LineBasicMaterial({ color: 0x7a0d14 });
+
+// ★追加：描かない面。自由屋根を載せた階の上面に使う。
+//   ★ 屋上（平場）は屋根の側が【直方体の上面とちょうど同じ高さ】に張る。
+//     二重に張ると深度が拮抗して、屋上いっぱいに縞模様が出る。
+//   ⚠️ 消すのは【描画だけ】。当たり判定には残す（上面を選んで押し引きする）。
+// ★追加：取り込んだモデルがまだ読めていないあいだ、場所だけ示す箱。
+const ghostModelMat = new THREE.MeshBasicMaterial({
+    color: 0x7f8c99, transparent: true, opacity: 0.25,
+});
+const hiddenFaceMat = new THREE.MeshBasicMaterial({
+    colorWrite: false, depthWrite: false,
+});
+// ★追加：軒先のバー。他のつまみと同じく出しっぱなしにする。
+//   ⚠️ これも深度を見る（depthTest: true）。屋根の裏に回った辺のバーまで透けると、
+//     どれが手前の辺のものか分からなくなる。隠れたら消す。
+const eaveBarMat = new THREE.MeshBasicMaterial({
+    color: 0xffd21e, side: THREE.DoubleSide, transparent: true, opacity: 0.9,
+});
+
+/* 軒先のバー。辺ごとに1本、屋根面の上へ薄く敷く。
+   ★ 掴んで引くと、その辺の軒の出・けらばの出が変わる。 */
+function buildEaveBars(b, baseY) {
+    const W = 260;                       // 帯の幅[mm]
+    const LIFT = 60;                     // 屋根に食われないよう浮かせる[mm]
+    const out = [];
+    for (const e of freeEaveBars(b)) {
+        const [dx, dz] = OUT_DIR[e.key];
+        const ix = -dx * W, iz = -dz * W;   // 内側（棟の側）へ
+        const ya = baseY + e.y + LIFT;
+        const yb = baseY + e.y + e.slope * W + LIFT;
+        const p = [];
+        const push = (q, y, o) => p.push(b.x + q.x + (o ? ix : 0), y,
+            b.z + q.z + (o ? iz : 0));
+        push(e.a, ya, 0); push(e.b, ya, 0); push(e.b, yb, 1);
+        push(e.a, ya, 0); push(e.b, yb, 1); push(e.a, yb, 1);
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(p, 3));
+        const m = new THREE.Mesh(geo, eaveBarMat);
+        m.userData = { id: b.id, ri: e.ri, eaveEdge: e.key, out: e.out };
+        out.push(m);
+    }
+    return out;
+}
 
 // ==========================================
 // 1. 環境の初期セットアップ (init.jsへ委譲)
@@ -114,6 +235,479 @@ function buildWallJointLines(b, baseY) {
     return group;
 }
 
+/* 選んでいる面の中心につまみを置く。面の外へ少し浮かせて、面と重ならないように。
+   ⚠️ DXF から起こした階は側面を押し引きしないので、上面にしか出さない。 */
+function buildPullHandle() {
+    const b = AppState.buildingData.find(d => d.id === AppState.selectedId);
+    const dir = AppState.selectedFaceDir;
+    if (!b || !dir || dir === 'bottom') return;
+    // ★ 修景要素を選んでいるあいだは出さない。要素のつまみと重なって、
+    //   どちらを掴んでいるのか分からなくなる。
+    if (AppState.selectedPart) return;
+    if (b.kind === 'dxf' && dir !== 'top') return;
+    const baseY = b.y || 0;
+    // 建物の大きさに合わせた大きさ。小さすぎると掴めず、大きすぎると形を隠す。
+    const r = Math.max(150, Math.min(b.w, b.d, 2000) * 0.09);
+    const n = { top: [0, 1, 0], px: [1, 0, 0], nx: [-1, 0, 0],
+        pz: [0, 0, 1], nz: [0, 0, -1] }[dir];
+    if (!n) return;
+    // ⚠️ 上面のつまみは【描いてある天端】に置く。b.h のままだと、軒を詰めて
+    //   壁を下げたときにつまみだけ宙に浮く。
+    const drop = dir === 'top' ? freeRoofWallDrop(b) : 0;
+    const c = new THREE.Vector3(b.x, baseY + b.h / 2, b.z);
+    if (dir === 'top') c.y = baseY + b.h - drop;
+    else if (dir === 'px') c.x = b.x + b.w / 2;
+    else if (dir === 'nx') c.x = b.x - b.w / 2;
+    else if (dir === 'pz') c.z = b.z + b.d / 2;
+    else if (dir === 'nz') c.z = b.z - b.d / 2;
+    // ★ 面に【直角に立つ矢印】。軸・矢じりとも面の法線に沿うので、上面なら
+    //   上下、側面なら横向きに出る。どちらへ押し引きするのかが形で読める。
+    //   ⚠️ 立方体では向きが読めなかった。どの面のつまみかは位置でしか分からず、
+    //     斜めから見ると隣の面のものと見分けがつかない。
+    //   ⚠️ Group にしてはいけない。当たり判定は配列を【素通しなし】で見るので、
+    //     子は拾われない。軸と矢じりを別々に配列へ入れて、同じ札を付ける。
+    const PAD = r * 5, PAD_T = r * 0.45;           // 押される面をあらわす板
+    const HEAD = r * 1.7, HEAD_R = r * 0.85;      // 矢じり
+    // ⚠️ 竿は短めに太く。長いと棟の上の平場のつまみ（緑の球）と重なって、
+    //   どちらを掴んでいるのか分からなくなる。
+    const SHAFT = r * 1.6, SHAFT_R = r * 0.30;    // 軸
+    const nv = new THREE.Vector3(n[0], n[1], n[2]);
+    // 円錐・円柱・箱は Y 軸向きに作られる。面の法線へ倒す。
+    const quat = new THREE.Quaternion()
+        .setFromUnitVectors(new THREE.Vector3(0, 1, 0), nv);
+    const at = (d) => new THREE.Vector3(
+        c.x + n[0] * d, c.y + n[1] * d, c.z + n[2] * d);
+    const parts = [];
+    // ★ 押される面をあらわす板。矢印だけだと「どの面が動くのか」は位置から
+    //   推し量るしかない。動く面そのものを厚みのある板で見せる。
+    const padGeo = new THREE.BoxGeometry(PAD, PAD_T, PAD);
+    const pad = new THREE.Mesh(padGeo, pullFaceMat);
+    pad.quaternion.copy(quat);
+    pad.position.copy(at(PAD_T / 2));
+    parts.push(pad);
+    // ⚠️ 矢印より【後ろ】に描くこと。どちらも深度を見ないので、描く順だけで
+    //   前後が決まる。同じ順にすると板が矢印を消してしまう。
+    pad.userData.order = 996;
+    // 板の輪郭。面だけだと厚みが読めず、板に見えない。
+    const padLine = new THREE.LineSegments(
+        new THREE.EdgesGeometry(padGeo), pullEdgeMat);
+    padLine.quaternion.copy(quat);
+    padLine.position.copy(pad.position);
+    padLine.renderOrder = 997;
+    // ⚠️ 線は当たり判定に入れない。線の判定には太さがあるので、板の【外】を
+    //   通っただけで掴んだことになる。
+    padLine.userData = { decor: true };
+    // 矢じり。先端が板に触れ、板を指す向き（＝軸とは逆を向く）。
+    const head = new THREE.Mesh(
+        new THREE.ConeGeometry(HEAD_R, HEAD, 20), pullHandleMat);
+    head.quaternion.copy(quat);
+    head.rotateX(Math.PI);                        // 先端を面の側へ
+    head.position.copy(at(PAD_T + HEAD / 2));
+    parts.push(head);
+    // 軸。矢じりの根元から外へ伸ばす。
+    const shaft = new THREE.Mesh(
+        new THREE.CylinderGeometry(SHAFT_R, SHAFT_R, SHAFT, 12), pullHandleMat);
+    shaft.quaternion.copy(quat);
+    shaft.position.copy(at(PAD_T + HEAD + SHAFT / 2));
+    parts.push(shaft);
+    for (const m of parts) {
+        m.renderOrder = m.userData.order || 1001;
+        // ★ 板は【建具に譲る】。窓は面の中ほどに置かれることが多く、板と重なる。
+        //   矢じりと軸はそのまま押し引きの入口。
+        m.userData = { id: b.id, pullDir: dir, pullPad: m === pad };
+    }
+    parts.push(padLine);
+    return parts;
+}
+
+/* ★追加：選んでいる修景要素のつまみ。
+   ★ 大きさは【つまみ】、位置は【その要素そのものを掴んで動かす】。
+     スライダーを並べるより、動かすものの上で決めるほうが早い。
+   ★ 出すのは【選んでいる1つ】だけ。面にあるもの全部に出すと、つまみだらけで
+     どれがどれの端なのか読めなくなる。
+   ⚠️ 壁の面より少し外へ出すこと。面に埋めると壁に隠れて掴めない。 */
+function buildPartHandles() {
+    const out = [];
+    const sel = AppState.selectedPart;
+    const b = AppState.buildingData.find(d => d.id === AppState.selectedId);
+    if (!sel || !b) return out;
+    // 図面から起こした階で触れるのは【図面の窓】だけ。ほかの修景は持たない。
+    if (b.kind === 'dxf' && sel.kind !== 'dxfwin') return out;
+    const dir = sel.dir;
+    const f = ModelingEngine.faceBasis(b, dir);
+    if (!f) return out;
+    const baseY = b.y || 0;
+    const OUT = 90;                                   // 壁の面から外へ出す量[mm]
+    // つまみ（球）を1つ。u は面に沿った位置、y は世界の高さ、d は面から外への出。
+    const put = (role, u, y, r, d = OUT) => {
+        const m = new THREE.Mesh(new THREE.SphereGeometry(r, 16, 12), pullHandleMat);
+        m.position.set(b.x + f.n[0] * (f.half + d) + f.u[0] * u, y,
+            b.z + f.n[1] * (f.half + d) + f.u[1] * u);
+        m.renderOrder = 1002;
+        m.userData = { id: b.id, partDir: dir, partKind: sel.kind, partRole: role,
+            partIndex: sel.i || 0, partSide: sel.side || null };
+        out.push(m);
+    };
+    const size = (a, bb) => Math.min(Math.max(Math.min(a, bb) * 0.08, 120), 240);
+
+    if (sel.kind === 'window' || sel.kind === 'door') {
+        const q = ModelingEngine.openingRect(b, baseY, dir, sel.kind, sel.i || 0);
+        if (!q) return out;
+        const r = size(q.w, q.h);
+        // 玄関は土間に載っているので、下の辺は動かさない。
+        put('u0', q.u - q.w / 2, q.yc, r);
+        put('u1', q.u + q.w / 2, q.yc, r);
+        if (sel.kind !== 'door') put('v0', q.u, q.y0, r);
+        put('v1', q.u, q.y1, r);
+        return out;
+    }
+    if (sel.kind === 'sode') {
+        const q = ModelingEngine.sodeRect(b, baseY, dir, sel.side);
+        if (!q) return out;
+        const r = size(q.depth, q.h);
+        // 天端＝高さ（上面隙間）、先端＝奥行。位置はそで壁そのものを掴んで動かす。
+        put('top', q.u, q.y1, r);
+        put('depth', q.u, (q.y0 + q.y1) / 2, r, q.depth + OUT);
+        return out;
+    }
+    if (sel.kind === 'dxfwin') {
+        // ★ 図面から起こした窓。つまみは【その窓が乗っている壁】の外面に置く。
+        //   ⚠️ 外形（箱）の面ではない。壁は外形より内側にあることがある。
+        const q = dxfWindows(b.plan).find((w) => w.src === (sel.i || 0));
+        if (!q) return out;
+        const r = size(q.b - q.a, q.hi - q.lo);
+        const cOut = q.c + q.sgn * (q.h + OUT);
+        const put2 = (role, u, y) => {
+            const m = new THREE.Mesh(new THREE.SphereGeometry(r, 16, 12), pullHandleMat);
+            m.position.set(b.x + (q.alongX ? u : cOut), y, b.z + (q.alongX ? cOut : u));
+            m.renderOrder = 1002;
+            m.userData = { id: b.id, partDir: q.dir, partKind: 'dxfwin',
+                partRole: role, partIndex: sel.i || 0 };
+            out.push(m);
+        };
+        const yc = baseY + (q.lo + q.hi) / 2, uc = (q.a + q.b) / 2;
+        put2('u0', q.a, yc); put2('u1', q.b, yc);
+        put2('v0', uc, baseY + q.lo); put2('v1', uc, baseY + q.hi);
+        return out;
+    }
+    if (sel.kind === 'balc') {
+        const q = ModelingEngine.balcRect(b, baseY, dir);
+        if (!q) return out;
+        const r = size(q.depth, Math.max(q.hRail, 900));
+        // 先端＝奥行、手すりの天端＝手すり高、側面壁の天端＝側面壁高。
+        put('depth', 0, q.floorTop, r, q.depth + OUT);
+        put('rail', 0, q.railY, r, q.depth);
+        put('side', q.uSide, q.sideY, r, q.depth / 2);
+        return out;
+    }
+    if (sel.kind === 'visor') {
+        // ★ 軒庇。先端で【軒の出】、その脇で【勾配】、両端で【ケラバ】。
+        //   ⚠️ 同じ場所につまみを2つ置かないこと。どちらを掴んでいるのか
+        //     分からなくなる。勾配のつまみは先端の少し脇へずらす。
+        const q = ModelingEngine.visorRect(b, baseY, dir);
+        if (!q) return out;
+        const r = size(q.eaves, 600);
+        put('eaves', 0, q.yOut, r, q.eaves + OUT);
+        put('slope', Math.min(q.len / 4, 2000), q.yOut, r, q.eaves + OUT);
+        put('kL', -(q.len / 2 + q.keraba), q.yTop, r, 0);
+        put('kR', q.len / 2 + q.keraba, q.yTop, r, 0);
+        return out;
+    }
+    if (sel.kind === 'flat') {
+        // ★ 水平庇。先端で【出】、その脇で【取り付く高さ】、両端で【空き】。
+        const q = ModelingEngine.flatRect(b, baseY, dir);
+        if (!q) return out;
+        const r = size(q.depth, 600);
+        put('fdepth', 0, q.y, r, q.depth + OUT);
+        put('lift', Math.min(q.len / 4, 2000), q.y, r, q.depth / 2);
+        put('mL', -(q.len / 2 - q.margin), q.y, r, q.depth / 2);
+        put('mR', q.len / 2 - q.margin, q.y, r, q.depth / 2);
+        return out;
+    }
+    if (sel.kind === 'tare') {
+        const q = ModelingEngine.tareRect(b, baseY, dir);
+        if (!q) return out;
+        const r = size(q.w, Math.max(q.h, 400));
+        const yc = (q.y0 + q.y1) / 2;
+        put('u0', q.u0, yc, r);
+        put('u1', q.u1, yc, r);
+        put('v0', (q.u0 + q.u1) / 2, q.y0, r);
+        return out;
+    }
+    return out;
+}
+
+/* ★追加：屋根の切り欠きのつまみ。
+   ★ 真ん中＝穴ごと動かす、4辺＝その辺だけ動かす（05 と同じ作法）。
+   ⚠️ 置くのは【穴の底（壁の天端）】の少し上。屋根の上に置くと、穴の底が
+     見えているのにつまみだけ屋根の高さに浮いて見える。 */
+function buildNotchHandles() {
+    const out = [];
+    const b0 = selectedRoofOwner();
+    if (!b0 || AppState.selectedPart) return out;
+    const n = freeNotch(b0);
+    if (!n) return out;
+    const y = (b0.y || 0) + b0.h - freeRoofWallDrop(b0) + 150;
+    const r = Math.min(Math.max(Math.min(n.x1 - n.x0, n.z1 - n.z0) * 0.08, 140), 260);
+    const put = (role, x, z) => {
+        const m = new THREE.Mesh(new THREE.SphereGeometry(r, 16, 12), notchHandleMat);
+        m.position.set(b0.x + x, y, b0.z + z);
+        m.renderOrder = 1003;
+        m.userData = { id: b0.id, notchRole: role };
+        out.push(m);
+    };
+    const cx = (n.x0 + n.x1) / 2, cz = (n.z0 + n.z1) / 2;
+    put('move', cx, cz);
+    put('w', n.x0, cz); put('e', n.x1, cz);
+    put('s', cx, n.z0); put('n', cx, n.z1);
+    return out;
+}
+
+/* 棟の端のつまみ。屋根を選んでいるときだけ、棟の両端に出す。
+   ★ 棟の端の位置と「その辺の切妻の度合い」は同じもの。端を軒へ寄せれば
+     切妻、内へ引けば寄棟。型を選ぶのではなく、引いて決める。 */
+function buildRidgeHandles() {
+    const out = [];
+    const b = selectedRoofOwner();
+    if (!b) return out;
+    const baseY = (b.y || 0) + b.h;
+    const rad = Math.max(180, Math.min(b.w, b.d, 2400) * 0.07);
+    // ⚠️ 棟の球は出ないことがある（平場・パラペット・勾配 0）。そこで打ち切って
+    //   はいけない。勾配のつまみまで一緒に消えてしまう。
+    // ★ 並べた形では棟が何本もある。05 と同じく【棟ごと】に両端の球を出す。
+    for (const r of freeRidges(b)) {
+        for (const e of r.ends) {
+            const m = new THREE.Mesh(new THREE.SphereGeometry(rad, 16, 12), ridgeHandleMat);
+            m.position.set(b.x + e.x, baseY + r.y, b.z + e.z);
+            m.renderOrder = 999;
+            m.userData = { id: b.id, ri: r.ri, ridgeEdge: e.edge, ridgeAlongX: r.alongX };
+            out.push(m);
+        }
+    }
+    out.push(...buildSlopeHandles(b, baseY));
+    return out;
+}
+
+/* 勾配のつまみ。勾配屋根の面ごとに、その面に立つ【勾配定規】を置く。
+   ★ 斜辺が屋根面に載り、下端に垂直の辺、上に水平の辺。三角形の形がそのまま
+     その面の勾配になっている。
+   ⚠️ 勾配が緩いと三角形が潰れて掴めない。角度は正しいまま【三角形ごと大きく】
+     して逃がす。倍率には上限を置く（青天井にすると屋根からはみ出す）。 */
+function buildSlopeHandles(b, baseY) {
+    const out = [];
+    const hs = freeSlopeHandles(b);
+    if (!hs.length) return out;
+    const sl = (b.roof.params['自由屋根'].slope || 0) / 10;
+    const L0 = Math.max(900, Math.min(Math.min(b.w, b.d) * 0.16, 2000));
+    const HMIN = L0 * 0.30;                       // これより低いと読めない
+    let base = L0;
+    // ⚠️ 倍率の上限は控えめに。上げすぎると、緩勾配のとき定規が隅棟をまたいで
+    //   屋根からはみ出す。ごく緩い勾配では薄い三角のまま我慢する。
+    if (L0 * sl < HMIN) base = L0 * Math.min(HMIN / Math.max(L0 * sl, 1e-6), 2.2);
+    for (const h of hs) {
+        const [ox, oz] = OUT_DIR[h.edge];
+        const dx = -ox, dz = -oz;                 // 軒から棟へ向かう向き
+        const cx = b.x + h.x, cy = baseY + h.y, cz = b.z + h.z;
+        const half = base / 2;
+        // 斜辺の両端（どちらも屋根面の上）。
+        const p1 = [cx - dx * half, cy - half * sl, cz - dz * half];
+        const p2 = [cx + dx * half, cy + half * sl, cz + dz * half];
+        const p3 = [p1[0], p2[1], p1[2]];         // 下端の真上＝直角の頂点
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(
+            [...p1, ...p2, ...p3], 3));
+        const m = new THREE.Mesh(geo, slopeHandleMat);
+        // 高さから勾配を逆に解くのに要るものだけ持たせる。
+        //   refY は「この面の高さ」。掴んだ場所とのずれを打ち消すのに使う。
+        m.userData = { id: b.id, slopeHandle: true,
+            y0: baseY + h.y0, den: h.den, refY: cy };
+        out.push(m);
+        const lg = new THREE.BufferGeometry();
+        lg.setAttribute('position', new THREE.Float32BufferAttribute(
+            [...p1, ...p2, ...p2, ...p3, ...p3, ...p1], 3));
+        const lm = new THREE.LineSegments(lg, slopeEdgeMat);
+        lm.userData = { decor: true };
+        out.push(lm);
+    }
+    return out;
+}
+
+/* 4つ角を与えて、黄色い帯を1枚作る。下屋・パラペット修景で使い回す。 */
+function makeBar(b, baseY, e, userData) {
+    const p = [];
+    const push = (q) => p.push(b.x + q.x, baseY + q.y + 60, b.z + q.z);
+    push(e.a); push(e.b); push(e.ib);
+    push(e.a); push(e.ib); push(e.ia);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(p, 3));
+    const m = new THREE.Mesh(geo, eaveBarMat);
+    m.userData = userData;
+    return m;
+}
+
+/* 下屋の軒先・ケラバのバー。大屋根のバーと同じ見た目・同じ触り心地にする。
+   ⚠️ 形そのものは modelingEngine が作る。ここは【掴む場所】を置くだけ。 */
+function buildGeyaBars(b, baseY) {
+    return geyaBars(b).map((e) => makeBar(b, baseY, e,
+        { id: b.id, geyaEdge: e.dir, geyaRole: e.role,
+            geyaParam: e.param, out: e.out }));
+}
+
+/* パラペット修景屋根のつまみ一式。
+     黄色い帯 … 外への出／内への寸法
+     橙の球   … 棟の水平位置
+     赤い定規 … 笠木勾配
+     緑の球   … パラペットの立ち上がり */
+function buildParaHandles(b, baseY) {
+    const parts = paraParts(b);
+    if (!parts) return [];
+    const out = [];
+    for (const e of parts.bars) {
+        out.push(makeBar(b, baseY, e, { id: b.id, paraBar: e.kind, paraDir: e.dir,
+            paraParam: e.param, value: e.value, sign: e.sign }));
+    }
+    const rad = Math.max(180, Math.min(b.w, b.d, 2400) * 0.07);
+    {
+        const r = parts.ridge;
+        const m = new THREE.Mesh(new THREE.SphereGeometry(rad, 16, 12), ridgeHandleMat);
+        m.position.set(b.x + r.x, baseY + r.y, b.z + r.z);
+        m.renderOrder = 999;
+        m.userData = { id: b.id, paraBar: 'ridge', paraDir: r.dir,
+            paraParam: r.param, value: r.value, sign: r.sign };
+        out.push(m);
+    }
+    if (parts.slope) {
+        const h = parts.slope;
+        const [ox, oz] = PARA_OUT_DIR[h.dir];
+        const dx = -ox, dz = -oz;
+        const L0 = Math.max(900, Math.min(Math.min(b.w, b.d) * 0.16, 2000));
+        const HMIN = L0 * 0.30;
+        let base = L0;
+        if (L0 * h.slope < HMIN) {
+            base = L0 * Math.min(HMIN / Math.max(L0 * h.slope, 1e-6), 2.2);
+        }
+        const cx = b.x + h.x, cy = baseY + h.y, cz = b.z + h.z;
+        const half = base / 2;
+        const p1 = [cx - dx * half, cy - half * h.slope, cz - dz * half];
+        const p2 = [cx + dx * half, cy + half * h.slope, cz + dz * half];
+        const p3 = [p1[0], p2[1], p1[2]];
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(
+            [...p1, ...p2, ...p3], 3));
+        const m = new THREE.Mesh(geo, slopeHandleMat);
+        m.userData = { id: b.id, paraSlope: true, y0: baseY + h.y0,
+            den: h.den, refY: cy };
+        out.push(m);
+        const lg = new THREE.BufferGeometry();
+        lg.setAttribute('position', new THREE.Float32BufferAttribute(
+            [...p1, ...p2, ...p2, ...p3, ...p3, ...p1], 3));
+        const lm = new THREE.LineSegments(lg, slopeEdgeMat);
+        lm.userData = { decor: true };
+        out.push(lm);
+    }
+    {
+        const h = parts.height;
+        const m = new THREE.Mesh(new THREE.SphereGeometry(rad, 18, 14), flatHandleMat);
+        m.position.set(b.x + h.x, baseY + h.y, b.z + h.z);
+        m.renderOrder = 1000;
+        m.userData = { id: b.id, paraHeight: true, value: h.value };
+        out.push(m);
+    }
+    return out;
+}
+
+/* 下屋の勾配の定規。大屋根と同じ三角形。 */
+function buildGeyaSlopeHandle(b, baseY) {
+    const h = geyaSlopeHandle(b);
+    if (!h) return [];
+    const out = [];
+    const [ox, oz] = GEYA_OUT_DIR[h.dir];
+    const dx = -ox, dz = -oz;                  // 軒から内側へ向かう向き
+    const L0 = Math.max(900, Math.min(Math.min(b.w, b.d) * 0.16, 2000));
+    const HMIN = L0 * 0.30;
+    let base = L0;
+    if (L0 * h.slope < HMIN) {
+        base = L0 * Math.min(HMIN / Math.max(L0 * h.slope, 1e-6), 2.2);
+    }
+    const cx = b.x + h.x, cy = baseY + h.y, cz = b.z + h.z;
+    const half = base / 2;
+    const p1 = [cx - dx * half, cy - half * h.slope, cz - dz * half];
+    const p2 = [cx + dx * half, cy + half * h.slope, cz + dz * half];
+    const p3 = [p1[0], p2[1], p1[2]];
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(
+        [...p1, ...p2, ...p3], 3));
+    const m = new THREE.Mesh(geo, slopeHandleMat);
+    m.userData = { id: b.id, geyaSlope: true, den: h.den, refY: cy };
+    out.push(m);
+    const lg = new THREE.BufferGeometry();
+    lg.setAttribute('position', new THREE.Float32BufferAttribute(
+        [...p1, ...p2, ...p2, ...p3, ...p3, ...p1], 3));
+    const lm = new THREE.LineSegments(lg, slopeEdgeMat);
+    lm.userData = { decor: true };
+    out.push(lm);
+    return out;
+}
+
+/* 屋上の平場をつくるつまみ。屋根のてっぺんの真上に置く。
+   ★ 下げるほど平場が広がり、いっぱいまで下げるとパラペットの陸屋根になる。 */
+function buildFlatHandle() {
+    const b = selectedRoofOwner();
+    if (!b) return null;
+    const f = freeRoofFlat(b);
+    if (!f) return null;
+    // ★ 棟の中央に置く丸。上下に引くと平場が広がる。
+    //   ⚠️ 平場をつくると棟は無くなるので、そのときは屋根のてっぺんへ逃がす
+    //     （そこは押し引きの青い板と重なるので、少しずらした位置を使う）。
+    // ⚠️ 棟の端は【片方だけ】のことがある（もう一方が他の屋根に潜っている）。
+    //   端が2つある前提で書くと、そこで落ちる。あるぶんで平均を取る。
+    const r = freeRidge(b);
+    const ends = r ? r.ends : [];
+    const avg = (k) => ends.reduce((a, e) => a + e[k], 0) / ends.length;
+    const px = ends.length ? avg('x') : f.x;
+    const pz = ends.length ? avg('z') : f.z;
+    const py = ends.length ? r.y : f.y;
+    const rad = Math.max(200, Math.min(b.w, b.d, 2400) * 0.075);
+    const m = new THREE.Mesh(new THREE.SphereGeometry(rad, 18, 14), flatHandleMat);
+    m.position.set(b.x + px, (b.y || 0) + b.h + py, b.z + pz);
+    m.renderOrder = 1000;
+    m.userData = { id: b.id, flatHandle: true };
+    return [m];
+}
+
+/* 図面の階の階段が【どこまで上がるか】と、手すり壁の頭打ち。05 と同じ見方。
+   ★ 階段は上階の【床面】まで上がる。壁の天端で止めると、床板の厚みぶんだけ
+     足りない段差が最上段に残る。
+   ★ 手すり壁は吹抜けの手すりとして上階まで続く。上に何か載っていれば、
+     その天端まで立ち上がってよい。
+   ⚠️ 上に何も無いときは伸ばさない。壁だけが宙へ伸びる。 */
+function stairReach(b) {
+    const out = {};
+    const topY = (b.y || 0) + b.h;
+    const rectOf = (q) => ({ x0: q.x - q.w / 2, x1: q.x + q.w / 2,
+        z0: q.z - q.d / 2, z1: q.z + q.d / 2 });
+    const over = (p, q) => Math.min(p.x1, q.x1) - Math.max(p.x0, q.x0) > 50
+        && Math.min(p.z1, q.z1) - Math.max(p.z0, q.z0) > 50;
+    const foot = rectOf(b);
+    const s = b.plan && b.plan.stair;
+    const st = s ? { x0: b.x + s.x0, x1: b.x + s.x1, z0: b.z + s.z0, z1: b.z + s.z1 } : null;
+    let slabT = 0, cap = 0;
+    for (const q of AppState.buildingData) {
+        if (q === b || (q.y || 0) < topY - 1) continue;
+        const r = rectOf(q);
+        // すぐ上に載っている床板。階段はその天端（＝上階の床）まで上がる
+        if (q.kind === 'slab' && Math.abs((q.y || 0) - topY) < 1 && over(foot, r)) {
+            slabT = Math.max(slabT, q.h);
+        }
+        // 階段の真上に載っているものの天端。手すり壁はここで頭打ち
+        if (st && over(st, r)) cap = Math.max(cap, (q.y || 0) + q.h - (b.y || 0));
+    }
+    // ★ 上に床板が載っている階は、天端の横線を引かない。板の天端の1本で仕切る。
+    if (slabT > 0) { out.stacked = true; if (s) out.upperH = b.h + slabT; }
+    if (cap > 0) out.railCap = cap;
+    return out;
+}
+
 function rebuildMeshes() {
     while(houseGroup.children.length > 0){
         const child = houseGroup.children[0];
@@ -136,6 +730,9 @@ function rebuildMeshes() {
     }
     meshMap = {};
     interactiveMeshes = [];
+    pullHandles = [];
+    // ★ 小窓では選択色を出さない。素に見せる色は、選んでいる建物の壁色。
+    SubCam.clearMasks();
 
     // ★追加：rebuild1回につき1回、部位ごとのマテリアルキャッシュを完全リセット
     ModelingEngine.resetMaterialCache();
@@ -148,24 +745,141 @@ function rebuildMeshes() {
         const roofEaveMatB = ModelingEngine.getMaterial(b, 'roofEave', wallMat);
         // ★追加：ボックス自体の上面（屋上）は、大屋根・下屋・庇・バルコニー枠の屋根色(roof)とは
         // 別のマテリアルにして、両者が同じ色に連動してしまわないようにする
-        const roofTopMatB = ModelingEngine.getMaterial(b, 'roofTop', roofMat);
+        // ★ 直方体の上面（屋上・平場）は【白】。屋根の葺き材の黒ではない。
+        //   ⚠️ 屋根色に連動させると、屋上を歩ける面として見えなくなる。
+        const roofTopMatB = ModelingEngine.getMaterial(b, 'roofTop', wallMat);
 
         const baseY = b.y || 0;
+
+        // ★追加：取り込んだ 3D モデル。中身は外で作られたものなので、
+        //   こちらでは【置く・当たり判定を付ける】だけ。屋根も修景も通さない。
+        //   ⚠️ 読み込みには少し時間がかかる。読めるまでは箱で場所だけ示し、
+        //     読めた合図で組み直す。何も出ないと、取り込めたのかが分からない。
+        if (b.kind === 'model') {
+            const grp = new THREE.Group();
+            grp.position.set(b.x, baseY, b.z);
+            const obj = modelObject(b, () => rebuildMeshes());
+            if (obj) {
+                grp.add(obj);
+            } else {
+                const box = new THREE.Mesh(
+                    new THREE.BoxGeometry(b.w, b.h, b.d), ghostModelMat);
+                box.position.y = b.h / 2;
+                grp.add(box);
+            }
+            let first = null;
+            grp.traverse((o) => {
+                if (!o.isMesh) return;
+                o.userData.id = b.id;
+                interactiveMeshes.push(o);
+                if (!first) first = o;
+            });
+            houseGroup.add(grp);
+            if (first) meshMap[b.id] = { mesh: first, line: null };
+            return;
+        }
+
+        // ★追加：DXF から起こした階は、直方体ではなく【図面どおりの壁】を建てる。
+        //   ⚠️ 直方体の本体は作らない。二重になるうえ、中の間取りが見えなくなる。
+        //   屋根・修景はこのあと共通の道を通るので、ここで作るのは躯体だけ。
+        if (b.kind === 'dxf' && b.plan) {
+            const grp = buildDxfFloor(b.plan, b.h,
+                { wallMat: wallMatB, sashMat, glassMat: windowGlassMat, edgeMat },
+                { deck: !!b.roof, ...stairReach(b) });
+            grp.position.set(b.x, baseY, b.z);
+            let first = null;
+            grp.traverse((o) => {
+                if (!o.isMesh && !o.isLineSegments) return;
+                // ⚠️ 線にも建物の id を入れる。窓の稜線を掴んだときに、どの建物の
+                //   ものか分からないと選択に入れない。当たり判定には入れない。
+                o.userData.id = b.id;
+                if (!o.isMesh) return;
+                interactiveMeshes.push(o);
+                if (!first) first = o;
+            });
+            // ★追加：図面の階の【天端に、見えない一枚の面】を張る。
+            //   ⚠️ 図面の階には直方体の上面が無い。壁の天端は線のように細く、
+            //     部屋の中は素通しなので、上から押しても「側面を選んだ」ことに
+            //     なってしまい、階高の押し引きハンドルに戻る道が無かった。
+            //     この面があれば、部屋の中をふつうに押すだけで上面が選べる。
+            //   ⚠️ 色は書かない（見た目は何も変わらない）。当たり判定だけの面。
+            {
+                const topGeo = new THREE.PlaneGeometry(b.w, b.d);
+                topGeo.rotateX(-Math.PI / 2);          // 法線を真上へ
+                const topHit = new THREE.Mesh(topGeo, hiddenFaceMat);
+                topHit.position.set(0, b.h, 0);
+                topHit.renderOrder = -1;
+                topHit.userData.id = b.id;
+                grp.add(topHit);
+                interactiveMeshes.push(topHit);
+                if (!first) first = topHit;
+            }
+            houseGroup.add(grp);
+            if (first) meshMap[b.id] = { mesh: first, line: null };
+            const roofMaterialsD = { wallMat: roofEaveMatB, roofMat: roofMatB, edgeMat: edgeMat, gableWallMat: wallMatB };
+            const roofsGroupD = ModelingEngine.buildRoofs(b, baseY, AppState.buildingData, roofMaterialsD);
+            roofsGroupD.traverse(child => {
+                if (child.isMesh && child.userData.isRoof) interactiveMeshes.push(child);
+            });
+            houseGroup.add(roofsGroupD);
+            return;
+        }
+
+        // ★追加：階と階の間の床板。階段が上がってくるところには穴を開ける。
+        //   ⚠️ 直方体のままだと、上り口を床が塞いで階段が床に突き刺さり、
+        //     外では板の上下の縁が【二重線】になる。
+        //   ⚠️ 1階の床（地盤面の板）はここを通さない。足元の線が要る。
+        if (b.kind === 'slab' && baseY > 0) {
+            if (b.id === AppState.selectedId) {
+                SubCam.addMask(selectedMat, wallMatB.color.getHex());
+            }
+            const grp = buildSlabWithHole(b.w, b.d, b.h, b.hole,
+                { wallMat: b.id === AppState.selectedId ? selectedMat : wallMatB, edgeMat });
+            grp.position.set(b.x, baseY, b.z);
+            let first = null;
+            grp.traverse((o) => {
+                if (!o.isMesh) return;
+                o.userData.id = b.id;
+                interactiveMeshes.push(o);
+                if (!first) first = o;
+            });
+            houseGroup.add(grp);
+            if (first) meshMap[b.id] = { mesh: first, line: null };
+            return;
+        }
+
         // ★変更：窓・玄関の位置に実際の開口をくり抜いた本体ジオメトリを使う
         //   （建具を壁に貼り付けるのをやめ、開口に落とし込む納まりにしたため）
         //   グループ順・法線は BoxGeometry と同じなので、下の面別マテリアルと面選択はそのまま効く。
-        const geo = ModelingEngine.buildBodyGeometry(b, baseY);
+        // ★ 自由屋根が壁の天端より下に取り付くときは、その高さまで壁を
+        //   下げて描く。下げないと直方体が屋根を突き抜けて上に出る。
+        //   ⚠️ 下げるのは【描き方】だけ。b.h（階の高さ）は書き換えない。
+        const wallDrop = freeRoofWallDrop(b);
+        const bDraw = wallDrop > 0.5
+            ? { ...b, h: Math.max(100, b.h - wallDrop) } : b;
+        const geo = ModelingEngine.buildBodyGeometry(bDraw, baseY);
 
         // ★変更：側面(px/nx/pz/nz)は壁色、上面(top)は屋上専用色を使い、外壁と屋上を別々に着色できるようにする
-        const mats = [wallMatB, wallMatB, roofTopMatB, wallMatB, wallMatB, wallMatB];
+        // ★ 自由屋根を載せた階の上面は屋根が覆うので描かない（上を参照）。
+        // ⚠️ 屋根を持っていない相方の階も上面を描かない。大屋根はそちらまで
+        //   覆っているので、描くと屋根の下に床が二重に出る。
+        const freeRoofed = !!freeRoofOwner(b);
+        const mats = [wallMatB, wallMatB, freeRoofed ? hiddenFaceMat : roofTopMatB,
+            wallMatB, wallMatB, wallMatB];
         if (b.id === AppState.selectedId && AppState.selectedFaceDir) {
             const fmap = { 'px':0, 'nx':1, 'top':2, 'bottom':3, 'pz':4, 'nz':5 };
             const idx = fmap[AppState.selectedFaceDir];
-            if (idx !== undefined) mats[idx] = selectedMat;
+            // ⚠️ 描かない上面には選択色も塗らない。塗ると縞模様が戻る。
+            if (idx !== undefined && mats[idx] !== hiddenFaceMat) {
+                // 小窓では、この面も素の壁色で見せる。
+                SubCam.addMask(selectedMat, wallMatB.color.getHex());
+                SubCam.addMask(activeMat, wallMatB.color.getHex());
+                mats[idx] = selectedMat;
+            }
         }
 
         const mesh = new THREE.Mesh(geo, mats);
-        mesh.position.set(b.x, baseY + b.h / 2, b.z);
+        mesh.position.set(b.x, baseY + bDraw.h / 2, b.z);
         mesh.userData.id = b.id; 
 
         const edges = new THREE.EdgesGeometry(geo);
@@ -236,6 +950,68 @@ function rebuildMeshes() {
         houseGroup.add(tareWallsGroup);
 
     });
+
+    // ★追加：つまみ類は【操作の道具】。サブカメラの小窓には写さない
+    //   （道具レイヤーへ移す）。掴む側のレイキャスターは全レイヤーを見ている。
+    const addTool = (o) => { markTool(o); houseGroup.add(o); };
+    // ★追加：選んでいる面につまみを出す。押し引きの入口を目に見えるようにする。
+    for (const ph of (buildPullHandle() || [])) {
+        addTool(ph);
+        if (!ph.userData.decor) pullHandles.push(ph);
+    }
+    // ★追加：選んでいる修景要素のつまみ。つまんで大きさを変える。
+    for (const oh of buildPartHandles()) {
+        addTool(oh);
+        pullHandles.push(oh);
+    }
+    // ★追加：屋根の切り欠きのつまみ。穴の大きさと位置を引いて決める。
+    for (const nh of buildNotchHandles()) {
+        addTool(nh);
+        pullHandles.push(nh);
+    }
+    // ★追加：棟の端のつまみ。屋根の形を引いて変えるための入口。
+    for (const rh of buildRidgeHandles()) {
+        addTool(rh);
+        if (!rh.userData.decor) pullHandles.push(rh);
+    }
+    // ★追加：軒先のバー。屋根を選んでいるあいだ、辺ごとに出しっぱなし。
+    {
+        const sb = selectedRoofOwner();
+        if (sb) {
+            for (const eb of buildEaveBars(sb, (sb.y || 0) + sb.h)) {
+                addTool(eb); pullHandles.push(eb);
+            }
+        }
+    }
+    // ★追加：下屋のつまみ。大屋根とまったく同じ道具立てにする。
+    {
+        const gb = selectedGeya();
+        if (gb) {
+            const y0 = (gb.y || 0) + gb.h;
+            for (const eb of buildGeyaBars(gb, y0)) {
+                addTool(eb); pullHandles.push(eb);
+            }
+            for (const sh of buildGeyaSlopeHandle(gb, y0)) {
+                addTool(sh);
+                if (!sh.userData.decor) pullHandles.push(sh);
+            }
+        }
+    }
+    // ★追加：パラペット修景屋根のつまみ。ここもスライダーではなくモデルの上で。
+    {
+        const pb = selectedPara();
+        if (pb) {
+            for (const ph of buildParaHandles(pb, (pb.y || 0) + pb.h)) {
+                addTool(ph);
+                if (!ph.userData.decor) pullHandles.push(ph);
+            }
+        }
+    }
+    // ★追加：屋上の平場のつまみ。棟の球とは別の役目なので形も色も分ける。
+    for (const fh of (buildFlatHandle() || [])) {
+        addTool(fh);
+        if (!fh.userData.decor) pullHandles.push(fh);
+    }
 
     // ★追加：外構作図モード中に建物を作り直したときは、半透明ゴーストを塗り直す
     //   （メッシュ・マテリアルは rebuild のたびに作り直されるため）
@@ -313,12 +1089,22 @@ window.getEdgeMat = function() { return edgeMat; };
 
 // ViewManagerの初期化
 ViewManager.init({ scene, camera, renderer, houseGroup });
+// ★追加：サブカメラ（決めた画角を1つ残す）。小窓は同じキャンバスの隅に描く。
+SubCam.init({ scene, camera, renderer, controls,
+    render: () => { if (window.renderAllViews) window.renderAllViews(); } });
+// 面をなぞったときの橙色の板も【道具】。小窓には写さない。
+markTool(hoverMesh);
+window.toggleSubCam = function() {
+    // ★ ボタンは【いまの画面を写し取る】。すでにあれば、その場で入れ替える。
+    SubCam.capture();
+};
 window.renderAllViews = () => ViewManager.renderAllViews();
 
 // InteractionHandlerの初期化
 InteractionHandler.init({
     camera, scene, controls, hoverMesh, activeMat, rebuildMeshes, saveState,
-    getInteractiveMeshes: () => interactiveMeshes
+    getInteractiveMeshes: () => interactiveMeshes,
+    getPullHandles: () => pullHandles
 });
 
 // ==========================================
@@ -398,6 +1184,211 @@ controls.addEventListener('change', () => {
 });
 
 // ツールバーボタン（HTML）用グローバルバインド
+// ★追加：DXF の平面図を読み込んで、階として積む。
+//   長方形を描くのと並ぶ【もうひとつの作図の仕方】であって、モードではない。
+window.addDxfFloor = function() {
+    window.setTool(null);
+    askDxfFloor(() => { saveState(); rebuildMeshes(); });
+};
+
+// ★追加：取り込み／書き出しの入口。中身は src/io/ioMenu.js。
+window.openIoMenu = function(btn) {
+    window.setTool(null);
+    openIoMenu(btn, {
+        dxf: () => window.addDxfFloor(),
+        model: () => askModelImport(() => {
+            saveState();
+            rebuildMeshes();
+            UIController.updateActionButtons();
+        }),
+        glbBuilding: () => window.exportGlb('building'),
+        glbAll: () => window.exportGlb('all'),
+        copyImage: () => window.copyViewImage(),
+    });
+};
+
+// ★追加：取り込んだモデルの後始末。控えも一緒に捨てないと、同じ id を
+//   使い回したときに古い中身が出てくる。
+window.dropModel = dropModel;
+
+// ★追加：取り込んだモデルを消す（札のボタンから）。Delete と同じことをする。
+window.deleteModel = function(id) {
+    const b = AppState.buildingData.find((d) => d.id === id);
+    if (!b || b.kind !== 'model') return;
+    dropModel(id);
+    AppState.buildingData = AppState.buildingData.filter((d) => d.id !== id);
+    AppState.selectedId = null;
+    AppState.selectedFaceDir = null;
+    AppState.selectedPart = null;
+    saveState();
+    rebuildMeshes();
+    UIController.hideFloatingMenu();
+    UIController.clearGUI();
+};
+
+// ★追加：取り込んだモデルの大きさの読み替え（m と mm の取り違え）。
+window.rescaleModel = function(id, k) {
+    const b = AppState.buildingData.find((d) => d.id === id);
+    if (!b || b.kind !== 'model') return;
+    rescaleModel(b, k);
+    saveState();
+    rebuildMeshes();
+    UIController.showBlockInfo(b);
+};
+
+/* ★追加：短い知らせ。コピーのように【画面が何も変わらない操作】は、
+   これが無いと成功したのかどうか分からない。 */
+function flashNote(text) {
+    const el = document.createElement('div');
+    el.style.cssText = 'position:fixed;left:50%;bottom:170px;transform:translateX(-50%);'
+        + 'z-index:2000;background:rgba(33,37,41,.92);color:#fff;padding:8px 16px;'
+        + 'border-radius:999px;font:12px/1.5 system-ui,sans-serif;pointer-events:none;'
+        + 'opacity:0;transition:opacity .15s;';
+    el.textContent = text;
+    document.body.appendChild(el);
+    requestAnimationFrame(() => { el.style.opacity = '1'; });
+    setTimeout(() => {
+        el.style.opacity = '0';
+        setTimeout(() => el.remove(), 250);
+    }, 1600);
+}
+
+// ★追加：いまの画面を絵にして、クリップボードへ入れる。
+//   ★ PowerPoint や Word、メールにそのまま貼れる。
+//   ⚠️ ブラウザから【3Dモデルとして】クリップボードに入れることはできない
+//     （クリップボードに載せられるのは文字と絵だけ）。3D のまま渡したいときは
+//     GLB で書き出して、PowerPoint の「挿入 ▸ 3D モデル」から読ませる。
+//   ⚠️ 絵を取り出すには、描いた直後の画面が残っている必要がある
+//     （init.js の preserveDrawingBuffer）。
+window.copyViewImage = async function() {
+    const keep = { id: AppState.selectedId, face: AppState.selectedFaceDir,
+        part: AppState.selectedPart };
+    // つまみや矢印が写り込まないよう、選択を外してから撮る。
+    AppState.selectedId = null;
+    AppState.selectedFaceDir = null;
+    AppState.selectedPart = null;
+    UIController.hideFloatingMenu();
+    UIController.clearGUI();
+    // ★ 小窓と四角錐は【道具】。資料に写ると建物の一部に見える。
+    SubCam.beginPlainRender();
+    rebuildMeshes();
+    if (window.renderAllViews) window.renderAllViews();
+
+    const shot = () => new Promise((res, rej) => {
+        renderer.domElement.toBlob(
+            (b) => (b ? res(b) : rej(new Error('画面を絵にできませんでした'))),
+            'image/png');
+    });
+    try {
+        // ⚠️ 撮り終わるのを待ってから write を呼ぶと「操作の直後ではない」と
+        //   断られることがある。約束（Promise）のまま渡すのが作法。
+        await navigator.clipboard.write([
+            new ClipboardItem({ 'image/png': shot() })]);
+        flashNote('画面を画像でコピーしました');
+    } catch (e) {
+        // ⚠️ クリップボードは、画面が前に出ていないと使えないことがある。
+        //   そのときに何も起きないと、押した意味が分からない。絵はもう
+        //   出来ているので、ファイルとして受け取れるようにする。
+        console.warn(e);
+        if (confirm('クリップボードに入れられませんでした。\n'
+            + '（ほかの窓が前に出ているときなど）\n\n'
+            + '画像ファイルとして保存しますか？')) {
+            try {
+                const blob = await shot();
+                const a = document.createElement('a');
+                a.download = 'view_' + new Date().toISOString()
+                    .split('T')[0].replace(/-/g, '') + '.png';
+                a.href = URL.createObjectURL(blob);
+                a.click();
+                URL.revokeObjectURL(a.href);
+            } catch (e2) {
+                console.warn(e2);
+                alert('画面を絵にできませんでした。');
+            }
+        }
+    }
+    SubCam.endPlainRender();
+    AppState.selectedId = keep.id;
+    AppState.selectedFaceDir = keep.face;
+    AppState.selectedPart = keep.part;
+    rebuildMeshes();
+};
+
+// ★追加：GLB で書き出す。mode は 'building'（建物だけ）／'all'（外構も）。
+//   ⚠️ 選んでいるものは【一度外してから】書き出す。外さないと、赤いつまみや
+//     地面の矢印まで一緒に書き出されてしまう。
+function glbFileName(mode) {
+    const dateStr = new Date().toISOString().split('T')[0].replace(/-/g, '');
+    return (mode === 'all' ? 'model_ext_' : 'model_') + dateStr + '.glb';
+}
+
+/* 取り込んだモデルが読み終わるのを待つ。
+   ⚠️ 待たずに書き出すと、読み込み中のモデルは【代用の薄い箱】のまま
+     ファイルに入る。大きいモデルほど起きやすい。 */
+async function waitForModels(limitMs = 20000) {
+    const t0 = Date.now();
+    while (modelsPending() > 0 && Date.now() - t0 < limitMs) {
+        await new Promise((r) => setTimeout(r, 100));
+    }
+}
+
+/* GLB を作って Blob で返す。書き出しにも、画像のコピーにも使う。 */
+async function buildGlbBlob(mode) {
+    await waitForModels();
+    return new Promise((resolve, reject) => {
+        const keep = { id: AppState.selectedId, face: AppState.selectedFaceDir,
+            part: AppState.selectedPart };
+        AppState.selectedId = null;
+        AppState.selectedFaceDir = null;
+        AppState.selectedPart = null;
+        UIController.hideFloatingMenu();
+        UIController.clearGUI();
+        rebuildMeshes();
+
+        // 外構を含めるかどうかで、書き出す元を変える。
+        if (isExteriorActive()) exitExterior();
+        const roots = (mode === 'all') ? getExportRoots() : houseGroup;
+
+        // ⚠️ 組み直した直後は、置き場所（position）は入っていても【行列】がまだ
+        //   単位行列のまま。行列は画面を描くときに計算されるが、この画面は
+        //   動きがあるときだけ描くので、組み直しただけでは計算されない。
+        //   書き出しは行列を見るので、そのまま渡すと屋根も取り込んだモデルも
+        //   【原点に潰れた】ファイルになる。ここで先に計算させておく。
+        for (const r of (Array.isArray(roots) ? roots : [roots])) {
+            r.updateMatrixWorld(true);
+        }
+
+        // ★ ボーン入りのモデルは、いまの姿のまま【ただのメッシュ】に固めてから
+        //   書き出す。骨組みのまま渡すと、受け取るソフトによって位置がずれる。
+        const unfreeze = freezeSkinned(roots);
+
+        const restore = () => {
+            unfreeze();
+            AppState.selectedId = keep.id;
+            AppState.selectedFaceDir = keep.face;
+            AppState.selectedPart = keep.part;
+            rebuildMeshes();
+        };
+        new GLTFExporter().parse(roots, (glb) => {
+            restore();
+            resolve(new Blob([glb], { type: 'model/gltf-binary' }));
+        }, (err) => { restore(); reject(err); }, { binary: true });
+    });
+}
+
+window.exportGlb = function(mode) {
+    buildGlbBlob(mode).then((blob) => {
+        const a = document.createElement('a');
+        a.download = glbFileName(mode);
+        a.href = URL.createObjectURL(blob);
+        a.click();
+        URL.revokeObjectURL(a.href);
+    }).catch((err) => {
+        console.error(err);
+        alert('書き出せませんでした。');
+    });
+};
+
 window.undo = undo;
 window.redo = redo;
 window.toggleSnap = function() {
@@ -406,6 +1397,9 @@ window.toggleSnap = function() {
 
 window.clearAll = function() {
     if(confirm('すべてのオブジェクトを消去しますか？')) {
+        // ★ 取り込んだモデルの控えも捨てる（使われないまま場所を取り続ける）。
+        dropAllModels();
+        SubCam.remove();
         AppState.clearAll();
         clearExterior();          // ★追加：外構（芝生・フェンス・カーポートなど）も一緒に消す
         window.setTool(null);
@@ -543,7 +1537,9 @@ document.getElementById('btn-save-json').addEventListener('click', () => {
         // ★追加：地球モード（04）での検討内容。
         //   PLATEAU 建物の高さ変更・壁面後退・置いた箱を、緯度経度付きで残す。
         //   地球モードを開いていなければ null（キーは残す＝あとから読む側の分岐が減る）。
-        earthState: readEarthState()
+        earthState: readEarthState(),
+        // ★追加：サブカメラ（1台）。位置・注視点・焦点距離だけの軽い中身。
+        subCamera: SubCam.serialize()
     };
 
     // Blobオブジェクトを作成し、ローカルへファイルとしてダウンロード
@@ -615,6 +1611,9 @@ inputLoadJson.addEventListener('change', (e) => {
 
             // ★追加：5. 地球モード（04）の検討内容。
             //   含まれない古いデータなら null＝地球モード側もまっさらに戻す。
+            // ★追加：サブカメラ。持っていない古いデータなら「無し」に戻す。
+            SubCam.restore(json.subCamera || null);
+
             pendingEarthState = json.earthState || null;
             earthStateApplied = false;
             pushEarthState();   // すでに地球モードが立ち上がっていればその場で当たる

@@ -886,3 +886,70 @@ export const USER_MODEL_SNAP_CELL = 4;      // グリッドのセル[m]
 // ギズモ（ドラッグ操作）の刻み。位置と向きの操作はこれに一本化している。
 export const USER_MODEL_GIZMO_MOVE_SNAP = 0.5;    // 平面移動[m]
 export const USER_MODEL_GIZMO_ROTATE_SNAP = 1;    // 回転[度]
+
+// --- 取り込んで置くオブジェクト（点群 .spz/.splat/.ply ・ モデル .glb/.gltf）------
+// ファイルを取り込んで、クリックした場所へ置く機能の設定（importobjects.js）。
+//
+// 起動時に自動で読むファイルの候補。★ 先に見つかった1つだけを使う。
+//   いまは【空＝何も自動で読まない】。取り込み（ファイルを選ぶ／ドラッグ&ドロップ）
+//   だけで使う設定。起動を軽くしたいので既定はこちら。
+//   ※ 毎回出したいファイルができたらここに書く。例:
+//       export const AUTOLOAD_URLS = ['kyoto_city_garden.spz', 'kyoto_city_garden.splat'];
+//     と並べると、先に見つかった1つ（.spz があればそちら）だけを読む。
+//     置き場所は 04_earth-simulator/ の中（ページからの相対パス。サブフォルダも可）。
+export const AUTOLOAD_URLS = [];
+
+// 【自動で読んだファイルの初期位置】（緯度経度[度]）。
+//   ★ 取り込んだファイルは「クリックした場所」に置くので、この値は使わない。
+//     使うのは AUTOLOAD_URLS のファイルだけ。
+//   ★ 緯度経度で持つのが要点。この画面は測地座標の上に建物・地形が載っているので、
+//     ローカルのメートル値で持つと都市を切り替えたとき意味が変わってしまう。
+//   y は地表（原点の標高）からの高さ[m]。
+export const AUTOLOAD_ORIGIN = { lat: 34.985849, lon: 135.758766, y: 0 };
+
+// 【点群の基準の向き】元ファイルの座標系を直すための固定の回転[度]。
+//   ★ 動画からの再構成（COLMAP系）は +Y が【下】向きの規約で出てくることが多く、
+//     three.js / Spark の +Y=上 とは天地が逆になる。Z軸まわりに180°回すと直る
+//     （SuperSplat 側で回転Z=180 を入れているのと同じ補正）。
+//   ★ この回転は【ギズモの操作とは別物】として点群自身に固定で掛ける。
+//     ギズモが動かすのは外側のグループなので、配置をリセットしても
+//     天地が戻ってしまうことはない。
+//   ※ SuperSplat で「変換を適用して」書き出したファイルに差し替えたら、
+//     ここは {x:0, y:0, z:0} にすること（二重に回ってまた逆さになる）。
+//   ※ .glb/.gltf は +Y=上 が規格で決まっているので、この補正は掛けない。
+export const SPLAT_BASE_ROTATION = { x: 0, y: 0, z: 180 };
+
+// 取り込める拡張子。点群は Spark、モデルは GLTFLoader が受け持つ。
+//   ※ .rad は Spark 2.0 の LOD ツリー形式（build-lod で作る）。粒数の多い点群を
+//     予算内に間引いて描いてくれるので、重い点群はこの形式にすると軽くなる。
+export const IMPORT_SPLAT_EXT = ['.spz', '.splat', '.ply', '.ksplat', '.sog', '.rad'];
+//   ⚠️ .obj は材質を別ファイル（.mtl）に持つ規格なので、単体で取り込むと
+//     色・テクスチャは付かない（形だけ）。色も要るなら .glb にして持ってくること。
+//   ⚠️ .ply は上の点群側で受ける。三角形メッシュの .ply は読めない。
+export const IMPORT_MESH_EXT = ['.glb', '.gltf', '.obj', '.stl'];
+
+// 【STL の基準の向き】CAD 由来の STL は +Z を上（Z-up）にして書き出すものが多く、
+//   その場合この画面（+Y=上）では【横倒し】に見える。
+//   横倒しになったら x: -90 にすること（Z-up → Y-up の変換）。
+//   ★ 既定は 0（ファイルのまま）。STL は向きの規約が決まっていないので、
+//     こちらで勝手に回すと Blender 由来の Y-up STL が逆に倒れるため。
+//     1つ2つならギズモの「回転」で合わせるほうが早い。
+export const STL_BASE_ROTATION = { x: 0, y: 0, z: 0 };
+// 拡張子 → Spark に渡す fileType。
+//   ⚠️ ドラッグ&ドロップしたファイルは blob URL になり【拡張子を持たない】。
+//     .ply/.spz は中身から自動判別できるが、.splat/.ksplat は判別できないので、
+//     ファイル名から求めたこの値を明示的に渡す必要がある。
+export const SPLAT_FILE_TYPE = {
+  '.ply': 'ply', '.spz': 'spz', '.splat': 'splat',
+  '.ksplat': 'ksplat', '.sog': 'pcsogs', '.rad': 'rad',
+};
+
+// 配置（位置・向き・倍率）の保存先（localStorage）。都市ごとに分ける
+//   （京都で合わせた配置は大阪では意味を成さないため）。
+//   ★ 中身は「ファイル名 → 変換」の対応表。取り込んだファイルの中身そのものは
+//     保存しない（86MB級を抱え込むため）ので、再読み込み後に同じ名前のファイルを
+//     もう一度取り込むと、前回合わせた位置に戻る。
+export const IMPORT_STATE_KEY = `earth_placed_objects_${CITY_ID}`;
+// ギズモの刻み。
+export const IMPORT_GIZMO_MOVE_SNAP = 0.1;      // 平面移動[m]（実写合わせなので細かめ）
+export const IMPORT_GIZMO_ROTATE_SNAP = 0.5;    // 回転[度]

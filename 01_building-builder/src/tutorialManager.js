@@ -142,7 +142,12 @@ export const TutorialManager = {
         const startBtn = document.getElementById('btn-start-tutorial');
         this.entryBtn = startBtn; 
 
-        if (startBtn) {
+        // ★ いまはチュートリアルを止めている。操作方法を作り直したので、
+        //   中身（台本）が今の画面と合わない。合わないまま案内するほうが害が大きい。
+        //   ⚠️ 台本を書き直したら、この return と index.html の disabled を外すこと。
+        const TUTORIAL_ENABLED = false;
+
+        if (startBtn && TUTORIAL_ENABLED) {
             startBtn.onclick = () => {
                 if (!startBtn.disabled) this.beginTutorial();
             };

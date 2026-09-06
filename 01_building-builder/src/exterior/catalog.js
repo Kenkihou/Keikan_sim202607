@@ -15,8 +15,8 @@ export const GROUPS = [ground, fence, exterior, tree];
 export const PLACE_HINT = {
   point: '地盤面の格子点をクリックして配置',
   line:  '始点→終点の順に格子点をクリック（線に沿って作図）',
-  rect:  '対角の2点をクリック（範囲を作図）',
-  poly:  '角を順にクリック／ダブルクリック（または Enter）で確定',
+  rect:  '地面をドラッグして範囲を作図（建物の平面作図と同じ）',
+  poly:  'ドラッグで1本引く（引いたあとに「続ける」で折り曲げられます）',
 };
 
 const byId = new Map();

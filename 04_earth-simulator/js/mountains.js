@@ -13,7 +13,7 @@
 //     山は遠いので、遠近で縮むと読めなくなるため（sizeAttenuation: false）。
 //     奥行きの判定は有効にしてあるので、手前の山に隠れる山名は自然に見えなくなる。
 // =============================================================================
-import { THREE, scene, el, focusLocal, camera } from './core.js';
+import { THREE, scene, el, focusLocal, camera, renderer } from './core.js';
 import {
   MOUNTAIN_URL, MOUNTAIN_LABEL_LIFT, MOUNTAIN_LABEL_SCREEN, MOUNTAIN_MAX_DIST,
   MOUNTAIN_VISIBLE_DIST, MOUNTAIN_SHOW_ELEVATION,
@@ -79,6 +79,32 @@ function makeLabelTexture(name, eleText) {
 
   const tex = new THREE.CanvasTexture(cvs);
   tex.colorSpace = THREE.SRGBColorSpace;
+
+  // ⚠️⚠️ ここで【今すぐ】GPU へ送っておくこと。放っておくと three は「最初に描く
+  //   ときに」送るが、その瞬間の WebGL の状態しだいで【上下逆さまに焼き付く】。
+  //
+  //   仕組み: キャンバスは左上原点、WebGL のテクスチャは左下原点なので、three は
+  //   アップロード時に gl.pixelStorei(UNPACK_FLIP_Y_WEBGL, true) を掛けて上下を
+  //   合わせている。ところがこの設定は【WebGLコンテキスト全体の共有状態】で、
+  //   three は「前回設定した値」を自分でキャッシュし、同じなら pixelStorei を
+  //   省略する。そのため、three 以外の描画（点群の Spark や 3D Tiles など）が
+  //   この値を false にしたまま返すと、three は気づかずに省略し、
+  //   そのとき送られたテクスチャだけが上下反転で焼き付く。
+  //
+  //   ★ 症状の特徴（実測で確認）:
+  //     ・反転するのは【一部のラベルだけ】。どれが当たるかは読み込みのたびに変わる
+  //       （送られる瞬間に他所が状態を寝かせていたかどうかの運）。
+  //     ・カメラを動かしても直らない。テクスチャに焼き付いているため。
+  //     ・needsUpdate で送り直すと直る。
+  //   ★ 機序の確定実験: 外から gl.pixelStorei(UNPACK_FLIP_Y_WEBGL, false) を実行して
+  //     1枚だけ送り直したところ、そのラベルだけが上下反転し、他は無傷だった。
+  //     さらに描画後も値が false のままで、three が pixelStorei を省いたことも確認した。
+  //
+  //   直し方: resetState() で「three が覚えている状態」を捨てさせ（次の設定を必ず
+  //   実行させ）、initTexture() でこの場で送る。キャンバスは以後変化しないので、
+  //   一度正しく送れば二度と反転しない。
+  renderer.resetState();
+  renderer.initTexture(tex);
   return tex;
 }
 
@@ -197,7 +223,18 @@ function buildMountains() {
 //   ★ 箱庭表示（clipState.enabled）のときは【切り抜き箱の外の山名は出さない】。
 //     建物や地形が箱の外は消えているのに山名だけ地平線の外から見えるのは不自然なため。
 //     箱は注目地点(focusLocal)を中心とした一辺 clipState.size の正方形（水平方向のみ）。
+//
+//   ⚠️ 距離だけで判定してはいけない。【カメラの後ろにある山も必ず外すこと】。
+//     後ろの山名は「見えないはず」ではなく【左右反転した文字】として画面に描かれる。
+//     理由は three.js のスプライトの実装にある。sizeAttenuation=false のとき
+//     頂点シェーダは画面上の大きさを一定に保つために
+//         scale *= -mvPosition.z
+//     を掛けるが、カメラの後ろでは mvPosition.z が正なので【スケールが負】になる。
+//     負のスケールは板を裏返すので、文字が鏡像になったまま、しかも後ろの点が
+//     画面の反対側へ写るため「もっともらしい位置と大きさ」で出てしまう。
+//     （実測: 市街を俯瞰した構図で、表示20件のうち6件がカメラ背面にあり反転していた）
 // =========================================================================
+const _camFwd = new THREE.Vector3();
 function updateMountainVisibility() {
   if (!mountainState.loaded) return;
   mountainGroup.visible = mountainState.enabled;
@@ -207,6 +244,7 @@ function updateMountainVisibility() {
   }
   const cx = camera.position.x, cy = camera.position.y, cz = camera.position.z;
   const maxSq = MOUNTAIN_VISIBLE_DIST * MOUNTAIN_VISIBLE_DIST;
+  camera.getWorldDirection(_camFwd);   // 前後の判定用（上のコメントを参照）
   const boxed = clipState.enabled;
   const half = clipState.size / 2;
   const bx0 = focusLocal.x - half, bx1 = focusLocal.x + half;
@@ -221,7 +259,9 @@ function updateMountainVisibility() {
       continue;
     }
     const dx = s.position.x - cx, dy = s.position.y - cy, dz = s.position.z - cz;
-    const near = dx * dx + dy * dy + dz * dz <= maxSq;
+    // カメラの向きとの内積が正＝前方。後ろの山は反転文字になるので必ず外す。
+    const inFront = dx * _camFwd.x + dy * _camFwd.y + dz * _camFwd.z > 0;
+    const near = inFront && dx * dx + dy * dy + dz * dz <= maxSq;
     s.visible = near;
     if (near) shown++;
   }

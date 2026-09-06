@@ -5,6 +5,7 @@
    違いは単位だけ：pts は m のまま持ち、シーンへ置くときに
    「地物のグループ自体を 1000倍」して mm 空間に合わせる。
    ============================================================ */
+import { markTool } from '../../subcam.js';
 import * as THREE from 'three';
 import { world, getScene, render, MM } from './viewer.js';
 import { itemById } from '../catalog.js';
@@ -163,6 +164,7 @@ function refreshHelper(){
     boxHelper = new THREE.BoxHelper(selected.obj, 0xff8a3d);
     boxHelper.material.depthTest = false;
     boxHelper.renderOrder = 9;
+    markTool(boxHelper);          // ★ 選択枠は道具。サブカメラの小窓には写さない
     getScene().add(boxHelper);
   } else {
     boxHelper.visible = true;

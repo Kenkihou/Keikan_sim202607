@@ -1,5 +1,6 @@
 // viewManager.js
 import * as THREE from 'three';
+import { SubCam } from './subcam.js';
 
 export const ViewManager = {
     scene: null,
@@ -159,6 +160,9 @@ export const ViewManager = {
         this.renderer.setClearColor(0xf5f5f5);
         this.renderer.clear();
         this.renderer.render(this.scene, this.camera);
+
+        // ★追加：サブカメラの小窓。同じキャンバスの隅へ、もう一度だけ描く。
+        SubCam.renderInto(this.renderer, this.scene);
         
         // ※サブカメラ、人型、分割線の更新処理はすべて削除しました
     }    

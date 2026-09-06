@@ -1428,4 +1428,9 @@ function notifyParentState() {
   } catch (e) { /* 別ドメインなら黙って諦める */ }
 }
 
-export { streetViewState, initStreetView, updateStreetView, exitStreetView };
+// pickLanding は「画面のこの位置は街のどこか」を返す唯一の正しい実装なので、
+// 取り込んだオブジェクトをクリックで置く importobjects.js からも使う
+// （粗い地形タイルに誤って当たらないための作法がここに集約されている）。
+export {
+  streetViewState, initStreetView, updateStreetView, exitStreetView, pickLanding,
+};

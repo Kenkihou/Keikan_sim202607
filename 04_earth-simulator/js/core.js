@@ -22,8 +22,19 @@ function showError(msg) {
 // =========================================================================
 // Three.js 基本セット（ここは普通の Three.js。自作モデルもこの scene に足せる）
 // =========================================================================
+// ⚠️ antialias は【切らない】。Gaussian Splat だけを見るなら MSAA は無駄なので
+//   Spark の公式は antialias:false を勧めているが、この画面の主役は PLATEAU の建物と
+//   断面・地盤ラインで、そちらは線の綺麗さがそのまま成果物の質になる。
+//   点群は数ある表示レイヤーの1つに過ぎないので、常時・全体の画質を落として
+//   点群だけを速くするのは割に合わない。点群側の負荷は importobjects.js の品質プロファイル
+//   （ストリートビュー中だけ落とす）で吸収する。
+//   ※ 速度を測り比べたいときはここを false にするだけでよい（要リロード）。
 const renderer = new THREE.WebGLRenderer({ antialias: true, stencil: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+// 通常時のピクセル比。★ ストリートビューで点群の中に立つ間だけ importobjects.js が 1 に落とす
+//   （スプラットは塗りつぶし律速なので、ピクセル比を半分にすると塗り面積が 1/4 になる）。
+//   戻すときの基準値が要るので、その場で計算せず定数として持っておく。
+export const BASE_PIXEL_RATIO = Math.min(window.devicePixelRatio, 2);
+renderer.setPixelRatio(BASE_PIXEL_RATIO);
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.localClippingEnabled = true; // 断面表現などを使う場合に備えて有効化

@@ -37,7 +37,6 @@ const applied = [];      // [{ polys, bbox, off, hidden, hiddenC, y }]
 let fitted = false;      // 読み込み後に一度だけ外形を平面へ合わせたか
 
 const PLAN_COLOR = 0x2f6fb5;
-const PLAN_DONE = 0x9ec3e8;   // 貼り付け済みの階（いま触っていない）
 const ELEV_COLOR = 0x555555;
 
 const mats = new Map();
@@ -478,7 +477,9 @@ export function askPlanFile() {
 //   ★ 見た目のレイヤ（二重線・建具の姿）は一切見ない。読むのは
 //     W-EXT-200 / W-INT-100 … 壁の芯線（厚みはレイヤ名の数字[mm]）
 //     O-DOOR / O-WIN / O-OPEN … 開口の芯線（壁の芯線の上に重ねてある）
-//     S-RUN / S-UP … 階段の走りと上り方向
+//     S-RUN / S-LAND / S-UP … 階段の走り・踊り場・上りの通り道
+//       走りは S-RUN-7 のように【段数】を付けられる（厚みと同じ流儀）。
+//       付ければ階高が変わっても段数は図面のまま。付けなければ階高から決まる。
 //   ⚠️ レイヤ名で読む。名前が合わなければ何も出ないので、拾えた本数を必ず返す。
 const OPEN_H = { DOOR: [0, 2.0], WIN: [0.8, 2.0], OPEN: [0, 2.0] };
 
@@ -496,22 +497,138 @@ function segWorld(a, b) {
     z0: Math.min(pa[2], pb[2]), z1: Math.max(pa[2], pb[2]) };
 }
 
+/* 線分の集まりを、つながっている塊ごとに分けて、それぞれの外接矩形を返す。
+   ★ 図面では矩形も「4本の線」でしかない。端点を共有しているものを1つに
+     まとめれば、走りが何枚描いてあっても拾える。
+   ⚠️ 別々の走りどうしが端点で触れていると1枚に融ける。廻り階段では走りの
+     間に必ず中壁か踊り場が入るので、実際には触れない。 */
+function rectsOf(segs) {
+  const key = (x, z) => Math.round(x * 1000) + ':' + Math.round(z * 1000);
+  const par = segs.map((_, i) => i);
+  const find = (i) => { while (par[i] !== i) { par[i] = par[par[i]]; i = par[i]; } return i; };
+  const at = new Map();
+  segs.forEach((s, i) => {
+    for (const k of [key(s.ax, s.az), key(s.bx, s.bz)]) {
+      if (at.has(k)) { const a = find(i), b = find(at.get(k)); if (a !== b) par[a] = b; }
+      else at.set(k, i);
+    }
+  });
+  const g = new Map();
+  segs.forEach((s, i) => {
+    const r = find(i);
+    const b = g.get(r) || { x0: Infinity, x1: -Infinity, z0: Infinity, z1: -Infinity,
+      steps: 0 };
+    b.x0 = Math.min(b.x0, s.ax, s.bx); b.x1 = Math.max(b.x1, s.ax, s.bx);
+    b.z0 = Math.min(b.z0, s.az, s.bz); b.z1 = Math.max(b.z1, s.az, s.bz);
+    b.steps = Math.max(b.steps, s.steps || 0);
+    g.set(r, b);
+  });
+  return [...g.values()].filter((r) => r.x1 - r.x0 > 1e-6 && r.z1 - r.z0 > 1e-6);
+}
+
+/* S-UP の線分を1本の折れ線につなぐ。
+   ★ この折れ線1本で「どの部分を何番目に、どちら向きに上がるか」が決まる。
+     走りや踊り場の側に番号や向きを持たせない。
+   ⚠️ 上と下の別は【形からは分からない】。「最初に描いた線分の描き始めが下」
+     と決めてある。サンプル DXF もその順で書き出している。 */
+function pathOf(segs) {
+  if (!segs.length) return null;
+  const key = (x, z) => Math.round(x * 1000) + ':' + Math.round(z * 1000);
+  const nb = new Map(), pos = new Map();
+  segs.forEach((s, i) => {
+    for (const [x, z] of [[s.ax, s.az], [s.bx, s.bz]]) {
+      const k = key(x, z);
+      pos.set(k, [x, z]);
+      if (!nb.has(k)) nb.set(k, []);
+      nb.get(k).push(i);
+    }
+  });
+  const ends = [...nb.entries()].filter(([, v]) => v.length === 1).map(([k]) => k);
+  let k = key(segs[0].ax, segs[0].az);
+  if (!ends.includes(k)) k = ends.length ? ends[0] : k;
+  const used = new Set(), pts = [pos.get(k)];
+  for (;;) {
+    const i = (nb.get(k) || []).find((j) => !used.has(j));
+    if (i === undefined) break;
+    used.add(i);
+    const s = segs[i];
+    const p = (key(s.ax, s.az) === k) ? [s.bx, s.bz] : [s.ax, s.az];
+    pts.push(p);
+    k = key(p[0], p[1]);
+  }
+  return pts.length >= 2 ? pts : null;
+}
+
+/* 走り・踊り場を、通り道の順に並べて向きを決める。
+   ★ 通り道を細かく刻んで、どの部分の中を通ったかを順に見るだけ。交点を
+     解かないので、L字でもコの字でも同じ手が通る。
+   ⚠️ 境目ちょうどの点は【どちらにも入れない】。両方に当たると順番が乱れる。 */
+function stairParts(runs, lands, path) {
+  const all = [...runs.map((r) => ({ ...r, kind: 'run' })),
+    ...lands.map((r) => ({ ...r, kind: 'land' }))];
+  if (!all.length || !path) return null;
+  let total = 0;
+  for (let i = 0; i + 1 < path.length; i++) {
+    total += Math.hypot(path[i + 1][0] - path[i][0], path[i + 1][1] - path[i][1]);
+  }
+  if (total < 1e-9) return null;
+  const at = (u) => {                       // 折れ線上の位置（0..1）
+    let d = u * total;
+    for (let i = 0; i + 1 < path.length; i++) {
+      const a = path[i], b = path[i + 1];
+      const L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      if (d <= L || i === path.length - 2) {
+        const t = L < 1e-9 ? 0 : d / L;
+        return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+      }
+      d -= L;
+    }
+    return path[path.length - 1];
+  };
+  const N = 600;
+  const seen = new Map();
+  const order = [];
+  for (let i = 0; i <= N; i++) {
+    const p = at(i / N);
+    const j = all.findIndex((r) => p[0] > r.x0 + 1e-9 && p[0] < r.x1 - 1e-9
+      && p[1] > r.z0 + 1e-9 && p[1] < r.z1 - 1e-9);
+    if (j < 0) continue;
+    if (!seen.has(j)) { seen.set(j, { j, from: p, to: p }); order.push(seen.get(j)); }
+    else seen.get(j).to = p;
+  }
+  if (!order.length) return null;
+  return order.map((o) => {
+    const r = all[o.j];
+    const alongX = (r.x1 - r.x0) >= (r.z1 - r.z0);
+    const d = alongX ? (o.to[0] - o.from[0]) : (o.to[1] - o.from[1]);
+    return { ...r, alongX,
+      len: alongX ? (r.x1 - r.x0) : (r.z1 - r.z0),
+      dir: Math.sign(d) || 1 };  // steps は r から引き継ぐ
+  });
+}
+
 function wallModel(polys) {
   const walls = [], opens = [];
-  const run = [];
-  let up = null;
+  const run = [], land = [], up = [];
   for (const p of polys) {
     const L = (p.layer || '').toUpperCase();
     const mw = /^W-(EXT|INT)-(\d+)$/.exec(L);
     const mo = /^O-(DOOR|WIN|OPEN)$/.exec(L);
+    // 走りは S-RUN でも S-RUN-7 でもよい。数字は【その走りの段数】。
+    const ms = /^S-RUN(?:-(\d+))?$/.exec(L);
     for (const [a, b] of segsOf(p)) {
       const s = segWorld(a, b);
       if (mw) walls.push({ ...s, t: Number(mw[2]) / 1000, ext: mw[1] === 'EXT' });
-      else if (mo) opens.push({ ...s, lo: OPEN_H[mo[1]][0], hi: OPEN_H[mo[1]][1] });
-      else if (L === 'S-RUN') run.push(s);
-      else if (L === 'S-UP' && !up) {
+      // ⚠️ 種別（DOOR/WIN/OPEN）も持ち帰る。高さだけでは窓と扉を見分けられない。
+      else if (mo) opens.push({ ...s, kind: mo[1],
+        lo: OPEN_H[mo[1]][0], hi: OPEN_H[mo[1]][1] });
+      else if (ms || L === 'S-LAND' || L === 'S-UP') {
+        // ⚠️ 階段は【描いた向き】が要る。segWorld は小さい順に直してしまう
+        //   ので、階段のレイヤだけは生の端点で持つ。
         const pa = planPoint(a), pb = planPoint(b);
-        up = { ax: pa[0], az: pa[2], bx: pb[0], bz: pb[2] };
+        const e = { ax: pa[0], az: pa[2], bx: pb[0], bz: pb[2] };
+        if (ms) { e.steps = Number(ms[1] || 0); run.push(e); }
+        else (L === 'S-LAND' ? land : up).push(e);
       }
     }
   }
@@ -527,16 +644,14 @@ function wallModel(polys) {
     z0: Math.min(...src.map((w) => w.z0)) - t,
     z1: Math.max(...src.map((w) => w.z1)) + t,
   };
+  // ★ 階段は【走り＋踊り場】の並び。まっすぐ1本のときも、同じ形で持つ。
+  //   x0..z1 は全体の外接矩形。上階の床に開ける穴はこれを使う。
   let stair = null;
-  if (run.length && up) {
-    const r = {
-      x0: Math.min(...run.map((s) => s.x0)), x1: Math.max(...run.map((s) => s.x1)),
-      z0: Math.min(...run.map((s) => s.z0)), z1: Math.max(...run.map((s) => s.z1)),
-    };
-    // 上り方向は矢印の【向き】から。長さは使わない。
-    const dx = up.bx - up.ax, dz = up.bz - up.az;
-    stair = { ...r, alongX: Math.abs(dx) >= Math.abs(dz),
-      dir: (Math.abs(dx) >= Math.abs(dz) ? Math.sign(dx) : Math.sign(dz)) || 1 };
+  const parts = stairParts(rectsOf(run), rectsOf(land), pathOf(up));
+  if (parts && parts.length) {
+    stair = { parts,
+      x0: Math.min(...parts.map((p) => p.x0)), x1: Math.max(...parts.map((p) => p.x1)),
+      z0: Math.min(...parts.map((p) => p.z0)), z1: Math.max(...parts.map((p) => p.z1)) };
   }
   return { walls, opens, stair, foot };
 }
@@ -557,6 +672,12 @@ function pickPlanRect() {
   });
 }
 
+/* 下図を見せるかどうか。main.js が【つまみの出ている階】に合わせて切り替える。
+   ★ 確定した階の図面は伏せる。図面は「これから形を決める」ための道具なので、
+     決め終わったものにいつまでも重ねておくと、線が増えるだけで読めなくなる。 */
+let planShown = true;
+export function setPlanShown(v) { planShown = !!v; }
+
 export function refreshUnderlay() {
   if (!group) return;
   drawGizmo();
@@ -564,19 +685,13 @@ export function refreshUnderlay() {
   group.clear();
   snapX = []; snapZ = [];
 
-  // 貼り付け済みの階の下絵（薄い色）。いま触っていない階の位置を見せる。
-  for (const a of applied) {
-    if (plan && Math.abs(a.y - floorY()) < 1e-6) continue;   // いまの階は下で描く
-    const pos = [];
-    for (const p of a.polys) {
-      if (a.hidden.has(p.layer) || a.hiddenC.has(p.color)) continue;
-      const w = p.pts.map((q) => planPointOf(a, q, a.y));
-      for (let i = 0; i + 1 < w.length; i++) pos.push(...w[i], ...w[i + 1]);
-      if (p.closed && w.length >= 3) pos.push(...w[w.length - 1], ...w[0]);
-    }
-    addLines(pos, PLAN_DONE);
-  }
-  if (plan) {
+  // ★ 貼り付け済みの階の下絵は【描かない】。出るのは、いま触っている階の
+  //   図面ただ1枚だけ。
+  //   ⚠️ 下の階のぶんまで薄く出していたが、2階の高さを与えている最中に1階の
+  //     図面が建物に重なって読めなくなった。位置合わせは通り芯と吸い付きが
+  //     効いているので、見えている必要はない（applied は吸い付く先の角を
+  //     集めるのに使うので、データそのものは残す）。
+  if (plan && planShown) {
     const pos = [];
     for (const p of shown(plan)) {
       const w = p.pts.map(planPoint);

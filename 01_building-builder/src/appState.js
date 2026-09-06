@@ -5,6 +5,11 @@ export const AppState = {
     buildingData: [],
     selectedId: null,
     selectedFaceDir: null,
+    // ★追加：いま選んでいる修景要素。{ kind:'window'|'door'|'sode'|'tare',
+    //   dir, i（窓の番号）, side（そで壁の左右） }。
+    //   ★ 要素を選んでいるあいだは、その要素のつまみだけを出す。面の押し引きの
+    //     つまみは出さない（重なって、どちらを掴んでいるのか分からなくなる）。
+    selectedPart: null,
 
     // ※ 02（マンセル値シミュレーター）で塗った外構の色は、ここではなく
     //   exterior/core/paint.js が持つ（マテリアルが地物の種類ごとの共有インスタンスで、
@@ -66,6 +71,7 @@ export const AppState = {
         this.buildingData = [];
         this.selectedId = null;
         this.selectedFaceDir = null;
+        this.selectedPart = null;
         this.saveState();
     },
 
@@ -75,6 +81,9 @@ export const AppState = {
     isTopClear(b) {
         for (let ob of this.buildingData) {
             if (ob.id === b.id) continue;
+            // ★ 取り込んだモデルは【ただ置いてあるだけ】。階として数えない。
+            //   ⚠️ 数えると、建物のそばに置いただけで屋根が掛けられなくなる。
+            if (ob.kind === 'model') continue;
             const obBottom = ob.y || 0;
             const obTop = obBottom + ob.h;
             const bTop = (b.y || 0) + b.h;
@@ -97,6 +106,7 @@ export const AppState = {
         while(added) {
             added = false;
             this.buildingData.forEach(ob => {
+                if (ob.kind === 'model') return;      // ★ 置いてあるだけ。積み上げに数えない
                 if (!result.find(r => r.id === ob.id)) {
                     for(let b of result) {
                         const bTop = (b.y || 0) + b.h;

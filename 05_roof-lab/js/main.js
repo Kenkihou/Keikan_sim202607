@@ -22,7 +22,7 @@ import {
 } from './roofcalc.js';
 import {
   initUnderlay, refreshUnderlay, underlaySnap,
-  askPlanFile,
+  askPlanFile, setPlanShown,
   gizmoPick, planMoveBase, planMoveY, planMoveTo, otherFloorCorners,
 } from './underlay.js';
 
@@ -72,6 +72,8 @@ const state = {
   notch: null,
   // ★ DXF の読込用レイヤから起こした壁の模型。無ければ null。
   //   { walls:[{x0,z0,x1,z1,t,ext}], opens:[{...,lo,hi}], stair, foot }
+//   stair … { parts:[{kind:'run'|'land', x0,z0,x1,z1, alongX, dir, len, steps}],
+//             x0..z1 }  steps>0 なら【図面で決めた段数】。0 なら階高から決める。
   walls: null,
 };
 
@@ -381,6 +383,11 @@ const roofBaseMat = basic(0xe8e8e8);  // 屋根の下地・軒裏・小口
 const wallMat = basic(0xe8e8e8);
 const gableWallMat = basic(0xe8e8e8);
 const edgeMat = new THREE.LineBasicMaterial({ color: 0x000000 });
+const sashMat = basic(0xd8dde2);      // サッシ・窓枠（01 と同じく1色で塗る）
+const glassMat = new THREE.MeshBasicMaterial({
+  color: 0x9fc6dd, side: THREE.DoubleSide, transparent: true, opacity: 0.45,
+  depthWrite: false,
+});
 
 // パラペットの立ち上がり[m]と厚み[m]。01 のパラペット修景と同じ寸法。
 const PARAPET_H = 0.3;
@@ -571,6 +578,22 @@ function computeRoof() {
 //     【いま指定している屋根の印】。触っていないときは出さない。
 //     出しっぱなしにすると、できあがった建物を眺めることができない。
 let selPart = -1;          // つまみを出している箱。-1 なら何も選んでいない
+// ★ ブロック＝ひと続きに作った階のまとまり。DXF から起こすと「床下の板」と
+//   「壁の階」の2枚になるが、人にとっては【1階】というひとかたまり。掴むのも
+//   消すのもこの単位にする。
+let blockSeq = 0;
+let lastBlock = 0;         // 直前に作ったブロック。確定すると 0 に戻る
+
+/* その箱と同じブロックのうち、つまみを出す1枚（いちばん上＝壁の階）。 */
+function mainOfBlock(i) {
+  const b = parts[i] && parts[i].block;
+  if (!b) return i;
+  let best = i;
+  for (let k = 0; k < parts.length; k++) {
+    if (parts[k].block === b && parts[k].eaveY > parts[best].eaveY) best = k;
+  }
+  return best;
+}
 
 /* クリックした先を見て、選択を切り替える。
    ⚠️ 視点を回したときは変えないこと。呼ぶ側で「ほとんど動いていない」ことを見る。 */
@@ -579,8 +602,14 @@ function updateSelection(ev) {
   const hit = _rc.intersectObjects(
     [...roofGroup.children, ...wallGroup.children].filter((c) => c.isMesh), false)[0];
   const i = hit ? hit.object.userData.part : undefined;
-  const next = (i === undefined) ? -1 : i;
+  // ★ 床下の板を掴んでも、つまみは【壁の階】に出す。1階は1つのかたまり。
+  const next = (i === undefined) ? -1 : mainOfBlock(i);
   if (next === selPart) return;
+  // ★ いちど選択から外れたら、そのブロックは【確定】。以後は置き直されず、
+  //   次に読み込む階はその上に積まれる。
+  if (lastBlock && (next < 0 || !parts[next] || parts[next].block !== lastBlock)) {
+    lastBlock = 0;
+  }
   selPart = next;
   if (next >= 0 && next !== active) { active = next; layout = parts[next].layout; }
   if (next < 0) { clearGroup(bandGroup); hoverWall = null; hoverEave = null; }
@@ -596,6 +625,7 @@ function rebuild(pre) {
   clearGroup(handleGroup);
 
   const keep = active;
+  massLn = []; massBx = [];
   for (let i = 0; i < parts.length; i++) {
     // 箱を切り替える。以降の計算・作図は、この箱のものだけを見る。
     active = i;
@@ -631,12 +661,26 @@ function rebuild(pre) {
     if (sel) buildEaveHandle(rects, eaves);
     tagPart(i, marks);
   }
+  // ★ 全部の階を組み終えてから、まとめて1回だけ包絡する。
+  //   ⚠️ 階ごとにやると、床板を挟んだ上下の壁が互いに見えず、板の縁が残る。
+  if (massLn.length) {
+    const bands = parts.filter((p) => p.isFloor && p.eaveY - p.baseY > 1e-6)
+      .map((p) => [p.baseY, p.eaveY]);
+    addBlackLines(wallGroup, envelopeLines(massLn, massBx, bands));
+  }
+  massLn = null; massBx = null;
   active = keep;
   layout = parts[keep].layout;
   lastResult = parts[keep].result;
   lastEaves = parts[keep].eaves;
   lastTop = parts[keep].top;
   if (lastResult) syncReadout(lastResult);   // ⚠️ 稜線を作ったあとで呼ぶこと
+  // ★ 下図が出るのは【まだ確定していない階を触っている間】だけ。
+  //   ⚠️ 「その階を選んでいる間」にしてはいけない。確定した階をあとから
+  //     クリックし直すたびに、下の階のぶんまで図面が戻ってきてしまう。
+  //     図面は形を決めるための道具で、決め終えたら役目は終わり。
+  setPlanShown(!!lastBlock && selPart >= 0
+    && !!parts[selPart] && parts[selPart].block === lastBlock);
   refreshUnderlay();
 }
 
@@ -728,20 +772,20 @@ function drawSnap(axis, v) {
 // 上階の床板の厚み[m]。天井裏の懐はいったん見ない。
 const FLOOR_T = 0.1;
 
-/* 直前に読み込んだ DXF の階（床板＋壁）。まだ高さを与えていなければ捨てる。
-   ⚠️ 捨てる条件は【壁の階の高さが板のままか】。高さを与えたあとに捨てると、
-     2階を読み込んだ瞬間に1階が消える。 */
-let lastDxf = null;
-function dropUntouchedDxf() {
-  const rec = lastDxf;
-  lastDxf = null;
-  if (!rec) return;
-  const [a, b] = rec;
-  if (!parts.includes(b)) return;
-  if (b.eaveY - b.baseY > SLAB + 1e-6) return;      // もう高さを与えている
-  for (const p of [a, b]) {
-    const i = parts.indexOf(p);
-    if (i >= 0) parts.splice(i, 1);
+/* 直前に作ったブロックが【まだ確定していない】なら捨てる。置き直しになる。
+   ★ 確定＝別のところをクリックしてつまみが消えたこと。高さを与えたかどうかは
+     見ない。板のまま確定して上へ積みたいことも、高さを与えてから囲み直したい
+     こともあるので、「触ったか」では決められない。
+   ⚠️ 確定したブロックは絶対に捨てないこと。2階を読み込んだ瞬間に1階が消える。 */
+function dropUnconfirmedBlock() {
+  const b = lastBlock;
+  lastBlock = 0;
+  if (!b) return;
+  if (selPart < 0 || !parts[selPart] || parts[selPart].block !== b) return;
+  for (let i = parts.length - 1; i >= 0; i--) {
+    if (parts[i].block === b) {
+      parts.splice(i, 1);
+    }
   }
   if (!parts.length) parts.push(makePart());
   active = Math.min(active, parts.length - 1);
@@ -796,7 +840,7 @@ function baseYUnder(rects) {
 /* 矩形の並びを、ひとつの板として置く。
    ★ 長方形を描いても DXF から起こしても、行き着く先はここ1か所。
    ⚠️ 2枚目以降は土台へ【食い込ませて】から足す。接するだけでは谷ができない。 */
-function addSlab(rects) {
+function addSlab(rects, block) {
   if (!rects || !rects.length) return;
   const baseY = baseYUnder(rects);
   // まだ何も描いていないときは、最初の空の箱をそのまま使う
@@ -810,6 +854,7 @@ function addSlab(rects) {
   p.extras = sorted.slice(1).map((r) => biteInto(r, p.base));
   p.branches = new Set(); p.outs = {}; p.gables = {}; p.shifts = {};
   p.roofed = false; p.picked = null; p.walls = null; p.notch = null; p.hole = null;
+  p.block = block || (++blockSeq);
   if (!reuse) parts.push(p);
   active = parts.indexOf(p);
   layout = p.layout;
@@ -856,24 +901,6 @@ function roofHere() {
   applyLayout(); rebuild(); syncUI();
 }
 
-/* 下絵から作った板のうち、まだ高さを与えていないものを捨てる。
-   ★ かたまりを選び直したり、囲い直したり、ボタンを押し直したりするのは
-     【まだ外形を選んでいる最中】であって、階を足したいわけではない。
-   ⚠️ 捨てないと、作りかけの板の【上に】次の板が載る（真下にあるので
-     baseYUnder が拾ってしまう）。実際に 0.1m 浮いた2枚目ができていた。 */
-let planSlab = null;
-function dropUntouchedPlanSlab() {
-  const i = parts.indexOf(planSlab);
-  planSlab = null;
-  if (i < 0) return;
-  const p = parts[i];
-  if (p.roofed || p.eaveY - p.baseY > SLAB + 1e-6) return;   // もう高さを与えた
-  parts.splice(i, 1);
-  if (!parts.length) parts.push(makePart());
-  active = Math.min(active, parts.length - 1);
-  layout = parts[active].layout;
-  selPart = -1;
-}
 
 /* いま青いつまみが出ている板を消す。
    ★ 消す相手を選ばせない。つまみが出ているものが「いま触っているもの」で、
@@ -883,8 +910,20 @@ function dropUntouchedPlanSlab() {
 function deleteActive() {
   const p = parts[active];
   if (!p || !p.base) return;
-  if (planSlab === p) planSlab = null;
-  parts.splice(active, 1);
+  // ★ 屋根が載っているなら、まず【屋根だけ】外す。もう一度押せば階が消える。
+  //   ⚠️ 屋根と階を一度に消してはいけない。屋根を掛け直したいだけのことが
+  //     多いのに、下の階まで消えると作り直しになる。
+  if (p.roofed) {
+    p.roofed = false;
+    rebuild(); syncUI();
+    return;
+  }
+  // ★ ブロックまるごと消す。1階は「床下の板＋1階の壁」で1つ。
+  const b = p.block;
+  for (let i = parts.length - 1; i >= 0; i--) {
+    if (parts[i] !== p && !(b && parts[i].block === b)) continue;
+    parts.splice(i, 1);
+  }
   if (!parts.length) parts.push(makePart());
   active = Math.min(active, parts.length - 1);
   layout = parts[active].layout;
@@ -1403,10 +1442,18 @@ function buildWallOutline(rects, result) {
     return (g && g.plane) ? Math.max(wt, g.h - ROOF_THICK) : wt;
   } : () => wt;
   const hAt = (pl, p) => pl.a * p.x + pl.b * p.z + pl.c;
+  // ★ 足元と、角の縦線のうち【壁の天端まで】は、建物の塊として包絡にかける。
+  //   ⚠️ 天端より上（妻面）は塊に入れない。屋根は箱で持っていないので、
+  //     包絡にかけると「どの箱の中でもない」と見なされて消えてしまう。
+  const mass = [];
   for (const seg of footprintSegments(rects)) {
     const { a, b } = seg;
-    pos.push(a.x, y0, a.z, b.x, y0, b.z);                   // 足元
-    for (const p of [a, b]) pos.push(p.x, y0, p.z, p.x, topAt(p.x, p.z), p.z);  // 角の縦線
+    mass.push(a.x, y0, a.z, b.x, y0, b.z);                  // 足元
+    for (const p of [a, b]) {                               // 角の縦線
+      const t = topAt(p.x, p.z);
+      mass.push(p.x, y0, p.z, p.x, Math.min(t, wt), p.z);
+      if (t > wt + 1e-6) pos.push(p.x, wt, p.z, p.x, t, p.z);
+    }
     // ★ 軒裏と壁がぶつかる線。壁がどこで屋根に隠れるかは、ここが無いと読めない。
     //   ⚠️ 屋根面ごとに切り分けてから引くこと。屋根が折れているところをまたいで
     //     両端だけで引くと、折れ点を無視した1本の直線になる。
@@ -1430,6 +1477,7 @@ function buildWallOutline(rects, result) {
     }
   }
   addBlackLines(wallGroup, pos);
+  massLine(mass);
 }
 
 /* 壁。
@@ -1438,6 +1486,17 @@ function buildWallOutline(rects, result) {
    ・妻壁 … 軒高から屋根まで。切妻にした辺の上にできる三角形の壁。
      屋根の外周のうち、軒高より上に浮いている辺の下を埋める。 */
 function buildWalls(rects, result, model) {
+  // ★ 図面から起こしていない階（板・押し上げた箱）は、外形をそのまま
+  //   【中身の詰まった塊】として包絡に参加させる。これが無いと、床板の
+  //   上下の縁が外壁や吹抜けの面の途中に残って二重線になる。
+  if (!model && massBx) {
+    const my0 = state.baseY, my1 = wallTopY();
+    for (const r of rects) {
+      for (const q of rectMinus(r, state.hole)) {
+        massBx.push([q.x0, my0, q.z0, q.x1, my1, q.z1]);
+      }
+    }
+  }
   // --- 外周の壁。クリックで辺を選ぶための当たり判定も兼ねる ---
   //   ⚠️ 図面から起こした壁があるときは、この箱は建てない。二重になるうえ、
   //     中の部屋が見えなくなる。
@@ -1493,6 +1552,12 @@ function buildWalls(rects, result, model) {
     buildWallOutline(rects, result);
     return;
   }
+
+  // ★ 屋根をかけた階には、ハンドルの高さに【屋上面】を張る。厚みは持たせない。
+  //   屋根はこの面の上に載る。
+  //   ⚠️ 平場やパラペットがあるときは張らない。そちらの屋上面が屋根の一部と
+  //     してすでに壁の天端に張られているので、重ねると隠してしまう。
+  if (!state.parapet && !(result && result.flat)) buildFloor(rects, wallTopY());
 
   // (1) 壁の天端から屋根の裏側までを塞ぐ（切妻・入母屋の妻面）。
   //   ★ 測るのは【壁の位置】。軒の出があるので屋根の外周とは 0.6m ずれる。
@@ -1607,6 +1672,7 @@ function buildParapet(rects) {
 //   ⚠️ 押し引きで形を変えることは考えていない。図面から起こした壁は、
 //     高さだけを与えて使う（青い箱で上下する）。
 const MAX_RISE = 0.20;          // 蹴上の上限[m]。これを超えないよう段数を決める
+const RAIL_H = 1.1;             // 手すり壁の高さ[m]。段鼻から測る
 const wallModelMat = new THREE.MeshBasicMaterial({
   color: 0xe8e8e8, side: THREE.DoubleSide,
   polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
@@ -1623,21 +1689,62 @@ wallModelMat.__shared = true;
      途中。どちらも稜線ではない。
    ⚠️ 1本の稜線でも、途中で状態が変わる。箱の切れ目で刻んでから区間ごとに
      見ること。まとめて1回だけ判定すると、交差部の手前まで消えてしまう。 */
-function envelopeLines(ln, boxes) {
+// ★ 壁・階段・床板は、階をまたいで【ひとつの塊】として線を整理する。
+//   ⚠️ 階ごとに包絡してはいけない。床板の上下の縁が、外壁や吹抜けの
+//     ひと続きの面の【途中】に残り、二重線になって見える。板は上の階と
+//     下の階に挟まれているので、自分の階だけを見ても中か外か決まらない。
+let massLn = null, massBx = null;
+const massLine = (pos) => {
+  if (massLn) massLn.push(...pos);
+  else addBlackLines(wallGroup, pos);
+};
+
+/* 矩形から矩形を抜き、残りを最大4枚の矩形で返す（吹抜けの穴のぶん）。 */
+function rectMinus(r, h) {
+  if (!h || h.x1 <= r.x0 || h.x0 >= r.x1 || h.z1 <= r.z0 || h.z0 >= r.z1) return [r];
+  const out = [];
+  const x0 = Math.max(r.x0, h.x0), x1 = Math.min(r.x1, h.x1);
+  if (h.x0 > r.x0) out.push({ ...r, x1: h.x0 });
+  if (h.x1 < r.x1) out.push({ ...r, x0: h.x1 });
+  if (h.z0 > r.z0) out.push({ ...r, x0, x1, z1: h.z0 });
+  if (h.z1 < r.z1) out.push({ ...r, x0, x1, z0: h.z1 });
+  return out;
+}
+
+function envelopeLines(ln, boxes, bands = []) {
+  /* 床板の帯 [下端, 天端]。y がどの帯に入るか。 */
+  const bandAt = (y) => bands.find(
+    (b) => y > b[0] - 1e-6 && y < b[1] + 1e-6) || null;
   const E = 0.003;
-  const inside = (x, y, z) => boxes.some((b) => (
+  const inside = (bs, x, y, z) => bs.some((b) => (
     x > b[0] && x < b[3] && y > b[1] && y < b[4] && z > b[2] && z < b[5]));
   const out = [];
+  // ⚠️ 同じ線分が二度入ってくる（箱の稜線と、穴の縁が同じ位置にある等）。
+  //   入口で落としておく。残しても見た目は変わらないが、以降の判定が丸ごと
+  //   二度走るので、階が増えるほど無駄が効いてくる。
+  const seen = new Set();
+  const key = (v) => Math.round(v * 1e4);
   for (let k = 0; k + 5 < ln.length; k += 6) {
     const p = [ln[k], ln[k + 1], ln[k + 2]];
     const q = [ln[k + 3], ln[k + 4], ln[k + 5]];
+    const a6 = [...p.map(key), ...q.map(key)];
+    const b6 = [...q.map(key), ...p.map(key)];
+    const id = (a6 < b6 ? a6 : b6).join(',');
+    if (seen.has(id)) continue;
+    seen.add(id);
     // 軸に沿った線分だけを扱う（壁も階段も軸に沿っている）
     let ax = -1;
     for (let i = 0; i < 3; i++) if (Math.abs(q[i] - p[i]) > 1e-9) ax = (ax < 0 ? i : -2);
     if (ax < 0) { out.push(...p, ...q); continue; }
+    // ⚠️ 箱の数は建物ぜんぶぶん。線1本ごとに全部の箱を見ると重くなるので、
+    //   その線の近くにある箱だけに絞ってから調べる。
+    const cand = boxes.filter((b) => (
+      b[0] <= Math.max(p[0], q[0]) + E && b[3] >= Math.min(p[0], q[0]) - E
+      && b[1] <= Math.max(p[1], q[1]) + E && b[4] >= Math.min(p[1], q[1]) - E
+      && b[2] <= Math.max(p[2], q[2]) + E && b[5] >= Math.min(p[2], q[2]) - E));
     const lo = Math.min(p[ax], q[ax]), hi = Math.max(p[ax], q[ax]);
     const cut = [lo, hi];
-    for (const b of boxes) {
+    for (const b of cand) {
       for (const v of [b[ax], b[ax + 3]]) if (v > lo + 1e-9 && v < hi - 1e-9) cut.push(v);
     }
     cut.sort((a, b) => a - b);
@@ -1646,29 +1753,37 @@ function envelopeLines(ln, boxes) {
       if (cut[i + 1] - cut[i] < 1e-9) continue;
       const m = [...p];
       m[ax] = (cut[i] + cut[i + 1]) / 2;
-      let n = 0, sig = 0;
+      const qs = [];
       for (const sp of [-1, 1]) {
         for (const sq of [-1, 1]) {
           const t = [...m];
           t[P] += sp * E; t[Q] += sq * E;
-          if (inside(t[0], t[1], t[2])) { n++; sig |= (sp > 0 ? 1 : 2) * (sq > 0 ? 1 : 4); }
+          if (inside(cand, t[0], t[1], t[2])) qs.push([sp, sq]);
         }
+      }
+      const n = qs.length;
+      const a = [...m], b = [...m];
+      a[ax] = cut[i]; b[ax] = cut[i + 1];
+      const push = () => out.push(...a, ...b);
+      // ★ 床板の帯の中では、横線を【天端の1本】に揃える。
+      //   ⚠️ 板の上下の縁をそのまま残すと、外でも室内でも 100mm 離れた2本に
+      //     なる。1階と2階の間は1本で仕切る。
+      //   ⚠️ 落とすのは【上にも下にも中身がある】ときだけ。そうしないと、
+      //     地面に接する板の足元の線や、吹抜けに突き出た最上段の踏面の線まで
+      //     消える。
+      const band = (ax !== 1) ? bandAt(m[1]) : null;
+      if (band) {
+        const yOf = (q) => (P === 1 ? q[0] : q[1]);
+        if (Math.abs(m[1] - band[1]) < 1e-6) { if (n) push(); continue; }
+        if (qs.some((q) => yOf(q) > 0) && qs.some((q) => yOf(q) < 0)) continue;
       }
       if (n === 0 || n === 4) continue;                 // 空 or 内部
       // 隣り合う2つだけ＝平らな面の途中。符号が片方しか違わない組み合わせ。
       if (n === 2) {
-        const qs = [];
-        for (const sp of [-1, 1]) for (const sq of [-1, 1]) {
-          const t = [...m];
-          t[P] += sp * E; t[Q] += sq * E;
-          if (inside(t[0], t[1], t[2])) qs.push([sp, sq]);
-        }
         const [u, v] = qs;
         if ((u[0] === v[0]) !== (u[1] === v[1])) continue;  // 隣どうし
       }
-      const a = [...m], b = [...m];
-      a[ax] = cut[i]; b[ax] = cut[i + 1];
-      out.push(...a, ...b);
+      push();
     }
   }
   return out;
@@ -1700,6 +1815,10 @@ function buildWallModel() {
   const y0 = state.baseY;
   const H = Math.max(state.eaveY - state.baseY, 0);
   if (H < 1e-6) return;
+  // ★ 壁が立つ高さ。屋根をかけた階では【ハンドルの高さ】で止める。
+  //   ⚠️ 軒高で止めると、屋根の裏側が下がっている辺で壁が屋上面を突き抜け、
+  //     屋上に壁の天端の線が一周する。屋上面と壁の天端は同じ高さに揃える。
+  const HW = state.roofed ? Math.max(wallTopY() - y0, 0) : H;
   const pos = [], ln = [], bxs = [];
   const keep = (x0, ya, z0, x1, yb, z1) => bxs.push([x0, ya, z0, x1, yb, z1]);
   // ★ 壁ごとの向き・芯・端。芯線は交点で終わっているので、そのまま箱にすると
@@ -1712,6 +1831,72 @@ function buildWallModel() {
       a: alongX ? w.x0 : w.z0, b: alongX ? w.x1 : w.z1,
       c: alongX ? (w.z0 + w.z1) / 2 : (w.x0 + w.x1) / 2 };
   });
+  // ★ 段割りは【壁より先に】決める。走りに挟まれた壁は手すり壁になり、
+  //   その天端が段鼻の線で決まるので、段の高さが分かっていないと立てられない。
+  const sp = (m.stair && m.stair.parts) ? m.stair.parts : [];
+  const runs = sp.filter((p) => p.kind === 'run');
+  // ★ 階段が上がる高さは【上階の床面まで】。壁の天端で止めると、床板の
+  //   厚みぶん（100mm）だけ足りない段差が最上段に残る。
+  const above = parts.find((p) => p.isFloor
+    && Math.abs(p.baseY - state.eaveY) < 1e-6);
+  // ⚠️ 上に階が無いまま屋根をかけたときは、壁と同じくハンドルの高さで止める。
+  //   軒高まで上げると、階段と手すり壁が屋上面を突き抜ける。
+  const SH = HW + (above ? above.eaveY - above.baseY : 0);
+  const lands = sp.length - runs.length;
+  // ★ 段数は【図面で決まっていればそれを使う】（レイヤ名 S-RUN-7 の数字）。
+  //   こうしておくと、階高を変えても段数は変わらず、蹴上だけが伸び縮みする。
+  //   ⚠️ 決まっていない走りだけを、階高から出した残りで分ける。全部が図面
+  //     任せのときは階高を見ない。
+  const cnt = runs.map((p) => Math.max(0, Math.round(p.steps || 0)));
+  const free = cnt.reduce((a, k) => a + (k ? 0 : 1), 0);
+  if (free) {
+    const fixed = cnt.reduce((a, b) => a + b, 0);
+    const nRun = Math.max(free, Math.max(2, Math.ceil(SH / MAX_RISE)) - lands - fixed);
+    const tot = runs.reduce((a, p, i) => a + (cnt[i] ? 0 : p.len), 0) || 1;
+    const idx = [];
+    runs.forEach((p, i) => { if (!cnt[i]) { cnt[i] = Math.max(1, Math.floor(nRun * p.len / tot)); idx.push(i); } });
+    let rest = nRun - idx.reduce((a, i) => a + cnt[i], 0);
+    for (let j = 0; rest > 0; j = (j + 1) % idx.length) { cnt[idx[j]]++; rest--; }
+  }
+  const nRun = cnt.reduce((a, b) => a + b, 0);
+  // ⚠️ 蹴上は【実際に積む段数】で割り戻すこと。上限から出した段数で割ると、
+  //   端数を配ったぶんだけ最上段が上階の床とずれる。
+  const rise = SH / (nRun + lands);
+  const lvOf = new Map();             // 各部分の手前までに上がった段数
+  {
+    let lv = 0;
+    for (const p of sp) {
+      lvOf.set(p, lv);
+      lv += (p.kind === 'run') ? cnt[runs.indexOf(p)] : 1;
+    }
+  }
+  /* 走りの段鼻の線。走りに沿う座標 t での高さ。 */
+  const noseAt = (r, t) => {
+    const s0 = r.alongX ? r.x0 : r.z0, s1 = r.alongX ? r.x1 : r.z1;
+    const go = r.len / cnt[runs.indexOf(r)];
+    const q = Math.min(Math.max(t, s0), s1);
+    const n = r.dir > 0 ? (q - s0) / go : (s1 - q) / go;
+    return y0 + rise * (lvOf.get(r) + n);
+  };
+  /* この階の【真上に積んである階】の天端。無ければ自分のハンドルの高さ。
+     ★ 手すり壁は吹抜けの手すりとして上階まで続く。2階を立ち上げれば、
+       1階のハンドルより上の部分もそれに合わせて立ち上がる。
+     ⚠️ 無条件に段鼻の線を伸ばしてはいけない。上に何も無いのに壁だけが
+       宙へ伸びる。上に載っているものの高さで止める。 */
+  const stackTop = () => {
+    let top = y0 + HW;
+    const s0 = m.stair;
+    if (!s0) return top;
+    for (const p of parts) {
+      if (p === parts[active] || p.baseY < state.eaveY - 1e-6) continue;
+      const mine = [p.base, ...(p.extras || [])].filter(Boolean);
+      const over = mine.some((r) => Math.min(r.x1, s0.x1) - Math.max(r.x0, s0.x0) > 0.05
+        && Math.min(r.z1, s0.z1) - Math.max(r.z0, s0.z0) > 0.05);
+      if (over) top = Math.max(top, p.eaveY);
+    }
+    return top;
+  };
+  const railCap = stackTop();
   const T = 1e-3;
   const onWall = (x, z, o) => (o.alongX
     ? (Math.abs(z - o.c) < T && x > o.a - T && x < o.b + T)
@@ -1723,6 +1908,69 @@ function buildWallModel() {
       if (hit) u[end] += (end === 'a' ? -u.h : u.h);
     }
   }
+  // ★ 外壁の窓には【引き違い障子2枚】を入れる。01 のモデリングと同じ納まり。
+  //     ・開口の縁から見付 40mm の枠。壁面から 20mm 手前へ出る
+  //     ・その内側に見込み 40mm の障子が2枚。框の見付 30mm ぶん重なる
+  //     ・右が外、左が内（日本の引き違いのふつうの建て方）
+  //   ⚠️ 障子は【枠の内法】に入れること。開口いっぱいに入れると枠と重なる。
+  //   ⚠️ 内壁には入れない。厚 100mm では見込み 100mm の障子が裏へ突き抜ける。
+  const WIN = { M: 0.04, PR: 0.02, SD: 0.04, SI: 0.02, FW: 0.03, GT: 0.02 };
+  const winPos = [], winLn = [], glassPos = [];
+  const fcx = (m.foot.x0 + m.foot.x1) / 2, fcz = (m.foot.z0 + m.foot.z1) / 2;
+  const sashes = (u, o) => {
+    const { alongX, h, c } = u;
+    const hi = Math.min(o.hi, H);
+    const wid = o.b - o.a, hgt = hi - o.lo;
+    if (wid < 0.4 || hgt < 0.4) return;
+    // 外向き。建物の中心から見て、芯線がどちら側にあるか。
+    const sgn = Math.sign(alongX ? (c - fcz) : (c - fcx)) || 1;
+    const cOut = c + sgn * h;
+    // 断面の座標：長手 t、外面からの奥行き d、高さ y。d が増えるほど室内側。
+    const put = (dst, lns, tA, tB, dA, dB, yA, yB) => {
+      const p = cOut - sgn * dA, q = cOut - sgn * dB;
+      const lo2 = Math.min(p, q), hi2 = Math.max(p, q);
+      if (alongX) pushBox(dst, lns, tA, yA, lo2, tB, yB, hi2);
+      else pushBox(dst, lns, lo2, yA, tA, hi2, yB, tB);
+    };
+    const { M, PR, SD, SI, FW, GT } = WIN;
+    const y1 = y0 + o.lo, y2 = y0 + hi;
+    // --- 枠（額縁）---
+    put(winPos, winLn, o.a, o.b, -PR, 0, y1, y1 + M);
+    put(winPos, winLn, o.a, o.b, -PR, 0, y2 - M, y2);
+    put(winPos, winLn, o.a, o.a + M, -PR, 0, y1 + M, y2 - M);
+    put(winPos, winLn, o.b - M, o.b, -PR, 0, y1 + M, y2 - M);
+    // --- 障子2枚 ---
+    const wAsm = wid - M * 2, wS = (wAsm + FW) / 2;
+    const a0 = o.a + M, b0 = o.b - M, yb = y1 + M, yt = y2 - M;
+    for (const lf of [{ x: b0 - wS, d: SI }, { x: a0, d: SI + SD }]) {
+      const L = lf.x, R = lf.x + wS, d0 = lf.d, d1 = lf.d + SD;
+      put(winPos, winLn, L, R, d0, d1, yb, yb + FW);              // 下框
+      put(winPos, winLn, L, R, d0, d1, yt - FW, yt);              // 上框
+      put(winPos, winLn, L, L + FW, d0, d1, yb + FW, yt - FW);    // 縦框
+      put(winPos, winLn, R - FW, R, d0, d1, yb + FW, yt - FW);
+      const dg = (d0 + d1) / 2;
+      put(glassPos, null, L + FW, R - FW, dg - GT / 2, dg + GT / 2, yb + FW, yt - FW);
+    }
+  };
+
+  /* 走りと走りに挟まれた壁を探す。折り返し階段の中壁がこれにあたる。
+     ★ 両側に走りがある壁は、そのまま全高で立てると階段が箱に埋もれて
+       見えない。段鼻の線に沿って切り、手すり壁にする。
+     ⚠️ 高さは【上の走り】の段鼻から。下の走りで測ると、上の走りを歩く人の
+       足元より壁が低くなる。 */
+  const railRun = (u) => {
+    const side = runs.filter((r) => {
+      if (r.alongX !== u.alongX) return false;
+      const c0 = u.alongX ? r.z0 : r.x0, c1 = u.alongX ? r.z1 : r.x1;
+      if (Math.abs(c1 - (u.c - u.h)) > T && Math.abs(c0 - (u.c + u.h)) > T) return false;
+      const a0 = u.alongX ? r.x0 : r.z0, a1 = u.alongX ? r.x1 : r.z1;
+      return Math.min(a1, u.b) - Math.max(a0, u.a) > 0.05;
+    });
+    if (side.length < 2) return null;
+    // 上の走り＝段数が進んでいる方
+    return side.reduce((p, q) => (lvOf.get(q) > lvOf.get(p) ? q : p));
+  };
+
   for (const u of ws) {
     const { w, alongX, h, a, b, c } = u;
     // ★ この壁の芯線に乗っている開口だけを拾う。
@@ -1737,7 +1985,8 @@ function buildWallModel() {
       const oa = alongX ? o.x0 : o.z0;
       const ob = alongX ? o.x1 : o.z1;
       if (ob <= a + 1e-6 || oa >= b - 1e-6) continue;
-      os.push({ a: Math.max(oa, a), b: Math.min(ob, b), lo: o.lo, hi: o.hi });
+      os.push({ a: Math.max(oa, a), b: Math.min(ob, b),
+        lo: o.lo, hi: o.hi, kind: o.kind });
     }
     os.sort((p, q) => p.a - q.a);
     const box = (a0, a1, lo, hi) => {
@@ -1750,73 +1999,114 @@ function buildWallModel() {
         keep(c - h, y0 + lo, a0, c + h, y0 + hi, a1);
       }
     };
+    const rail = os.length ? null : railRun(u);
+    if (rail) {
+      // --- 手すり壁。天端は段鼻の線に沿って傾く ---
+      const s0 = alongX ? rail.x0 : rail.z0, s1 = alongX ? rail.x1 : rail.z1;
+      const lo = Math.max(a, s0), hi = Math.min(b, s1);
+      // 走りに掛からない端（直交する壁との取り合い）は、ふつうの壁のまま
+      if (lo > a + 1e-6) box(a, lo, 0, HW);
+      if (hi < b - 1e-6) box(hi, b, 0, HW);
+      // ⚠️ 天端は【上に積んである階の高さ】で頭打ちにする。上に何も無ければ
+      //   自分のハンドルまで。そうしないと壁だけが宙へ伸びる。
+      const capY = railCap;
+      const topAt = (t) => Math.min(noseAt(rail, t) + RAIL_H, capY);
+      const yA = topAt(lo), yB = topAt(hi);
+      if (hi - lo > 1e-6) {
+        const V = (t, cc, y) => (alongX ? [t, y, cc] : [cc, y, t]);
+        const P = [V(lo, c - h, y0), V(hi, c - h, y0), V(hi, c + h, y0), V(lo, c + h, y0),
+          V(lo, c - h, yA), V(hi, c - h, yB), V(hi, c + h, yB), V(lo, c + h, yA)];
+        const face = (i, j, k2, l) => {
+          pos.push(...P[i], ...P[j], ...P[k2], ...P[i], ...P[k2], ...P[l]);
+        };
+        face(0, 3, 2, 1); face(4, 5, 6, 7);
+        face(0, 1, 5, 4); face(2, 3, 7, 6);
+        face(1, 2, 6, 5); face(3, 0, 4, 7);
+        const e = (i, j) => ln.push(...P[i], ...P[j]);
+        e(0, 1); e(1, 2); e(2, 3); e(3, 0);
+        e(4, 5); e(5, 6); e(6, 7); e(7, 4);
+        e(0, 4); e(1, 5); e(2, 6); e(3, 7);
+        // 包絡には段ごとの箱で近似して渡す（傾いた面はそのまま扱えない）
+        const kk = cnt[runs.indexOf(rail)];
+        for (let i = 0; i < kk; i++) {
+          const t0 = lo + (hi - lo) * i / kk, t1 = lo + (hi - lo) * (i + 1) / kk;
+          const yt = Math.max(topAt(t0), topAt(t1));
+          if (alongX) keep(t0, y0, c - h, t1, yt, c + h);
+          else keep(c - h, y0, t0, c + h, yt, t1);
+        }
+      }
+      continue;
+    }
     let cur = a;
     for (const o of os) {
-      box(cur, o.a, 0, H);                          // 開口の手前まで、まるごと
-      box(o.a, o.b, 0, Math.min(o.lo, H));          // 腰壁（窓の下）
-      box(o.a, o.b, Math.min(o.hi, H), H);          // 垂れ壁
+      if (w.ext && o.kind === 'WIN') sashes(u, o);
+      box(cur, o.a, 0, HW);                         // 開口の手前まで、まるごと
+      box(o.a, o.b, 0, Math.min(o.lo, HW));         // 腰壁（窓の下）
+      box(o.a, o.b, Math.min(o.hi, HW), HW);        // 垂れ壁
       cur = o.b;
     }
-    box(cur, b, 0, H);
+    box(cur, b, 0, HW);
   }
   // --- 階段 ---
   //   ★ 段数は【階高から】決める。図面に描いてある段板の数は見ない。
   //     蹴上が上限を超えないよう段数を増やし、蹴上を割り戻す。
-  const s = m.stair;
-  if (s) {
-    const len = s.alongX ? (s.x1 - s.x0) : (s.z1 - s.z0);
-    const n = Math.max(2, Math.ceil(H / MAX_RISE));
-    const rise = H / n, go = len / n;
-    // 走りに沿う座標 t と、幅方向の両端 w0/w1 を、世界座標へ直す。
-    const P = (t, y, w) => (s.alongX
-      ? [s.x0 + t, y, w] : [w, y, s.z0 + t]);
-    const w0 = s.alongX ? s.z0 : s.x0;
-    const w1 = s.alongX ? s.z1 : s.x1;
-    const seg = (t1, y1, w1_, t2, y2, w2) => {
-      ln.push(...P(t1, y1, w1_), ...P(t2, y2, w2));
+  //   ★ 踊り場は【1段ぶんの平らな面】。廻り段（扇形の段板）にしないので、
+  //     どの部分も箱ひとつで済み、走りと同じ扱いで積める。
+  //   ⚠️ 段の線は引きっぱなしでよい。外郭にならない線は包絡が落とすので、
+  //     段の輪郭だけが残る。手で「踏面の先だけ」を引き分けなくていい。
+  if (sp.length && runs.length) {
+    const box = (x0, z0, x1, z1, yt) => {
+      pushBox(pos, ln, x0, y0, z0, x1, yt, z1);
+      keep(x0, y0, z0, x1, yt, z1);
     };
-    // 面は箱で作る（中身の詰まった段）。線はここでは出さない。
-    for (let i = 1; i <= n; i++) {
-      const a = (i - 1) * go, b = i * go;
-      const u0 = s.dir > 0 ? a : len - b;
-      const u1 = s.dir > 0 ? b : len - a;
-      const yt = y0 + rise * i;
-      if (s.alongX) {
-        pushBox(pos, null, s.x0 + u0, y0, s.z0, s.x0 + u1, yt, s.z1);
-        keep(s.x0 + u0, y0, s.z0, s.x0 + u1, yt, s.z1);
-      } else {
-        pushBox(pos, null, s.x0, y0, s.z0 + u0, s.x1, yt, s.z0 + u1);
-        keep(s.x0, y0, s.z0 + u0, s.x1, yt, s.z0 + u1);
+    for (const p of sp) {
+      const lv = lvOf.get(p);
+      if (p.kind !== 'run') {         // 踊り場：まるごと1つの箱
+        box(p.x0, p.z0, p.x1, p.z1, y0 + rise * (lv + 1));
+        continue;
       }
-    }
-    // ★ 線は【段の形】だけを引く。踏面の先・蹴上・両側の輪郭・端部の口。
-    for (let i = 1; i <= n; i++) {
-      const a = (i - 1) * go, b = i * go;
-      const ta = s.dir > 0 ? a : len - a;      // 段の手前（低い側）
-      const tb = s.dir > 0 ? b : len - b;      // 段の奥（高い側）
-      const yl = y0 + rise * (i - 1), yt = y0 + rise * i;
-      seg(ta, yt, w0, ta, yt, w1);             // 蹴上の天端＝踏面の先（ヨコ）
-      seg(ta, yl, w0, ta, yl, w1);             // 蹴上の下端（ヨコ）
-      for (const w of [w0, w1]) {
-        seg(ta, yl, w, ta, yt, w);             // 蹴上の縦（両側）
-        seg(ta, yt, w, tb, yt, w);             // 踏面の縁（両側）
+      const k = cnt[runs.indexOf(p)];
+      const go = p.len / k;
+      for (let i = 1; i <= k; i++) {
+        // ⚠️ 上り方向が逆なら、段の並びも逆から積む。
+        const u0 = p.dir > 0 ? (i - 1) * go : p.len - i * go;
+        const u1 = u0 + go;
+        const yt = y0 + rise * (lv + i);
+        if (p.alongX) box(p.x0 + u0, p.z0, p.x0 + u1, p.z1, yt);
+        else box(p.x0, p.z0 + u0, p.x1, p.z0 + u1, yt);
       }
-    }
-    // 端部。下端は蹴上の口、上端は上階の床までの立ち上がり。
-    const tEnd = s.dir > 0 ? len : 0;
-    seg(tEnd, y0, w0, tEnd, y0, w1);
-    seg(tEnd, y0 + H, w0, tEnd, y0 + H, w1);
-    for (const w of [w0, w1]) {
-      seg(tEnd, y0, w, tEnd, y0 + H, w);
-      seg(s.dir > 0 ? 0 : len, y0, w, tEnd, y0, w);   // 足元の輪郭（両側）
     }
   }
+  // ★ 窓は壁とは別の塊。包絡には掛けない。枠も障子も稜線がすべて要るので、
+  //   落とすものが無い。
+  for (const [p2, mat] of [[winPos, sashMat], [glassPos, glassMat]]) {
+    if (!p2.length) continue;
+    const g2 = new THREE.BufferGeometry();
+    g2.setAttribute('position', new THREE.Float32BufferAttribute(p2, 3));
+    g2.computeVertexNormals();
+    wallGroup.add(new THREE.Mesh(g2, mat));
+  }
+  addBlackLines(wallGroup, winLn);
   if (!pos.length) return;
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   geo.computeVertexNormals();
   wallGroup.add(new THREE.Mesh(geo, wallModelMat));
-  addBlackLines(wallGroup, envelopeLines(ln, bxs));
+  if (massBx) massBx.push(...bxs);
+  // ★ 屋根をかけた階では、屋上面と同じ高さの横線を落とす。
+  //   ⚠️ 落とさないと、間仕切りの【壁の小口】が屋上面いっぱいに割り付けられて
+  //     見える。屋上は一枚の面なので、そこに壁の切り口の線は要らない。
+  //   ⚠️ 縦線は落とさない。屋上面の下に隠れるだけで、悪さはしない。
+  let outLn = ln;
+  if (state.roofed) {
+    const dy = y0 + HW;
+    outLn = [];
+    for (let i = 0; i + 5 < ln.length; i += 6) {
+      if (Math.abs(ln[i + 1] - dy) < 1e-6 && Math.abs(ln[i + 4] - dy) < 1e-6) continue;
+      for (let k = 0; k < 6; k++) outLn.push(ln[i + k]);
+    }
+  }
+  massLine(outLn);
 }
 
 /* 外形を、ある高さで水平に塞ぐ。底にも天端にも使う。
@@ -1872,7 +2162,7 @@ function buildHole() {
   geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   geo.computeVertexNormals();
   wallGroup.add(new THREE.Mesh(geo, wallMat));
-  addBlackLines(wallGroup, ln);
+  massLine(ln);
 }
 
 /* 矩形1つぶんの棟。位置も長さも【形から決まる】ので、計算で出す。
@@ -2278,7 +2568,11 @@ function buildFloorOutline(rects) {
   for (const s of footprintSegments(rects)) {
     pos.push(s.a.x, y, s.a.z, s.b.x, y, s.b.z);
   }
-  addBlackLines(wallGroup, pos);
+  // ★ 天端の線も建物の塊として包絡にかける。
+  //   ⚠️ そのまま引くと、上に階が載っているところにも一周ぶん残る。床板の
+  //     下の縁（下階の天端）と上の縁（上階の足元）が 100mm 離れて並ぶのが、
+  //     外壁や吹抜けに出ていた二重線の正体だった。
+  massLine(pos);
 }
 
 function buildEaveHandle(rects, eaves) {
@@ -3906,25 +4200,27 @@ initUnderlay({
   setFootprint: (arg) => {
     if (!arg) return;
     const list = Array.isArray(arg) ? arg : [arg];
-    dropUntouchedPlanSlab();
+    dropUnconfirmedBlock();
     addSlab(list);
-    planSlab = parts[active];
+    lastBlock = parts[active].block;
   },
   /* 読込用レイヤから起こした壁の模型を受け取る。
      ★ 外形（屋根用）は板として置き、その上に壁の模型を載せる。
        高さは今までどおり【青い箱】で与える。 */
   setWalls: (m) => {
     if (!m) return;
-    // ★ 前に読み込んだ壁が【まだ高さを与えていない】なら捨てて置き直す。
-    //   高さを与えてあれば、その上に【次の階】として積む。
-    //   ⚠️ 無条件に捨ててはいけない。2階を読み込んだ瞬間に1階が消える。
-    dropUntouchedDxf();
+    // ★ 前に読み込んだ階が【まだ確定していない】なら捨てて置き直す。
+    //   確定していれば、その上に【次の階】として積む。
+    dropUnconfirmedBlock();
     // 床の板 → その上に壁。1階は「1階の床高さ」、上階は床板 100mm。
-    addSlab([m.foot]);
+    //   ⚠️ 2枚で1ブロック。掴むのも消すのもこの単位。
+    const blk = ++blockSeq;
+    addSlab([m.foot], blk);
     const upper = state.baseY > 1e-6;
     state.eaveY = state.baseY + (upper ? FLOOR_T : floorH());
     parts[active].fromDxf = true;
     parts[active].floorSlab = !upper;    // 厚みが「1階の床高さ」に連動する板
+    parts[active].isFloor = true;        // 床板。線は天端の1本だけに揃える
     // ★ 下の階から階段が上がってくるところは、床を張らない。
     if (upper) {
       const below = parts.find((p) => p.walls
@@ -3934,11 +4230,10 @@ initUnderlay({
         state.hole = { x0: t.x0, z0: t.z0, x1: t.x1, z1: t.z1 };
       }
     }
-    const slab = parts[active];
-    addSlab([m.foot]);                   // 板の上から始まる階
+    addSlab([m.foot], blk);              // 板の上から始まる階
     parts[active].fromDxf = true;
     state.walls = m;
-    lastDxf = [slab, parts[active]];
+    lastBlock = blk;
     rebuild(); syncUI();
   },
 });

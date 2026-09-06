@@ -62,6 +62,29 @@
     .city-row select:hover { background: rgba(148,163,184,0.28); }
     .city-row select option { background: #1e293b; color: #e8eef7; }
     .city-row .sub-title { flex-shrink: 0; }
+    /* 取り込んだファイルの一覧。1行 = 1件（表示チェック／名前／置き直す／削除）。
+       名前は押せる（＝選ぶ）ので、ボタンだが見た目は行の文字に寄せる。 */
+    #importList { display: flex; flex-direction: column; gap: 3px; margin: 4px 0; }
+    .imp-row { display: flex; align-items: center; gap: 5px; }
+    .imp-row .imp-name {
+      flex: 1; min-width: 0; text-align: left; overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap;
+      background: transparent !important; border-color: transparent !important;
+    }
+    .imp-row .imp-name:hover { background: rgba(148,163,184,0.2) !important; }
+    /* 選んでいる行は、ギズモが付いている先が分かるように光らせる */
+    .imp-row.imp-sel .imp-name { color: #f4c542; font-weight: 700; }
+    .imp-row button {
+      font: inherit; font-size: 11px; color: #cdd8e6; cursor: pointer;
+      background: rgba(148,163,184,0.14); border: 1px solid rgba(148,163,184,0.3);
+      border-radius: 6px; padding: 2px 7px;
+    }
+    .imp-row button:hover { background: rgba(148,163,184,0.28); }
+    #importUi input[type=number] {
+      font: inherit; font-size: 12px; color: #e8eef7;
+      background: rgba(148,163,184,0.14); border: 1px solid rgba(148,163,184,0.3);
+      border-radius: 4px; padding: 1px 4px;
+    }
     /* 自作モデルの操作（向き・微調整）。数値入力と選択肢を HUD の色に合わせる */
     #userModelUi input[type=number], #userModelUi select {
       font: inherit; font-size: 12px; color: #e8eef7;
@@ -464,7 +487,8 @@
       "3d-tiles-renderer": "https://esm.sh/*3d-tiles-renderer@0.4.28",
       "3d-tiles-renderer/": "https://esm.sh/*3d-tiles-renderer@0.4.28/",
       "@mapbox/vector-tile": "https://esm.sh/@mapbox/vector-tile@1",
-      "pbf": "https://esm.sh/pbf@4"
+      "pbf": "https://esm.sh/pbf@4",
+      "@sparkjsdev/spark": "https://sparkjs.dev/releases/spark/2.1.0/spark.module.js"
     }
   }
   </script>
@@ -602,6 +626,10 @@
     <!-- 自作モデル（親アプリから受け取った建物）の操作。中身は usermodel.js が組み立てる。
          モデルを受け取っていないとき（単独起動）は表示しない。 -->
     <div class="clip-ui" id="userModelUi" style="display:none"></div>
+
+    <!-- 取り込んだファイル（点群 .spz/.splat/.ply ・ モデル .glb/.gltf）の配置。
+         中身は importobjects.js が組み立てる。 -->
+    <div class="clip-ui" id="importUi" style="display:none"></div>
 
     <div class="map-switch"><button id="recenterBtn">注目地点へ戻す</button></div>
 

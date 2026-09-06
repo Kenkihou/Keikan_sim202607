@@ -18,13 +18,15 @@ let currentDef = null;
 
 const $ = id => document.getElementById(id);
 
-const HINT_IDLE = 'ドラッグ:回転　ホイール:ズーム　右ドラッグ:平行移動　／　外構の地物をクリックで編集';
+// ★ 消し方をここに書いておく。「全消去」を撤去したぶん、1つずつ消す道が
+//   見えていないと、消したい人が行き場を失う。
+const HINT_IDLE = 'ドラッグ:回転　ホイール:ズーム　右ドラッグ:平行移動'
+  + '　／　地物をクリックで編集　Delete で削除';
 
 export function initUI(handlers){
   onPick = handlers.onPick; onEdit = handlers.onEdit; onExit = handlers.onExit;
   buildPalette();
   store.onChange(refreshEdit);
-  $('ext-btn-clear').onclick = () => { if (confirm('外構をすべて削除しますか？')) store.clearAll(); };
   $('ext-btn-cancel').onclick = () => setActive(null);
   $('ext-btn-exit').onclick = () => onExit();
 
